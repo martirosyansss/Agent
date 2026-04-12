@@ -65,6 +65,10 @@ class PositionManager:
         self._trades_today: int = 0
         self._wins_today: int = 0
         self._losses_today: int = 0
+        self._peak_balance: float = initial_balance
+        self._max_drawdown_pct: float = 0.0
+        self._equity_history: list[dict[str, float | str]] = []
+        self._record_equity_snapshot()
 
     # ──────────────────────────────────────────────
     # Queries
@@ -100,6 +104,40 @@ class PositionManager:
     def balance(self) -> float:
         return self.wallet.usdt_balance + self.total_exposure_usd
 
+    @property
+    def current_drawdown_pct(self) -> float:
+        if self._peak_balance <= 0:
+            return 0.0
+        return max(0.0, (self._peak_balance - self.balance) / self._peak_balance * 100)
+
+    @property
+    def max_drawdown_pct(self) -> float:
+        return self._max_drawdown_pct
+
+    @property
+    def equity_history(self) -> list[dict[str, float | str]]:
+        return list(self._equity_history)
+
+    def _record_equity_snapshot(self) -> None:
+        balance = self.balance
+        if balance > self._peak_balance:
+            self._peak_balance = balance
+
+        drawdown_pct = 0.0
+        if self._peak_balance > 0:
+            drawdown_pct = max(0.0, (self._peak_balance - balance) / self._peak_balance * 100)
+        self._max_drawdown_pct = max(self._max_drawdown_pct, drawdown_pct)
+
+        snapshot = {
+            "date": str(int(time.time() * 1000)),
+            "label": time.strftime("%H:%M:%S", time.localtime()),
+            "pnl": round(balance - self.wallet.initial_balance, 4),
+            "balance": round(balance, 4),
+        }
+        if not self._equity_history or self._equity_history[-1]["pnl"] != snapshot["pnl"]:
+            self._equity_history.append(snapshot)
+            self._equity_history = self._equity_history[-100:]
+
     # ──────────────────────────────────────────────
     # Open position
     # ──────────────────────────────────────────────
@@ -126,6 +164,8 @@ class PositionManager:
         fill_price = order.fill_price or order.price or 0
         fill_qty = order.fill_quantity or order.quantity
         cost = fill_qty * fill_price + order.commission
+        effective_stop_loss = stop_loss_price or order.stop_loss_price
+        effective_take_profit = take_profit_price or order.take_profit_price
 
         if cost > self.wallet.usdt_balance:
             logger.warning(
@@ -145,18 +185,24 @@ class PositionManager:
             current_price=fill_price,
             unrealized_pnl=0.0,
             realized_pnl=0.0,
+            stop_loss_price=effective_stop_loss,
+            take_profit_price=effective_take_profit,
+            strategy_name=order.strategy_name,
+            signal_id=order.signal_id,
+            signal_reason=order.signal_reason,
             status=PositionStatus.OPEN,
             opened_at=str(int(time.time() * 1000)),
             is_paper=order.is_paper,
         )
 
         # Сохранить SL/TP
-        self._sl_tp[order.symbol] = (stop_loss_price, take_profit_price)
+        self._sl_tp[order.symbol] = (effective_stop_loss, effective_take_profit)
 
         self._positions[order.symbol] = position
+        self._record_equity_snapshot()
         logger.info(
             "Position opened: %s @ %.2f qty=%.6f SL=%.2f TP=%.2f",
-            order.symbol, fill_price, fill_qty, stop_loss_price, take_profit_price,
+            order.symbol, fill_price, fill_qty, effective_stop_loss, effective_take_profit,
         )
 
         await self._event_bus.emit(EVENT_POSITION_OPENED, position)
@@ -205,6 +251,7 @@ class PositionManager:
         del self._positions[order.symbol]
         self._sl_tp.pop(order.symbol, None)
         self._closed_positions.append(position)
+        self._record_equity_snapshot()
 
         logger.info(
             "Position closed: %s @ %.2f PnL=%.2f",
@@ -224,6 +271,7 @@ class PositionManager:
         if pos:
             pos.current_price = price
             pos.unrealized_pnl = (price - pos.entry_price) * pos.quantity
+            self._record_equity_snapshot()
 
     def check_stop_loss_take_profit(self, symbol: str) -> Optional[str]:
         """Проверить SL/TP для позиции.
@@ -274,12 +322,20 @@ class PositionManager:
     def get_state(self) -> dict:
         """Состояние для Telegram/Dashboard."""
         stats = self.get_daily_stats()
+        exposure_pct = self.total_exposure_usd / self.balance * 100 if self.balance > 0 else 0.0
         return {
             "balance": self.balance,
             "pnl_today": stats["pnl_today"],
             "pnl_total": self._total_realized_pnl,
             "open_positions": stats["open_positions"],
             "trades_today": stats["trades_today"],
+            "wins": stats["wins"],
+            "losses": stats["losses"],
+            "win_rate": stats["win_rate"],
+            "total_unrealized_pnl": self.total_unrealized_pnl,
+            "max_drawdown_pct": self.max_drawdown_pct,
+            "current_drawdown_pct": self.current_drawdown_pct,
+            "exposure_pct": exposure_pct,
             "positions": self.open_positions,
             "recent_trades": [
                 {
@@ -288,7 +344,11 @@ class PositionManager:
                     "price": p.current_price,
                     "pnl": p.realized_pnl,
                     "time": p.closed_at,
+                    "strategy_name": p.strategy_name,
+                    "signal_id": p.signal_id,
+                    "signal_reason": p.signal_reason,
                 }
                 for p in self._closed_positions[-10:]
             ],
+            "pnl_history": self.equity_history,
         }

@@ -26,6 +26,8 @@ if str(BASE_DIR) not in sys.path:
 from config import load_settings, Settings  # noqa: E402
 from core.constants import (  # noqa: E402
     APP_NAME,
+    EVENT_NEW_TRADE,
+    EVENT_ORDER_FILLED,
     VERSION,
     LOG_ROTATION_SIZE,
     LOG_ROTATION_COUNT,
@@ -34,6 +36,7 @@ from core.constants import (  # noqa: E402
     HEARTBEAT_FILE,
 )
 from core.events import EventBus  # noqa: E402
+from core.models import Direction  # noqa: E402
 
 
 # ──────────────────────────────────────────────
@@ -262,6 +265,25 @@ class GracefulShutdown:
 
 
 # ──────────────────────────────────────────────
+# Uptime
+# ──────────────────────────────────────────────
+
+_BOOT_TIME = time.time()
+
+
+def _format_uptime() -> str:
+    elapsed = int(time.time() - _BOOT_TIME)
+    days, rem = divmod(elapsed, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m"
+    if hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    return f"{minutes}m {seconds}s"
+
+
+# ──────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────
 
@@ -308,6 +330,168 @@ async def run() -> None:
     # 18. Web Dashboard
     # ------------------------------------------------------------------
 
+    # 6. SQLite (WAL mode)
+    from database.db import Database
+    from database.repository import Repository
+    db = Database(BASE_DIR / settings.db_path)
+    db.connect()
+    repo = Repository(db)
+    log.info("[Module] Database initialized")
+
+    # 9. Data Collector (WebSocket)
+    collector = None
+    collector_task: asyncio.Task | None = None
+    try:
+        from collector.binance_ws import BinanceWebSocketCollector
+        collector = BinanceWebSocketCollector(
+            symbols=settings.trading_symbols,
+            repo=repo,
+            bus=bus,
+        )
+        collector_task = asyncio.create_task(collector.start())
+        log.info("[Module] Collector started for {}", settings.trading_symbols)
+    except Exception as e:
+        log.warning("[Module] Collector failed to start: {}", e)
+
+    # 15. Execution Engine (paper mode)
+    executor = None
+    try:
+        from execution.paper_executor import PaperExecutor
+        executor = PaperExecutor(
+            event_bus=bus,
+            commission_pct=settings.paper_commission_pct,
+        )
+        log.info("[Module] Paper Executor initialized")
+    except Exception as e:
+        log.warning("[Module] Paper Executor failed: {}", e)
+
+    # 16. Position / Risk runtime
+    position_manager = None
+    risk_state_machine = None
+    risk_sentinel = None
+    try:
+        from position.manager import PositionManager
+        from risk.sentinel import RiskLimits, RiskSentinel
+        from risk.state_machine import RiskStateMachine
+
+        position_manager = PositionManager(
+            event_bus=bus,
+            initial_balance=settings.paper_initial_balance,
+            max_open_positions=settings.max_open_positions,
+        )
+        risk_state_machine = RiskStateMachine(
+            event_bus=bus,
+            max_daily_loss=settings.max_daily_loss_usd,
+        )
+        risk_sentinel = RiskSentinel(
+            limits=RiskLimits(
+                max_daily_loss_usd=settings.max_daily_loss_usd,
+                max_daily_loss_pct=settings.max_daily_loss_pct,
+                max_daily_trades=settings.max_trades_per_day,
+                max_position_pct=settings.max_position_pct,
+                max_total_exposure_pct=settings.max_total_exposure_pct,
+                max_open_positions=settings.max_open_positions,
+                max_trades_per_hour=settings.max_trades_per_hour,
+                min_trade_interval_sec=settings.resume_cooldown_min * 60,
+                max_order_usd=settings.max_order_usd,
+                max_loss_per_trade_pct=settings.stop_loss_pct,
+                max_daily_commission_pct=settings.cb_commission_alert_pct,
+            ),
+            state_machine=risk_state_machine,
+        )
+
+        async def _on_order_filled(order):
+            if not position_manager:
+                return
+
+            if order.side == Direction.BUY:
+                opened = await position_manager.open_position(order)
+                if opened and risk_sentinel:
+                    risk_sentinel.record_trade(order.commission, increment_trade=True)
+            elif order.side == Direction.SELL:
+                closed = await position_manager.close_position(order)
+                if closed and risk_sentinel:
+                    risk_sentinel.record_trade(order.commission, increment_trade=False)
+
+            if risk_state_machine:
+                await risk_state_machine.update(position_manager.total_realized_pnl)
+
+        async def _on_market_trade(trade):
+            if not position_manager:
+                return
+            position_manager.update_price(trade.symbol, trade.price)
+            if risk_state_machine:
+                await risk_state_machine.update(position_manager.total_realized_pnl)
+
+        bus.subscribe(EVENT_ORDER_FILLED, _on_order_filled)
+        bus.subscribe(EVENT_NEW_TRADE, _on_market_trade)
+        log.info("[Module] Position & Risk runtime initialized")
+    except Exception as e:
+        log.warning("[Module] Position/Risk runtime failed: {}", e)
+
+    # 18. Web Dashboard
+    dashboard = None
+
+    def get_system_state() -> dict:
+        position_state = position_manager.get_state() if position_manager else {}
+        balance = float(position_state.get("balance", settings.paper_initial_balance))
+        pnl_today = float(position_state.get("pnl_today", 0.0))
+        risk_metrics = (
+            risk_sentinel.get_runtime_metrics(balance=balance)
+            if risk_sentinel else {}
+        )
+
+        market_data_age_sec = -1.0
+        if collector:
+            age = collector.last_data_age_sec
+            if age != float("inf"):
+                market_data_age_sec = round(age, 1)
+
+        return {
+            "mode": settings.trading_mode,
+            "risk_state": risk_state_machine.state.value if risk_state_machine else "NORMAL",
+            "uptime": _format_uptime(),
+            "pnl_today": pnl_today,
+            "pnl_total": float(position_state.get("pnl_total", 0.0)),
+            "open_positions": int(position_state.get("open_positions", 0)),
+            "trades_today": int(position_state.get("trades_today", 0)),
+            "balance": balance,
+            "win_rate": float(position_state.get("win_rate", 0.0)),
+            "positions": position_state.get("positions", []),
+            "recent_trades": position_state.get("recent_trades", []),
+            "pnl_history": position_state.get("pnl_history", []),
+            "risk_details": {
+                "daily_loss": min(pnl_today, 0.0),
+                "max_drawdown": float(position_state.get("max_drawdown_pct", 0.0)) / 100,
+                "exposure": float(position_state.get("exposure_pct", 0.0)) / 100,
+                "trade_freq": int(risk_metrics.get("trades_last_hour", 0)),
+                "daily_commission": float(risk_metrics.get("daily_commission", 0.0)),
+                "market_data_age_sec": market_data_age_sec,
+                "cooldown_remaining_sec": int(risk_metrics.get("cooldown_remaining_sec", 0)),
+            },
+        }
+
+    try:
+        from dashboard.app import Dashboard
+        dashboard = Dashboard(settings, bus, state_provider=get_system_state)
+
+        async def _handle_stop():
+            log.warning("STOP requested from dashboard")
+            shutdown.trigger()
+
+        async def _handle_resume():
+            log.info("RESUME requested from dashboard")
+            if risk_state_machine:
+                risk_state_machine.reset()
+
+        dashboard.on_stop = _handle_stop
+        dashboard.on_resume = _handle_resume
+        dashboard.on_kill = _handle_stop
+        await dashboard.start()
+        log.info("[Module] Dashboard started on http://localhost:{}", settings.dashboard_port)
+    except Exception as e:
+        log.warning("[Module] Dashboard failed: {}", e)
+
     # Heartbeat writer (шаг 19)
     heartbeat_task = asyncio.create_task(heartbeat_writer(settings))
 
@@ -319,6 +503,15 @@ async def run() -> None:
     # Graceful shutdown sequence
     log.info("Остановка системы...")
     heartbeat_task.cancel()
+    await asyncio.gather(heartbeat_task, return_exceptions=True)
+    if collector:
+        await collector.stop()
+    if collector_task:
+        collector_task.cancel()
+        await asyncio.gather(collector_task, return_exceptions=True)
+    if dashboard:
+        await dashboard.stop()
+    db.close()
     save_state({"stopped_at": int(time.time()), "mode": settings.trading_mode})
     release_pid_lock()
     log.info("🔴 Система остановлена. Состояние сохранено.")

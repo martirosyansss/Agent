@@ -18,6 +18,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Optional
 
+from fastapi import WebSocket, WebSocketDisconnect
 from core.constants import VERSION
 from core.events import EventBus
 
@@ -51,6 +52,7 @@ class Dashboard:
         event_bus: EventBus,
         state_provider: Optional[Callable] = None,
     ) -> None:
+        self._settings = settings
         self._port = settings.dashboard_port
         self._password = settings.dashboard_password
         self._event_bus = event_bus
@@ -64,9 +66,118 @@ class Dashboard:
         self.on_resume: Optional[Callable[[], Coroutine]] = None
         self.on_kill: Optional[Callable[[], Coroutine]] = None
 
+    def _build_config_payload(self) -> dict[str, Any]:
+        settings = self._settings
+        strategies = [
+            {
+                "name": "Core Swing",
+                "enabled": True,
+                "summary": f"{settings.signal_timeframe} -> {settings.trend_timeframe} confirmation",
+                "details": [
+                    f"Min confidence {settings.min_confidence:.2f}",
+                    f"SL {settings.stop_loss_pct:.1f}%",
+                    f"TP {settings.take_profit_pct:.1f}%",
+                    f"Max {settings.max_trades_per_day} trades/day",
+                ],
+            },
+            {
+                "name": "Grid Trading",
+                "enabled": settings.grid_enabled,
+                "summary": f"{settings.grid_num_levels} levels, capital {settings.grid_capital_pct:.0f}%",
+                "details": [
+                    f"Auto range {'on' if settings.grid_auto_range else 'off'}",
+                    f"Min profit {settings.grid_min_profit_pct:.2f}%",
+                    f"Max loss {settings.grid_max_loss_pct:.1f}%",
+                ],
+            },
+            {
+                "name": "Mean Reversion",
+                "enabled": settings.meanrev_enabled,
+                "summary": f"RSI {settings.meanrev_rsi_oversold:.0f}/{settings.meanrev_rsi_overbought:.0f}",
+                "details": [
+                    f"Capital {settings.meanrev_capital_pct:.0f}%",
+                    f"SL {settings.meanrev_stop_loss_pct:.1f}%",
+                    f"TP {settings.meanrev_take_profit_pct:.1f}%",
+                ],
+            },
+            {
+                "name": "Bollinger Breakout",
+                "enabled": settings.bb_breakout_enabled,
+                "summary": f"BB({settings.bb_period}, {settings.bb_std_dev:.1f}) with squeeze filter",
+                "details": [
+                    f"Volume x{settings.bb_volume_confirm_mult:.1f}",
+                    f"Trail {settings.bb_trailing_stop_pct:.1f}%",
+                    f"TP {settings.bb_take_profit_pct:.1f}%",
+                ],
+            },
+            {
+                "name": "DCA Bot",
+                "enabled": settings.dca_enabled,
+                "summary": f"${settings.dca_base_amount_usd:.2f} every {settings.dca_interval_hours}h",
+                "details": [
+                    f"Max buys/day {settings.dca_max_daily_buys}",
+                    f"Invested {settings.dca_max_invested_pct:.0f}%",
+                    f"TP {settings.dca_take_profit_pct:.1f}%",
+                ],
+            },
+            {
+                "name": "MACD Divergence",
+                "enabled": settings.macd_div_enabled,
+                "summary": f"MACD {settings.macd_fast}/{settings.macd_slow}/{settings.macd_signal_period}",
+                "details": [
+                    f"Lookback {settings.macd_lookback_candles} candles",
+                    f"RSI confirm {'on' if settings.macd_require_rsi_confirm else 'off'}",
+                    f"Volume confirm {'on' if settings.macd_require_vol_confirm else 'off'}",
+                ],
+            },
+        ]
+
+        return {
+            "control_center": {
+                "mode": settings.trading_mode,
+                "symbols": settings.trading_symbols,
+                "symbols_display": ", ".join(settings.trading_symbols),
+                "signal_timeframe": settings.signal_timeframe,
+                "trend_timeframe": settings.trend_timeframe,
+                "min_confidence": settings.min_confidence,
+                "auto_strategy_selection": settings.auto_strategy_selection,
+                "enabled_strategies": sum(1 for strategy in strategies if strategy["enabled"]),
+            },
+            "risk_limits": [
+                {"label": "Max daily loss", "value": f"${settings.max_daily_loss_usd:.2f}", "tone": "negative"},
+                {"label": "Daily loss cap", "value": f"{settings.max_daily_loss_pct:.1f}%", "tone": "negative"},
+                {"label": "Max position size", "value": f"{settings.max_position_pct:.1f}%", "tone": "warning"},
+                {"label": "Total exposure", "value": f"{settings.max_total_exposure_pct:.1f}%", "tone": "warning"},
+                {"label": "Max open positions", "value": str(settings.max_open_positions), "tone": "neutral"},
+                {"label": "Max order size", "value": f"${settings.max_order_usd:.2f}", "tone": "neutral"},
+                {"label": "Trades per hour", "value": str(settings.max_trades_per_hour), "tone": "neutral"},
+                {"label": "Trades per day", "value": str(settings.max_trades_per_day), "tone": "neutral"},
+                {"label": "Resume cooldown", "value": f"{settings.resume_cooldown_min} min", "tone": "neutral"},
+            ],
+            "execution_profile": [
+                {"label": "Execution mode", "value": settings.trading_mode.upper(), "tone": "positive" if settings.trading_mode == "live" else "neutral"},
+                {"label": "Paper balance", "value": f"${settings.paper_initial_balance:.2f}", "tone": "neutral"},
+                {"label": "Commission", "value": f"{settings.paper_commission_pct:.3f}%", "tone": "neutral"},
+                {"label": "Slippage", "value": f"{settings.paper_slippage_pct:.3f}%", "tone": "neutral"},
+                {"label": "Dashboard port", "value": str(settings.dashboard_port), "tone": "neutral"},
+                {"label": "Dashboard password", "value": "Configured" if bool(self._password) else "Not configured", "tone": "warning" if bool(self._password) else "neutral"},
+            ],
+            "system_profile": [
+                {"label": "Data max age", "value": f"{settings.max_data_age_sec}s", "tone": "neutral"},
+                {"label": "Cross-check interval", "value": f"{settings.price_cross_validation_interval}s", "tone": "neutral"},
+                {"label": "Watchdog heartbeat", "value": f"{settings.watchdog_heartbeat_interval}s", "tone": "neutral"},
+                {"label": "Watchdog timeout", "value": f"{settings.watchdog_timeout}s", "tone": "warning"},
+                {"label": "DB backup interval", "value": f"{settings.db_backup_interval_hours}h", "tone": "neutral"},
+                {"label": "RAM ceiling", "value": f"{settings.max_ram_mb} MB", "tone": "neutral"},
+                {"label": "Analyzer stats", "value": "Enabled" if settings.analyzer_stats_enabled else "Disabled", "tone": "neutral"},
+                {"label": "ML shadow mode", "value": "Enabled" if settings.analyzer_ml_shadow_mode else "Disabled", "tone": "neutral"},
+            ],
+            "strategies": strategies,
+        }
+
     def _create_app(self):
         """Создать и настроить FastAPI-приложение."""
-        from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+        from fastapi import FastAPI, Request
         from fastapi.responses import HTMLResponse, JSONResponse
         from fastapi.staticfiles import StaticFiles
         import pathlib
@@ -101,6 +212,7 @@ class Dashboard:
                 "trades_today": state.get("trades_today", 0),
                 "balance": state.get("balance", 0.0),
                 "win_rate": state.get("win_rate", 0.0),
+                "risk_details": state.get("risk_details", {}),
                 "version": VERSION,
             })
 
@@ -114,9 +226,12 @@ class Dashboard:
                     result.append({
                         "symbol": p.symbol,
                         "side": p.side,
+                        "strategy_name": getattr(p, "strategy_name", ""),
                         "entry_price": p.entry_price,
                         "current_price": p.current_price,
                         "quantity": p.quantity,
+                        "stop_loss_price": getattr(p, "stop_loss_price", 0.0),
+                        "take_profit_price": getattr(p, "take_profit_price", 0.0),
                         "unrealized_pnl": p.unrealized_pnl,
                     })
                 elif isinstance(p, dict):
@@ -137,6 +252,10 @@ class Dashboard:
         async def backtest_results():
             state = self._get_state()
             return JSONResponse(content=state.get("backtest_results", {}))
+
+        @app.get("/api/config")
+        async def config_snapshot():
+            return JSONResponse(content=self._build_config_payload())
 
         # ── Control ──────────────────────────────
 
@@ -182,11 +301,12 @@ class Dashboard:
                             "trades_today": state.get("trades_today", 0),
                             "balance": state.get("balance", 0.0),
                             "win_rate": state.get("win_rate", 0.0),
+                            "risk_details": state.get("risk_details", {}),
                         },
                     })
                     await asyncio.sleep(5)
             except WebSocketDisconnect:
-                pass
+                logger.debug("Dashboard websocket client disconnected")
             finally:
                 if websocket in self._ws_clients:
                     self._ws_clients.remove(websocket)
@@ -475,7 +595,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         }
         .risk-grid {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(6, 1fr);
             gap: 12px;
         }
         .risk-item {
@@ -495,6 +615,130 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             font-family: 'JetBrains Mono', monospace;
             font-size: 16px; font-weight: 600;
         }
+
+        /* ── Operations panels ────────────────── */
+        .ops-layout {
+            display: grid;
+            grid-template-columns: 1.25fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .info-panel {
+            background: linear-gradient(180deg, rgba(20, 24, 33, 0.96) 0%, rgba(14, 18, 25, 0.98) 100%);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+        .info-item {
+            background: linear-gradient(180deg, rgba(28, 35, 51, 0.96) 0%, rgba(18, 25, 35, 0.94) 100%);
+            border: 1px solid rgba(52, 62, 82, 0.55);
+            border-radius: 10px;
+            padding: 14px;
+            min-height: 108px;
+        }
+        .info-item-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 10px;
+        }
+        .info-item-value {
+            font-size: 19px;
+            font-weight: 700;
+            line-height: 1.2;
+            color: var(--text-primary);
+        }
+        .info-item-meta {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        .kv-list {
+            display: grid;
+            gap: 10px;
+        }
+        .kv-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 14px;
+            background: var(--bg-elevated);
+            border: 1px solid rgba(52, 62, 82, 0.45);
+            border-radius: 10px;
+        }
+        .kv-key {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .kv-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: right;
+        }
+        .strategy-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 14px;
+        }
+        .strategy-card {
+            background: linear-gradient(180deg, rgba(28, 35, 51, 0.95) 0%, rgba(17, 22, 31, 0.98) 100%);
+            border: 1px solid rgba(52, 62, 82, 0.55);
+            border-radius: 12px;
+            padding: 16px;
+        }
+        .strategy-card.off {
+            opacity: 0.72;
+        }
+        .strategy-head {
+            display: flex;
+            align-items: start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+        .strategy-name {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: -0.01em;
+        }
+        .strategy-summary {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+        }
+        .chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            background: rgba(52, 62, 82, 0.55);
+            color: var(--text-primary);
+        }
+        .chip-positive { background: var(--green-dim); color: var(--green); }
+        .chip-warning { background: var(--amber-dim); color: var(--amber); }
+        .chip-negative { background: var(--red-dim); color: var(--red); }
+        .chip-neutral { background: rgba(59, 130, 246, 0.12); color: #93c5fd; }
+        .chip-off { background: rgba(90, 101, 119, 0.18); color: var(--text-muted); }
 
         /* ── Tables ────────────────────────────── */
         .table-section {
@@ -527,6 +771,20 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         tbody tr:hover { background: var(--bg-hover); }
         tbody tr:last-child td { border-bottom: none; }
         .td-mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+        .table-cell-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .table-cell-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            line-height: 1.3;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 220px;
+        }
         .empty-state {
             padding: 40px 16px;
             text-align: center;
@@ -601,6 +859,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         @media (max-width: 1024px) {
             .grid-6 { grid-template-columns: repeat(3, 1fr); }
             .risk-grid { grid-template-columns: repeat(2, 1fr); }
+            .ops-layout { grid-template-columns: 1fr; }
+            .info-grid { grid-template-columns: repeat(2, 1fr); }
         }
         @media (max-width: 768px) {
             .header { padding: 0 16px; }
@@ -611,10 +871,14 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             .card-value { font-size: 22px; }
             .controls-section { justify-content: stretch; }
             .controls-section .btn { flex: 1; justify-content: center; }
+            .strategy-grid { grid-template-columns: 1fr; }
         }
         @media (max-width: 480px) {
             .grid-6 { grid-template-columns: 1fr; }
             .risk-grid { grid-template-columns: 1fr; }
+            .info-grid { grid-template-columns: 1fr; }
+            .kv-row { align-items: flex-start; flex-direction: column; }
+            .kv-value { text-align: left; }
             .header-version { display: none; }
         }
     </style>
@@ -719,6 +983,37 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             </div>
         </div>
 
+        <div class="ops-layout animate-fade">
+            <section class="info-panel" aria-label="Operating profile">
+                <div class="section-title">
+                    <h3>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19h16"/><path d="M5 15l4-6 4 3 6-8"/></svg>
+                        Control Center
+                    </h3>
+                    <span id="strategy-count-badge" class="badge badge-paper"><span class="badge-dot"></span>0 STRATEGIES</span>
+                </div>
+                <div class="info-grid" id="control-center-grid">
+                    <div class="info-item">
+                        <div class="info-item-label">Trading Universe</div>
+                        <div class="info-item-value">Loading</div>
+                        <div class="info-item-meta">Instruments and execution scope</div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="info-panel" aria-label="Execution profile">
+                <div class="section-title">
+                    <h3>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10"/><path d="M7 12h6"/></svg>
+                        Execution Profile
+                    </h3>
+                </div>
+                <div class="kv-list" id="execution-profile-list">
+                    <div class="kv-row"><span class="kv-key">Loading</span><span class="kv-value">...</span></div>
+                </div>
+            </section>
+        </div>
+
         <!-- PnL Chart -->
         <div class="chart-section animate-fade">
             <div class="section-title">
@@ -758,8 +1053,61 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
                     <div class="risk-item-label">Trade Freq</div>
                     <div class="risk-item-value neutral" id="risk-freq">0/h</div>
                 </div>
+                <div class="risk-item">
+                    <div class="risk-item-label">Market Data Age</div>
+                    <div class="risk-item-value neutral" id="risk-data-age">-</div>
+                </div>
+                <div class="risk-item">
+                    <div class="risk-item-label">Commission Today</div>
+                    <div class="risk-item-value neutral" id="risk-commission">$0.00</div>
+                </div>
             </div>
         </div>
+
+        <div class="ops-layout animate-fade">
+            <section class="info-panel" aria-label="Risk limits">
+                <div class="section-title">
+                    <h3>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
+                        Risk Limits
+                    </h3>
+                </div>
+                <div class="kv-list" id="risk-limits-list">
+                    <div class="kv-row"><span class="kv-key">Loading</span><span class="kv-value">...</span></div>
+                </div>
+            </section>
+
+            <section class="info-panel" aria-label="System profile">
+                <div class="section-title">
+                    <h3>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
+                        System Profile
+                    </h3>
+                </div>
+                <div class="kv-list" id="system-profile-list">
+                    <div class="kv-row"><span class="kv-key">Loading</span><span class="kv-value">...</span></div>
+                </div>
+            </section>
+        </div>
+
+        <section class="info-panel animate-fade" aria-label="Strategy stack">
+            <div class="section-title">
+                <h3>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 7h12"/><path d="M6 12h12"/><path d="M6 17h12"/></svg>
+                    Strategy Stack
+                </h3>
+            </div>
+            <div class="strategy-grid" id="strategy-grid">
+                <article class="strategy-card off">
+                    <div class="strategy-head">
+                        <div class="strategy-name">Loading</div>
+                        <span class="badge badge-paper"><span class="badge-dot"></span>WAIT</span>
+                    </div>
+                    <div class="strategy-summary">Collecting strategy configuration</div>
+                    <div class="chip-row"><span class="chip chip-off">pending</span></div>
+                </article>
+            </div>
+        </section>
 
         <!-- Positions Table -->
         <div class="table-section animate-fade">
@@ -773,15 +1121,17 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
                 <thead>
                     <tr>
                         <th>Symbol</th>
+                        <th>Strategy</th>
                         <th>Side</th>
                         <th>Entry</th>
                         <th>Current</th>
+                        <th>SL / TP</th>
                         <th>Qty</th>
                         <th>PnL</th>
                     </tr>
                 </thead>
                 <tbody id="positions-table">
-                    <tr><td colspan="6" class="empty-state">
+                    <tr><td colspan="8" class="empty-state">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
                         <div>No open positions</div>
                     </td></tr>
@@ -802,13 +1152,15 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
                     <tr>
                         <th>Time</th>
                         <th>Symbol</th>
+                        <th>Strategy</th>
+                        <th>Signal</th>
                         <th>Side</th>
                         <th>Price</th>
                         <th>PnL</th>
                     </tr>
                 </thead>
                 <tbody id="trades-table">
-                    <tr><td colspan="5" class="empty-state">
+                    <tr><td colspan="7" class="empty-state">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
                         <div>No trades yet</div>
                     </td></tr>
@@ -847,10 +1199,105 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     }
     function formatUsd(val) { return '$' + Number(val).toFixed(2); }
     function pnlClass(val) { return val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral'; }
+    function truncateText(val, maxLen) {
+        const text = String(val || '');
+        if (text.length <= maxLen) return text;
+        return text.slice(0, Math.max(0, maxLen - 1)) + '…';
+    }
     function escapeHtml(str) {
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+    function toneClass(tone) {
+        if (tone === 'positive') return 'positive';
+        if (tone === 'negative') return 'negative';
+        if (tone === 'warning') return 'chip-warning';
+        return 'neutral';
+    }
+    function chipToneClass(tone) {
+        if (tone === 'positive') return 'chip chip-positive';
+        if (tone === 'negative') return 'chip chip-negative';
+        if (tone === 'warning') return 'chip chip-warning';
+        if (tone === 'off') return 'chip chip-off';
+        return 'chip chip-neutral';
+    }
+
+    function renderKeyValueList(containerId, items) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        container.innerHTML = (items || []).map(function(item) {
+            return '<div class="kv-row">' +
+                '<span class="kv-key">' + escapeHtml(item.label || '-') + '</span>' +
+                '<span class="kv-value ' + toneClass(item.tone) + '">' + escapeHtml(String(item.value || '-')) + '</span>' +
+                '</div>';
+        }).join('');
+    }
+
+    function renderControlCenter(controlCenter) {
+        const container = document.getElementById('control-center-grid');
+        if (!container || !controlCenter) return;
+        const autoSelection = controlCenter.auto_strategy_selection ? 'Auto selection on' : 'Manual strategy profile';
+        container.innerHTML = [
+            {
+                label: 'Trading Universe',
+                value: controlCenter.symbols_display || '-',
+                meta: 'Tracked instruments and scope',
+            },
+            {
+                label: 'Timeframe Ladder',
+                value: (controlCenter.signal_timeframe || '-') + ' / ' + (controlCenter.trend_timeframe || '-'),
+                meta: 'Signal and confirmation frames',
+            },
+            {
+                label: 'Confidence Gate',
+                value: Number(controlCenter.min_confidence || 0).toFixed(2),
+                meta: 'Minimum acceptance score',
+            },
+            {
+                label: 'Strategy Routing',
+                value: autoSelection,
+                meta: 'Allocation and selection policy',
+            }
+        ].map(function(item) {
+            return '<div class="info-item">' +
+                '<div class="info-item-label">' + escapeHtml(item.label) + '</div>' +
+                '<div class="info-item-value">' + escapeHtml(item.value) + '</div>' +
+                '<div class="info-item-meta">' + escapeHtml(item.meta) + '</div>' +
+                '</div>';
+        }).join('');
+
+        const strategyBadge = document.getElementById('strategy-count-badge');
+        if (strategyBadge) {
+            const enabled = controlCenter.enabled_strategies || 0;
+            strategyBadge.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(String(enabled) + ' ACTIVE');
+            strategyBadge.className = 'badge ' + (enabled > 1 ? 'badge-live' : 'badge-paper');
+        }
+    }
+
+    function renderStrategies(strategies) {
+        const container = document.getElementById('strategy-grid');
+        if (!container) return;
+        if (!strategies || !strategies.length) {
+            container.innerHTML = '<article class="strategy-card off"><div class="strategy-name">No strategies configured</div></article>';
+            return;
+        }
+        container.innerHTML = strategies.map(function(strategy) {
+            const enabled = !!strategy.enabled;
+            const badgeClass = enabled ? 'badge-live' : 'badge-stop';
+            const badgeText = enabled ? 'Enabled' : 'Disabled';
+            const details = (strategy.details || []).map(function(detail) {
+                return '<span class="' + chipToneClass(enabled ? 'neutral' : 'off') + '">' + escapeHtml(detail) + '</span>';
+            }).join('');
+            return '<article class="strategy-card ' + (enabled ? '' : 'off') + '">' +
+                '<div class="strategy-head">' +
+                '<div class="strategy-name">' + escapeHtml(strategy.name || '-') + '</div>' +
+                '<span class="badge ' + badgeClass + '"><span class="badge-dot"></span>' + escapeHtml(badgeText) + '</span>' +
+                '</div>' +
+                '<div class="strategy-summary">' + escapeHtml(strategy.summary || '-') + '</div>' +
+                '<div class="chip-row">' + details + '</div>' +
+                '</article>';
+        }).join('');
     }
 
     /* ── Toast notifications ─────────────────── */
@@ -986,6 +1433,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             document.getElementById('risk-max-dd').textContent = ((rd.max_drawdown || 0) * 100).toFixed(1) + '%';
             document.getElementById('risk-exposure').textContent = ((rd.exposure || 0) * 100).toFixed(1) + '%';
             document.getElementById('risk-freq').textContent = (rd.trade_freq || 0) + '/h';
+            document.getElementById('risk-data-age').textContent = rd.market_data_age_sec >= 0 ? Number(rd.market_data_age_sec).toFixed(1) + 's' : '-';
+            document.getElementById('risk-commission').textContent = formatUsd(rd.daily_commission || 0);
         }
     }
 
@@ -1038,16 +1487,20 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             const data = await r.json();
             const tbody = document.getElementById('positions-table');
             if (!data.length) {
-                tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><div>No open positions</div></td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><div>No open positions</div></td></tr>';
                 return;
             }
             tbody.innerHTML = data.map(function(p) {
                 const pnl = p.unrealized_pnl || 0;
+                const sl = p.stop_loss_price > 0 ? formatUsd(p.stop_loss_price) : '-';
+                const tp = p.take_profit_price > 0 ? formatUsd(p.take_profit_price) : '-';
                 return '<tr>' +
                     '<td class="td-mono" style="color:var(--text-primary);font-weight:500;">' + escapeHtml(p.symbol) + '</td>' +
+                    '<td>' + escapeHtml(p.strategy_name || '-') + '</td>' +
                     '<td><span class="badge ' + (p.side === 'BUY' ? 'badge-live' : 'badge-stop') + '" style="font-size:11px;padding:2px 8px;">' + escapeHtml(p.side) + '</span></td>' +
                     '<td class="td-mono">' + formatUsd(p.entry_price || 0) + '</td>' +
                     '<td class="td-mono">' + formatUsd(p.current_price || 0) + '</td>' +
+                    '<td class="td-mono">' + sl + ' / ' + tp + '</td>' +
                     '<td class="td-mono">' + Number(p.quantity || 0).toFixed(6) + '</td>' +
                     '<td class="td-mono ' + pnlClass(pnl) + '">' + formatPnl(pnl) + '</td></tr>';
             }).join('');
@@ -1060,14 +1513,18 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             const data = await r.json();
             const tbody = document.getElementById('trades-table');
             if (!data.length) {
-                tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><div>No trades yet</div></td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div>No trades yet</div></td></tr>';
                 return;
             }
             tbody.innerHTML = data.slice(0, 15).map(function(t) {
                 const pnl = t.pnl || 0;
+                const signalId = t.signal_id || '-';
+                const signalReason = t.signal_reason || '';
                 return '<tr>' +
                     '<td class="td-mono">' + escapeHtml(t.time || '-') + '</td>' +
                     '<td class="td-mono" style="color:var(--text-primary);">' + escapeHtml(t.symbol || '-') + '</td>' +
+                    '<td>' + escapeHtml(t.strategy_name || '-') + '</td>' +
+                    '<td title="' + escapeHtml(signalReason) + '"><div class="table-cell-stack"><span class="td-mono">' + escapeHtml(signalId) + '</span><span class="table-cell-meta">' + escapeHtml(truncateText(signalReason || 'No signal reason', 44)) + '</span></div></td>' +
                     '<td><span class="badge ' + (t.side === 'BUY' ? 'badge-live' : 'badge-stop') + '" style="font-size:11px;padding:2px 8px;">' + escapeHtml(t.side || '-') + '</span></td>' +
                     '<td class="td-mono">' + formatUsd(t.price || 0) + '</td>' +
                     '<td class="td-mono ' + pnlClass(pnl) + '">' + (t.pnl != null ? formatPnl(pnl) : '-') + '</td></tr>';
@@ -1083,6 +1540,18 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             pnlChart.data.labels = data.map(function(d) { return d.date || d.label || ''; });
             pnlChart.data.datasets[0].data = data.map(function(d) { return d.pnl || d.value || 0; });
             pnlChart.update('none');
+        } catch(e) {}
+    }
+
+    async function fetchConfig() {
+        try {
+            const r = await fetch('/api/config');
+            const data = await r.json();
+            renderControlCenter(data.control_center);
+            renderKeyValueList('execution-profile-list', data.execution_profile);
+            renderKeyValueList('risk-limits-list', data.risk_limits);
+            renderKeyValueList('system-profile-list', data.system_profile);
+            renderStrategies(data.strategies);
         } catch(e) {}
     }
 
@@ -1120,8 +1589,10 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     fetchPnlHistory();
     setInterval(fetchStatus, 5000);
     setInterval(fetchPositions, 8000);
+    fetchConfig();
     setInterval(fetchTrades, 8000);
     setInterval(fetchPnlHistory, 30000);
+    setInterval(fetchConfig, 60000);
     </script>
 </body>
 </html>

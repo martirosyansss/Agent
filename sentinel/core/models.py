@@ -173,6 +173,11 @@ class Order:
     fill_quantity: Optional[float] = None
     commission: float = 0.0
     is_paper: bool = True
+    signal_id: str = ""
+    strategy_name: str = ""
+    signal_reason: str = ""
+    stop_loss_price: float = 0.0
+    take_profit_price: float = 0.0
     order_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
 
@@ -190,6 +195,11 @@ class Position:
     current_price: float = 0.0
     unrealized_pnl: float = 0.0
     realized_pnl: float = 0.0
+    stop_loss_price: float = 0.0
+    take_profit_price: float = 0.0
+    strategy_name: str = ""
+    signal_id: str = ""
+    signal_reason: str = ""
     status: PositionStatus = PositionStatus.OPEN
     opened_at: str = ""
     closed_at: Optional[str] = None

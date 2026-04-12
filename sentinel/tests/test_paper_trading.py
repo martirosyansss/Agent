@@ -64,8 +64,23 @@ class TestPaperExecutor:
         assert order.fill_price > 0
         assert order.fill_quantity == 0.001
         assert order.commission > 0
+        assert order.strategy_name == signal.strategy_name
+        assert order.signal_id == signal.signal_id
+        assert order.signal_reason == signal.reason
         # Проскальзывание: fill_price примерно = 67000
         assert abs(order.fill_price - 67000) / 67000 < 0.001
+
+    @pytest.mark.asyncio
+    async def test_buy_order_carries_stop_levels(self, executor):
+        signal = self._make_signal(Direction.BUY)
+        signal.stop_loss_price = 65000.0
+        signal.take_profit_price = 70350.0
+
+        order = await executor.execute_order(signal, quantity=0.001, current_price=67000.0)
+
+        assert order is not None
+        assert order.stop_loss_price == 65000.0
+        assert order.take_profit_price == 70350.0
 
     @pytest.mark.asyncio
     async def test_sell_order(self, executor):
@@ -159,9 +174,29 @@ class TestPositionManager:
         assert pos is not None
         assert pos.symbol == "BTCUSDT"
         assert pos.entry_price == 67000.0
+        assert pos.stop_loss_price == 64990.0
+        assert pos.take_profit_price == 70350.0
         assert pos.status == PositionStatus.OPEN
         assert pm.open_positions_count == 1
         assert pm.has_position("BTCUSDT")
+
+    @pytest.mark.asyncio
+    async def test_open_position_uses_order_signal_context(self, pm):
+        order = self._make_buy_order()
+        order.strategy_name = "ema_crossover_rsi"
+        order.signal_id = "sig-123"
+        order.signal_reason = "EMA crossover"
+        order.stop_loss_price = 64990.0
+        order.take_profit_price = 70350.0
+
+        pos = await pm.open_position(order)
+
+        assert pos is not None
+        assert pos.strategy_name == "ema_crossover_rsi"
+        assert pos.signal_id == "sig-123"
+        assert pos.signal_reason == "EMA crossover"
+        assert pos.stop_loss_price == 64990.0
+        assert pos.take_profit_price == 70350.0
 
     @pytest.mark.asyncio
     async def test_balance_reduced_on_open(self, pm):
@@ -290,7 +325,22 @@ class TestPositionManager:
         assert "balance" in state
         assert "pnl_today" in state
         assert "positions" in state
+        assert "win_rate" in state
+        assert "pnl_history" in state
         assert state["open_positions"] == 0
+
+    @pytest.mark.asyncio
+    async def test_runtime_metrics_track_drawdown(self, pm):
+        buy = self._make_buy_order(qty=1.0, price=100.0)
+        await pm.open_position(buy)
+
+        pm.update_price("BTCUSDT", 80.0)
+        state = pm.get_state()
+
+        assert state["current_drawdown_pct"] > 0
+        assert state["max_drawdown_pct"] > 0
+        assert state["exposure_pct"] > 0
+        assert len(state["pnl_history"]) >= 1
 
     @pytest.mark.asyncio
     async def test_position_events_emitted(self, bus, pm):

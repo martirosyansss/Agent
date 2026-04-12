@@ -88,6 +88,11 @@ class PaperExecutor(BaseExecutor):
             fill_quantity=quantity,
             commission=commission,
             is_paper=True,
+            signal_id=signal.signal_id,
+            strategy_name=signal.strategy_name,
+            signal_reason=signal.reason,
+            stop_loss_price=signal.stop_loss_price,
+            take_profit_price=signal.take_profit_price,
         )
 
         logger.info(

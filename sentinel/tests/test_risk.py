@@ -246,6 +246,16 @@ class TestRiskSentinel:
         sentinel.record_trade(commission=0.1)
         assert sentinel._daily_trades == 1
 
+    def test_runtime_metrics_snapshot(self, sentinel):
+        sentinel.record_trade(commission=0.1)
+        sentinel.record_trade(commission=0.2, increment_trade=False)
+
+        metrics = sentinel.get_runtime_metrics(balance=500.0)
+        assert metrics["daily_trades"] == 1
+        assert metrics["trades_last_hour"] == 1
+        assert metrics["daily_commission"] == pytest.approx(0.3)
+        assert metrics["commission_pct"] > 0
+
     def test_reset_daily(self, sentinel):
         sentinel.record_trade()
         sentinel.reset_daily()

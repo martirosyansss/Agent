@@ -65,6 +65,38 @@ class RiskSentinel:
     def state(self) -> RiskState:
         return self._sm.state
 
+    @property
+    def daily_trades(self) -> int:
+        return self._daily_trades
+
+    @property
+    def daily_commission(self) -> float:
+        return self._daily_commission
+
+    @property
+    def trades_last_hour(self) -> int:
+        hour_ago = time.time() - 3600
+        return sum(1 for ts in self._trades_timestamps if ts > hour_ago)
+
+    @property
+    def cooldown_remaining_sec(self) -> int:
+        if self._last_trade_ts <= 0:
+            return 0
+        elapsed = time.time() - self._last_trade_ts
+        remaining = self._limits.min_trade_interval_sec - elapsed
+        return max(0, int(remaining))
+
+    def get_runtime_metrics(self, balance: float = 0.0) -> dict[str, float | int | str]:
+        commission_pct = self._daily_commission / balance * 100 if balance > 0 else 0.0
+        return {
+            "state": self.state.value,
+            "daily_trades": self._daily_trades,
+            "trades_last_hour": self.trades_last_hour,
+            "daily_commission": self._daily_commission,
+            "commission_pct": commission_pct,
+            "cooldown_remaining_sec": self.cooldown_remaining_sec,
+        }
+
     # ──────────────────────────────────────────────
     # Main check
     # ──────────────────────────────────────────────
@@ -198,12 +230,13 @@ class RiskSentinel:
     # Trade recording
     # ──────────────────────────────────────────────
 
-    def record_trade(self, commission: float = 0.0) -> None:
+    def record_trade(self, commission: float = 0.0, *, increment_trade: bool = True) -> None:
         """Зарегистрировать совершённую сделку."""
         now = time.time()
-        self._trades_timestamps.append(now)
-        self._last_trade_ts = now
-        self._daily_trades += 1
+        if increment_trade:
+            self._trades_timestamps.append(now)
+            self._last_trade_ts = now
+            self._daily_trades += 1
         self._daily_commission += commission
 
         # Очистка старых timestamps (>24h)

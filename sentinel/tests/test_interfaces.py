@@ -281,13 +281,73 @@ class TestDashboardHelpers:
 class TestDashboardAPI:
     @pytest.fixture
     def client(self):
-        from unittest.mock import MagicMock
+        from types import SimpleNamespace
         from core.events import EventBus
         from dashboard.app import Dashboard
 
-        mock_settings = MagicMock()
-        mock_settings.dashboard_port = 8080
-        mock_settings.dashboard_password = ""
+        mock_settings = SimpleNamespace(
+            dashboard_port=8080,
+            dashboard_password="",
+            trading_mode="paper",
+            trading_symbols=["BTCUSDT", "ETHUSDT"],
+            signal_timeframe="1h",
+            trend_timeframe="4h",
+            min_confidence=0.75,
+            stop_loss_pct=3.0,
+            take_profit_pct=5.0,
+            max_trades_per_day=6,
+            grid_enabled=True,
+            grid_num_levels=8,
+            grid_capital_pct=30.0,
+            grid_auto_range=True,
+            grid_min_profit_pct=0.3,
+            grid_max_loss_pct=5.0,
+            meanrev_enabled=False,
+            meanrev_rsi_oversold=25.0,
+            meanrev_rsi_overbought=75.0,
+            meanrev_capital_pct=15.0,
+            meanrev_stop_loss_pct=4.0,
+            meanrev_take_profit_pct=6.0,
+            bb_breakout_enabled=False,
+            bb_period=20,
+            bb_std_dev=2.0,
+            bb_volume_confirm_mult=1.5,
+            bb_trailing_stop_pct=2.0,
+            bb_take_profit_pct=6.0,
+            dca_enabled=True,
+            dca_base_amount_usd=10.0,
+            dca_interval_hours=24,
+            dca_max_daily_buys=3,
+            dca_max_invested_pct=40.0,
+            dca_take_profit_pct=8.0,
+            macd_div_enabled=False,
+            macd_fast=12,
+            macd_slow=26,
+            macd_signal_period=9,
+            macd_lookback_candles=30,
+            macd_require_rsi_confirm=True,
+            macd_require_vol_confirm=True,
+            auto_strategy_selection=True,
+            max_daily_loss_usd=50.0,
+            max_daily_loss_pct=10.0,
+            max_position_pct=20.0,
+            max_total_exposure_pct=60.0,
+            max_open_positions=2,
+            max_order_usd=100.0,
+            max_trades_per_hour=2,
+            resume_cooldown_min=30,
+            paper_initial_balance=500.0,
+            paper_commission_pct=0.1,
+            paper_slippage_pct=0.05,
+            max_data_age_sec=30,
+            price_cross_validation_interval=300,
+            watchdog_heartbeat_interval=10,
+            watchdog_timeout=120,
+            db_backup_interval_hours=6,
+            max_ram_mb=2048,
+            analyzer_stats_enabled=True,
+            analyzer_ml_shadow_mode=True,
+        )
 
         dashboard = Dashboard(mock_settings, EventBus(), state_provider=lambda: {
             "mode": "paper",
@@ -299,8 +359,25 @@ class TestDashboardAPI:
             "trades_today": 3,
             "balance": 505.0,
             "win_rate": 62.5,
+            "risk_details": {
+                "daily_loss": -2.5,
+                "max_drawdown": 0.08,
+                "exposure": 0.12,
+                "trade_freq": 1,
+                "daily_commission": 0.34,
+                "market_data_age_sec": 1.5,
+            },
             "positions": [],
-            "recent_trades": [],
+            "recent_trades": [{
+                "time": "2026-04-12 14:30:00",
+                "symbol": "BTCUSDT",
+                "strategy_name": "ema_crossover_rsi",
+                "signal_id": "sig-42",
+                "signal_reason": "EMA crossover with volume confirmation and RSI below 50",
+                "side": "SELL",
+                "price": 68000.0,
+                "pnl": 1.25,
+            }],
             "pnl_history": [],
             "backtest_results": {"sharpe": 1.2, "win_rate": 55.0},
         })
@@ -328,6 +405,8 @@ class TestDashboardAPI:
         assert data["pnl_today"] == 5.0
         assert data["balance"] == 505.0
         assert data["win_rate"] == 62.5
+        assert data["risk_details"]["trade_freq"] == 1
+        assert data["risk_details"]["daily_commission"] == 0.34
 
     def test_positions_empty(self, client):
         r = client.get("/api/positions")
@@ -337,7 +416,11 @@ class TestDashboardAPI:
     def test_trades_empty(self, client):
         r = client.get("/api/trades")
         assert r.status_code == 200
-        assert r.json() == []
+        data = r.json()
+        assert len(data) == 1
+        assert data[0]["strategy_name"] == "ema_crossover_rsi"
+        assert data[0]["signal_id"] == "sig-42"
+        assert "volume confirmation" in data[0]["signal_reason"]
 
     def test_pnl_history(self, client):
         r = client.get("/api/pnl-history")
@@ -349,6 +432,17 @@ class TestDashboardAPI:
         data = r.json()
         assert data["sharpe"] == 1.2
         assert data["win_rate"] == 55.0
+
+    def test_config_snapshot(self, client):
+        r = client.get("/api/config")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["control_center"]["mode"] == "paper"
+        assert data["control_center"]["symbols"] == ["BTCUSDT", "ETHUSDT"]
+        assert len(data["risk_limits"]) >= 5
+        assert len(data["execution_profile"]) >= 4
+        assert len(data["system_profile"]) >= 4
+        assert any(strategy["name"] == "Grid Trading" for strategy in data["strategies"])
 
     def test_control_stop_no_handler(self, client):
         r = client.post("/api/control/stop")
@@ -422,11 +516,32 @@ class TestDashboardAPI:
         html = client.get("/").text
         assert "Risk Overview" in html
         assert "risk-grid" in html
+        assert 'id="risk-data-age"' in html
+        assert 'id="risk-commission"' in html
 
     def test_dashboard_html_balance_card(self, client):
         """Dashboard shows balance card."""
         html = client.get("/").text
         assert 'id="balance"' in html
+
+    def test_dashboard_html_positions_context_columns(self, client):
+        """Dashboard positions table shows strategy and protective levels."""
+        html = client.get("/").text
+        assert "Strategy" in html
+        assert "SL / TP" in html
+
+    def test_dashboard_html_trades_strategy_column(self, client):
+        """Dashboard recent trades table shows strategy column."""
+        html = client.get("/").text
+        assert "Recent Trades" in html
+        assert "Strategy" in html
+
+    def test_dashboard_html_trades_signal_column(self, client):
+        """Dashboard recent trades table shows compact signal context column."""
+        html = client.get("/").text
+        assert "Signal" in html
+        assert "signal_reason" in html
+        assert "table-cell-meta" in html
 
     def test_dashboard_html_uptime(self, client):
         """Dashboard shows uptime indicator."""
@@ -438,3 +553,12 @@ class TestDashboardAPI:
         html = client.get("/").text
         assert "conn-indicator" in html
         assert "conn-dot" in html
+
+    def test_dashboard_html_operator_panels(self, client):
+        """Dashboard shows operator-facing config panels."""
+        html = client.get("/").text
+        assert "Control Center" in html
+        assert "Execution Profile" in html
+        assert "Risk Limits" in html
+        assert "System Profile" in html
+        assert "Strategy Stack" in html

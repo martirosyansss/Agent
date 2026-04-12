@@ -162,6 +162,11 @@ class LiveExecutor(BaseExecutor):
             fill_quantity=fill_qty,
             commission=commission,
             is_paper=False,
+            signal_id=signal.signal_id,
+            strategy_name=signal.strategy_name,
+            signal_reason=signal.reason,
+            stop_loss_price=signal.stop_loss_price,
+            take_profit_price=signal.take_profit_price,
         )
 
         # --- Step 2: Protective OCO order (only for BUY entries) ---
