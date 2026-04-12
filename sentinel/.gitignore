@@ -1,0 +1,40 @@
+# SENTINEL — .gitignore
+
+# === Secrets ===
+.env
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# === Virtual environment ===
+venv/
+.venv/
+
+# === Data ===
+data/sentinel.db
+data/sentinel.db-wal
+data/sentinel.db-shm
+data/backups/
+data/state.json
+data/heartbeat
+
+# === Logs ===
+logs/*.log
+
+# === PID ===
+sentinel.pid
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# === OS ===
+Thumbs.db
+.DS_Store

@@ -1,0 +1,39 @@
+# SENTINEL V1.5 — pinned dependencies
+# Установка: pip install -r requirements.txt
+
+# === Exchange ===
+python-binance==1.0.21
+websockets>=12.0,<14.0
+
+# === Web ===
+fastapi>=0.115.0,<1.0
+uvicorn[standard]>=0.32.0,<1.0
+
+# === Telegram ===
+python-telegram-bot>=21.9,<22.0
+
+# === Data & Indicators ===
+pandas>=2.2.0,<3.0
+pandas-ta>=0.3.14b1,<0.4
+
+# === Config & Validation ===
+pydantic>=2.10.0,<3.0
+pydantic-settings>=2.7.0,<3.0
+
+# === Logging ===
+loguru>=0.7.3,<1.0
+
+# === HTTP ===
+aiohttp>=3.11.0,<4.0
+httpx>=0.28.0,<1.0
+
+# === ML (Trade Analyzer Level 3, опционально) ===
+scikit-learn>=1.6.0,<2.0
+joblib>=1.4.0,<2.0
+
+# === Utils ===
+python-dotenv>=1.0.0,<2.0
+
+# === Testing ===
+pytest>=8.3.0,<9.0
+pytest-asyncio>=0.24.0,<1.0

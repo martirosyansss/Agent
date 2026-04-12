@@ -1,0 +1,292 @@
+"""
+Backtest Engine — тестирование стратегий на исторических данных.
+
+Прогоняет стратегию по историческим свечам, симулирует исполнение,
+считает PnL и метрики. Применяет Safety Discount 0.7.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+from dataclasses import dataclass, field
+from typing import Optional
+
+from core.models import Candle, Direction, FeatureVector, Signal
+from features.feature_builder import FeatureBuilder
+from strategy.base_strategy import BaseStrategy
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BacktestConfig:
+    """Конфигурация бэктеста."""
+    initial_balance: float = 500.0
+    commission_pct: float = 0.1
+    slippage_pct: float = 0.05
+    safety_discount: float = 0.7
+    position_size_pct: float = 20.0  # % от баланса на сделку
+
+
+@dataclass
+class BacktestTrade:
+    """Одна сделка в бэктесте."""
+    symbol: str
+    entry_time: int
+    exit_time: int
+    entry_price: float
+    exit_price: float
+    quantity: float
+    pnl: float
+    pnl_pct: float
+    commission: float
+    reason: str
+
+
+@dataclass
+class BacktestResult:
+    """Результат бэктеста."""
+    strategy_name: str
+    symbol: str
+    period_start: int
+    period_end: int
+    initial_balance: float
+    final_balance: float
+    total_pnl: float
+    total_pnl_pct: float
+    total_trades: int
+    wins: int
+    losses: int
+    win_rate: float
+    max_drawdown_pct: float
+    sharpe_ratio: float
+    profit_factor: float
+    avg_win: float
+    avg_loss: float
+    safety_discount: float
+    expected_real_pnl: float
+    trades: list[BacktestTrade] = field(default_factory=list)
+
+
+class BacktestEngine:
+    """Движок бэктестинга SENTINEL."""
+
+    def __init__(self, config: Optional[BacktestConfig] = None) -> None:
+        self._config = config or BacktestConfig()
+        self._feature_builder = FeatureBuilder()
+
+    def run(
+        self,
+        strategy: BaseStrategy,
+        candles_1h: list[Candle],
+        candles_4h: list[Candle],
+        symbol: str = "BTCUSDT",
+    ) -> BacktestResult:
+        """Прогнать стратегию по историческим свечам.
+
+        Args:
+            strategy: Экземпляр стратегии.
+            candles_1h: 1h свечи (отсортированы по времени).
+            candles_4h: 4h свечи.
+            symbol: Торговый символ.
+
+        Returns:
+            BacktestResult с полными метриками.
+        """
+        cfg = self._config
+        balance = cfg.initial_balance
+        peak_balance = balance
+        max_drawdown = 0.0
+        trades: list[BacktestTrade] = []
+        daily_returns: list[float] = []
+
+        # Состояние позиции
+        in_position = False
+        entry_price = 0.0
+        entry_time = 0
+        quantity = 0.0
+        stop_loss = 0.0
+        take_profit = 0.0
+
+        # Скользящее окно: нужно минимум 55 свечей для features
+        min_history = 55
+
+        for i in range(min_history, len(candles_1h)):
+            candle = candles_1h[i]
+            price = candle.close
+
+            # Собрать features из окна
+            window_1h = candles_1h[max(0, i - min_history):i + 1]
+
+            # Найти 4h свечи до текущего времени
+            window_4h = [c for c in candles_4h if c.timestamp <= candle.timestamp]
+            if len(window_4h) > min_history:
+                window_4h = window_4h[-min_history:]
+
+            features = self._feature_builder.build(symbol, window_1h, window_4h)
+            if features is None:
+                continue
+
+            # Генерация сигнала
+            signal = strategy.generate_signal(
+                features,
+                has_open_position=in_position,
+                entry_price=entry_price if in_position else None,
+            )
+
+            # Проверить SL/TP для открытой позиции
+            if in_position:
+                if stop_loss > 0 and price <= stop_loss:
+                    # Stop-loss triggered
+                    exit_price = stop_loss * (1 - cfg.slippage_pct / 100)
+                    comm = quantity * exit_price * cfg.commission_pct / 100
+                    pnl = (exit_price - entry_price) * quantity - comm
+                    balance += pnl
+                    trades.append(BacktestTrade(
+                        symbol=symbol, entry_time=entry_time, exit_time=candle.timestamp,
+                        entry_price=entry_price, exit_price=exit_price,
+                        quantity=quantity, pnl=pnl,
+                        pnl_pct=(exit_price - entry_price) / entry_price * 100,
+                        commission=comm, reason="Stop-loss",
+                    ))
+                    daily_returns.append(pnl / (balance - pnl) * 100 if balance != pnl else 0)
+                    in_position = False
+                    continue
+
+                if take_profit > 0 and price >= take_profit:
+                    exit_price = take_profit * (1 - cfg.slippage_pct / 100)
+                    comm = quantity * exit_price * cfg.commission_pct / 100
+                    pnl = (exit_price - entry_price) * quantity - comm
+                    balance += pnl
+                    trades.append(BacktestTrade(
+                        symbol=symbol, entry_time=entry_time, exit_time=candle.timestamp,
+                        entry_price=entry_price, exit_price=exit_price,
+                        quantity=quantity, pnl=pnl,
+                        pnl_pct=(exit_price - entry_price) / entry_price * 100,
+                        commission=comm, reason="Take-profit",
+                    ))
+                    daily_returns.append(pnl / (balance - pnl) * 100 if balance != pnl else 0)
+                    in_position = False
+                    continue
+
+            if signal is None:
+                continue
+
+            # BUY
+            if signal.direction == Direction.BUY and not in_position:
+                entry_price = price * (1 + cfg.slippage_pct / 100)
+                position_value = balance * cfg.position_size_pct / 100
+                quantity = position_value / entry_price
+                comm = quantity * entry_price * cfg.commission_pct / 100
+                balance -= comm  # Комиссия при входе
+                entry_time = candle.timestamp
+                stop_loss = signal.stop_loss_price
+                take_profit = signal.take_profit_price
+                in_position = True
+
+            # SELL
+            elif signal.direction == Direction.SELL and in_position:
+                exit_price = price * (1 - cfg.slippage_pct / 100)
+                comm = quantity * exit_price * cfg.commission_pct / 100
+                pnl = (exit_price - entry_price) * quantity - comm
+                balance += pnl
+                trades.append(BacktestTrade(
+                    symbol=symbol, entry_time=entry_time, exit_time=candle.timestamp,
+                    entry_price=entry_price, exit_price=exit_price,
+                    quantity=quantity, pnl=pnl,
+                    pnl_pct=(exit_price - entry_price) / entry_price * 100,
+                    commission=comm, reason=signal.reason,
+                ))
+                daily_returns.append(pnl / (balance - pnl) * 100 if balance != pnl else 0)
+                in_position = False
+
+            # Обновить drawdown
+            if balance > peak_balance:
+                peak_balance = balance
+            dd = (peak_balance - balance) / peak_balance * 100 if peak_balance > 0 else 0
+            if dd > max_drawdown:
+                max_drawdown = dd
+
+        # Расчёт метрик
+        wins = [t for t in trades if t.pnl > 0]
+        losses_list = [t for t in trades if t.pnl <= 0]
+        total_trades = len(trades)
+        win_count = len(wins)
+        loss_count = len(losses_list)
+        win_rate = (win_count / total_trades * 100) if total_trades > 0 else 0
+
+        total_pnl = balance - cfg.initial_balance
+        total_pnl_pct = total_pnl / cfg.initial_balance * 100
+
+        avg_win = sum(t.pnl for t in wins) / win_count if wins else 0
+        avg_loss = sum(t.pnl for t in losses_list) / loss_count if losses_list else 0
+
+        gross_profit = sum(t.pnl for t in wins)
+        gross_loss = abs(sum(t.pnl for t in losses_list))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+
+        # Sharpe Ratio
+        if daily_returns and len(daily_returns) > 1:
+            mean_return = sum(daily_returns) / len(daily_returns)
+            std_return = math.sqrt(sum((r - mean_return) ** 2 for r in daily_returns) / (len(daily_returns) - 1))
+            sharpe = (mean_return / std_return * math.sqrt(252)) if std_return > 0 else 0.0
+        else:
+            sharpe = 0.0
+
+        expected_real = total_pnl * cfg.safety_discount
+
+        period_start = candles_1h[0].timestamp if candles_1h else 0
+        period_end = candles_1h[-1].timestamp if candles_1h else 0
+
+        return BacktestResult(
+            strategy_name=strategy.__class__.__name__,
+            symbol=symbol,
+            period_start=period_start,
+            period_end=period_end,
+            initial_balance=cfg.initial_balance,
+            final_balance=balance,
+            total_pnl=total_pnl,
+            total_pnl_pct=total_pnl_pct,
+            total_trades=total_trades,
+            wins=win_count,
+            losses=loss_count,
+            win_rate=win_rate,
+            max_drawdown_pct=max_drawdown,
+            sharpe_ratio=sharpe,
+            profit_factor=profit_factor,
+            avg_win=avg_win,
+            avg_loss=avg_loss,
+            safety_discount=cfg.safety_discount,
+            expected_real_pnl=expected_real,
+            trades=trades,
+        )
+
+    def format_report(self, result: BacktestResult) -> str:
+        """Форматировать текстовый отчёт."""
+        pf = f"{result.profit_factor:.2f}" if result.profit_factor != float("inf") else "∞"
+        return (
+            f"{'═' * 45}\n"
+            f"       BACKTEST REPORT\n"
+            f"{'═' * 45}\n"
+            f" Стратегия:    {result.strategy_name}\n"
+            f" Символ:       {result.symbol}\n"
+            f"{'─' * 45}\n"
+            f" Начальный баланс:    ${result.initial_balance:.2f}\n"
+            f" Конечный баланс:     ${result.final_balance:.2f}\n"
+            f" Общий PnL:           ${result.total_pnl:.2f} ({result.total_pnl_pct:+.1f}%)\n"
+            f"{'─' * 45}\n"
+            f" Всего сделок:        {result.total_trades}\n"
+            f" Прибыльных:          {result.wins} ({result.win_rate:.1f}%)\n"
+            f" Убыточных:           {result.losses}\n"
+            f"{'─' * 45}\n"
+            f" Макс просадка:       {result.max_drawdown_pct:.1f}%\n"
+            f" Sharpe Ratio:        {result.sharpe_ratio:.2f}\n"
+            f" Profit Factor:       {pf}\n"
+            f" Средний выигрыш:     ${result.avg_win:.2f}\n"
+            f" Средний проигрыш:    ${result.avg_loss:.2f}\n"
+            f"{'─' * 45}\n"
+            f" ⚠️  Коэф. безопасности: {result.safety_discount}\n"
+            f" Ожидаемый реальный PnL: ~${result.expected_real_pnl:.2f}\n"
+            f"{'═' * 45}"
+        )
