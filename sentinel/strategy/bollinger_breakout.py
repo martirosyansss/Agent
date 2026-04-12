@@ -1,0 +1,142 @@
+"""
+Стратегия V4: Bollinger Band Breakout.
+
+Логика:
+  BUY:  close > upper BB + volume > 1.5× avg + squeeze предшествовал + RSI < 80 + ADX > 20
+  SELL: close < upper BB (ослабление) ИЛИ trailing stop ИЛИ SL/TP ИЛИ RSI > 85
+
+Confidence: base=0.60 + vol>2x(+0.10) + squeeze(+0.10) + ADX>30(+0.05) + EMA9>EMA21(+0.05)
+Режим рынка: trending_up, volatile
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+from core.models import Direction, FeatureVector, Signal
+from strategy.base_strategy import BaseStrategy
+
+
+@dataclass
+class BBBreakoutConfig:
+    bb_period: int = 20
+    bb_std_dev: float = 2.0
+    volume_confirm_mult: float = 1.5
+    squeeze_threshold: float = 0.05
+    stop_loss_pct: float = 3.0
+    take_profit_pct: float = 6.0
+    trailing_stop_pct: float = 2.0
+    trailing_activate_pct: float = 3.0
+    min_confidence: float = 0.70
+    max_position_pct: float = 15.0
+
+
+class BollingerBreakout(BaseStrategy):
+    """Стратегия V4: Bollinger Band Breakout."""
+
+    NAME = "bollinger_breakout"
+
+    def __init__(self, config: BBBreakoutConfig | None = None) -> None:
+        self._cfg = config or BBBreakoutConfig()
+        self._max_price: dict[str, float] = {}
+
+    def generate_signal(
+        self,
+        features: FeatureVector,
+        has_open_position: bool = False,
+        entry_price: float | None = None,
+    ) -> Optional[Signal]:
+        cfg = self._cfg
+        sym = features.symbol
+        now_ms = int(time.time() * 1000)
+
+        # ── SELL ──
+        if has_open_position and entry_price is not None:
+            pnl_pct = (features.close - entry_price) / entry_price * 100
+
+            # Update max price for trailing stop
+            self._max_price[sym] = max(self._max_price.get(sym, entry_price), features.close)
+
+            # Take profit
+            if pnl_pct >= cfg.take_profit_pct:
+                self._max_price.pop(sym, None)
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=0.90, strategy_name=self.NAME,
+                    reason=f"BB TP: +{pnl_pct:.1f}% >= {cfg.take_profit_pct}%",
+                )
+            # Stop loss
+            if pnl_pct <= -cfg.stop_loss_pct:
+                self._max_price.pop(sym, None)
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=0.95, strategy_name=self.NAME,
+                    reason=f"BB SL: {pnl_pct:.1f}% <= -{cfg.stop_loss_pct}%",
+                )
+            # Trailing stop (activate after +3%, trail at 2%)
+            if pnl_pct >= cfg.trailing_activate_pct:
+                max_p = self._max_price.get(sym, features.close)
+                drawdown_from_max = (max_p - features.close) / max_p * 100
+                if drawdown_from_max >= cfg.trailing_stop_pct:
+                    self._max_price.pop(sym, None)
+                    return Signal(
+                        timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                        confidence=0.85, strategy_name=self.NAME,
+                        reason=f"BB trailing stop: {drawdown_from_max:.1f}% from max",
+                    )
+            # Weakness: price back below upper BB
+            if features.close < features.bb_upper and pnl_pct > 0:
+                if features.rsi_14 > 85:
+                    self._max_price.pop(sym, None)
+                    return Signal(
+                        timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                        confidence=0.75, strategy_name=self.NAME,
+                        reason=f"BB weakness: close<upperBB + RSI={features.rsi_14:.0f}>85",
+                    )
+            return None
+
+        # ── BUY ──
+        if has_open_position:
+            return None
+
+        # Breakout above upper BB
+        if features.bb_upper <= 0 or features.close <= features.bb_upper:
+            return None
+        # Volume confirmation
+        if features.volume_ratio < cfg.volume_confirm_mult:
+            return None
+        # RSI not too hot
+        if features.rsi_14 >= 80:
+            return None
+        # ADX confirms trend
+        if features.adx < 20:
+            return None
+        # Squeeze preceded (low bandwidth)
+        is_squeeze = features.bb_bandwidth < cfg.squeeze_threshold
+
+        # Confidence
+        confidence = 0.60
+        if features.volume_ratio > 2.0:
+            confidence += 0.10
+        if is_squeeze:
+            confidence += 0.10
+        if features.adx > 30:
+            confidence += 0.05
+        if features.ema_9 > features.ema_21:
+            confidence += 0.05
+        confidence = min(confidence, 0.95)
+
+        if confidence < cfg.min_confidence:
+            return None
+
+        sl = features.close * (1 - cfg.stop_loss_pct / 100)
+        tp = features.close * (1 + cfg.take_profit_pct / 100)
+
+        return Signal(
+            timestamp=now_ms, symbol=sym, direction=Direction.BUY,
+            confidence=confidence, strategy_name=self.NAME,
+            reason=f"BB Breakout: close={features.close:.2f}>upperBB={features.bb_upper:.2f}, ADX={features.adx:.0f}, squeeze={is_squeeze}",
+            stop_loss_price=sl, take_profit_price=tp,
+        )

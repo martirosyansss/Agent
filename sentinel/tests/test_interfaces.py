@@ -262,6 +262,19 @@ class TestTelegramBotAuthorization:
 
 
 # ──────────────────────────────────────────────
+# Dashboard helpers
+# ──────────────────────────────────────────────
+
+class TestDashboardHelpers:
+    def test_format_uptime(self):
+        from dashboard.app import _format_uptime
+        result = _format_uptime()
+        # Should return a string containing 'm' and 's'
+        assert isinstance(result, str)
+        assert "m" in result or "h" in result or "d" in result
+
+
+# ──────────────────────────────────────────────
 # Dashboard API tests
 # ──────────────────────────────────────────────
 
@@ -285,9 +298,11 @@ class TestDashboardAPI:
             "open_positions": 1,
             "trades_today": 3,
             "balance": 505.0,
+            "win_rate": 62.5,
             "positions": [],
             "recent_trades": [],
             "pnl_history": [],
+            "backtest_results": {"sharpe": 1.2, "win_rate": 55.0},
         })
 
         app = dashboard._create_app()
@@ -301,6 +316,8 @@ class TestDashboardAPI:
         data = r.json()
         assert data["status"] == "ok"
         assert "version" in data
+        assert "uptime" in data
+        assert "timestamp" in data
 
     def test_status(self, client):
         r = client.get("/api/status")
@@ -309,6 +326,8 @@ class TestDashboardAPI:
         assert data["mode"] == "paper"
         assert data["risk_state"] == "NORMAL"
         assert data["pnl_today"] == 5.0
+        assert data["balance"] == 505.0
+        assert data["win_rate"] == 62.5
 
     def test_positions_empty(self, client):
         r = client.get("/api/positions")
@@ -324,8 +343,23 @@ class TestDashboardAPI:
         r = client.get("/api/pnl-history")
         assert r.status_code == 200
 
+    def test_backtest_results(self, client):
+        r = client.get("/api/backtest-results")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["sharpe"] == 1.2
+        assert data["win_rate"] == 55.0
+
     def test_control_stop_no_handler(self, client):
         r = client.post("/api/control/stop")
+        assert r.status_code == 503
+
+    def test_control_resume_no_handler(self, client):
+        r = client.post("/api/control/resume")
+        assert r.status_code == 503
+
+    def test_control_kill_no_handler(self, client):
+        r = client.post("/api/control/kill")
         assert r.status_code == 503
 
     def test_dashboard_html(self, client):
@@ -333,3 +367,74 @@ class TestDashboardAPI:
         assert r.status_code == 200
         assert "SENTINEL" in r.text
         assert "Chart" in r.text
+
+    def test_dashboard_html_no_emojis(self, client):
+        """UI/UX: no emojis used as icons."""
+        r = client.get("/")
+        html = r.text
+        for emoji in ["🛡️", "🟢", "🔴", "☠️", "📈", "📉", "🎨", "🚀"]:
+            assert emoji not in html, f"Emoji {emoji} found in dashboard HTML"
+
+    def test_dashboard_html_svg_icons(self, client):
+        """UI/UX: SVG icons used instead of emojis."""
+        html = client.get("/").text
+        assert "<svg" in html
+        assert "viewBox" in html
+
+    def test_dashboard_html_cursor_pointer(self, client):
+        """UI/UX: cursor-pointer on clickable elements."""
+        html = client.get("/").text
+        assert "cursor: pointer" in html or "cursor:pointer" in html
+
+    def test_dashboard_html_focus_visible(self, client):
+        """UI/UX: focus-visible for keyboard navigation."""
+        html = client.get("/").text
+        assert "focus-visible" in html
+
+    def test_dashboard_html_reduced_motion(self, client):
+        """UI/UX: prefers-reduced-motion support."""
+        html = client.get("/").text
+        assert "prefers-reduced-motion" in html
+
+    def test_dashboard_html_aria_labels(self, client):
+        """UI/UX: aria labels for accessibility."""
+        html = client.get("/").text
+        assert "aria-label" in html
+
+    def test_dashboard_html_inter_font(self, client):
+        """UI/UX: Inter font for professional fintech look."""
+        html = client.get("/").text
+        assert "Inter" in html
+
+    def test_dashboard_html_responsive(self, client):
+        """UI/UX: responsive breakpoints."""
+        html = client.get("/").text
+        assert "max-width: 768px" in html or "max-width:768px" in html
+
+    def test_dashboard_html_websocket(self, client):
+        """Dashboard uses WebSocket for real-time updates."""
+        html = client.get("/").text
+        assert "WebSocket" in html
+        assert "/ws" in html
+
+    def test_dashboard_html_risk_panel(self, client):
+        """Dashboard shows risk overview panel."""
+        html = client.get("/").text
+        assert "Risk Overview" in html
+        assert "risk-grid" in html
+
+    def test_dashboard_html_balance_card(self, client):
+        """Dashboard shows balance card."""
+        html = client.get("/").text
+        assert 'id="balance"' in html
+
+    def test_dashboard_html_uptime(self, client):
+        """Dashboard shows uptime indicator."""
+        html = client.get("/").text
+        assert 'id="uptime-label"' in html
+
+    def test_dashboard_html_connection_indicator(self, client):
+        """Dashboard shows WebSocket connection status."""
+        html = client.get("/").text
+        assert "conn-indicator" in html
+        assert "conn-dot" in html
