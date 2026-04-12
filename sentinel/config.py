@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
@@ -161,7 +163,10 @@ class Settings(BaseSettings):
     resume_cooldown_min: int = 30
     live_first_day_max_order: float = 20.0
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": str(Path(__file__).resolve().parent / ".env"),
+        "env_file_encoding": "utf-8",
+    }
 
     # ------------------------------------------------------------------
     # Валидация: настраиваемые лимиты ≤ absolute limits
