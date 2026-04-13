@@ -1384,6 +1384,73 @@
             font-size: 12px;
         }
 
+        .news-reasoning {
+            font-size: 0.72rem;
+            color: var(--text-secondary);
+            margin-bottom: 3px;
+            font-style: italic;
+            opacity: 0.85;
+        }
+
+        .news-urgency-badge {
+            display: inline-flex;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 0.58rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .news-urgency-badge.critical { background: #dc262615; color: #ef4444; border: 1px solid #ef444440; }
+        .news-urgency-badge.high { background: #f9731615; color: #f97316; border: 1px solid #f9731640; }
+        .news-urgency-badge.medium { background: #eab30815; color: #eab308; border: 1px solid #eab30840; }
+        .news-urgency-badge.low { background: var(--accent-dim); color: var(--text-muted); }
+
+        .news-category-tag {
+            display: inline-flex;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 0.57rem;
+            font-weight: 600;
+            background: var(--bg-card);
+            color: var(--text-muted);
+            border: 1px solid var(--border);
+        }
+
+        .news-confidence-bar {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            font-size: 0.6rem;
+            color: var(--text-muted);
+        }
+        .news-confidence-fill {
+            width: 28px;
+            height: 4px;
+            border-radius: 2px;
+            background: var(--border);
+            overflow: hidden;
+        }
+        .news-confidence-fill-inner {
+            height: 100%;
+            border-radius: 2px;
+            transition: width 0.3s;
+        }
+
+        .news-signal-summary {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            margin-bottom: 8px;
+            font-size: 0.72rem;
+        }
+        .news-signal-label { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 0.62rem; letter-spacing: 0.05em; }
+        .news-signal-val { font-weight: 800; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+
         @media (max-width: 768px) {
             .news-sentiment-bar {
                 flex-direction: column;
@@ -2339,7 +2406,27 @@
                         <span class="news-stat-val" style="color:var(--amber);" id="news-avg-impact">0%</span>
                         <span class="news-stat-label">Avg Impact</span>
                     </div>
+                    <div class="news-stat">
+                        <span class="news-stat-val" id="news-consensus-val">—</span>
+                        <span class="news-stat-label">Consensus</span>
+                    </div>
+                    <div class="news-stat">
+                        <span class="news-stat-val" style="color:var(--red);" id="news-critical-count">0</span>
+                        <span class="news-stat-label">Critical</span>
+                    </div>
                 </div>
+            </div>
+
+            <!-- News signal -->
+            <div class="news-signal-summary" id="news-signal-bar" style="display:none;">
+                <span class="news-signal-label">Signal</span>
+                <span class="news-signal-val" id="news-signal-score">0.000</span>
+                <span class="news-signal-label">Strength</span>
+                <span class="news-signal-val" id="news-signal-strength">0%</span>
+                <span class="news-signal-label">Bias</span>
+                <span class="news-signal-val" id="news-signal-bias">—</span>
+                <span class="news-signal-label">Category</span>
+                <span class="news-signal-val" id="news-signal-category">—</span>
             </div>
 
             <!-- News list -->
@@ -3457,6 +3544,7 @@
             var sentiment = data.sentiment || {};
             var impact = data.impact || {};
             var news = data.news || [];
+            var signal = data.signal || {};
 
             // Fear & Greed
             var fgi = sentiment.fear_greed_index || 50;
@@ -3470,10 +3558,19 @@
             document.getElementById('news-neutral-count').textContent = sentiment.neutral_count || 0;
 
             // Avg impact
-            var avgImpact = impact.avg_impact_pct || 0;
+            var avgImpact = impact.avg_effective_impact || impact.avg_impact_pct || 0;
             var avgEl = document.getElementById('news-avg-impact');
-            avgEl.textContent = (avgImpact >= 0 ? '+' : '') + avgImpact.toFixed(1) + '%';
-            avgEl.style.color = avgImpact > 0.2 ? 'var(--green)' : avgImpact < -0.2 ? 'var(--red)' : 'var(--amber)';
+            avgEl.textContent = (avgImpact >= 0 ? '+' : '') + avgImpact.toFixed(2) + '%';
+            avgEl.style.color = avgImpact > 0.15 ? 'var(--green)' : avgImpact < -0.15 ? 'var(--red)' : 'var(--amber)';
+
+            // Consensus
+            var consensusEl = document.getElementById('news-consensus-val');
+            var conStr = (impact.consensus_strength || 0).toFixed(0) + '%';
+            consensusEl.textContent = conStr;
+            consensusEl.style.color = (impact.consensus_strength || 0) > 60 ? 'var(--green)' : 'var(--text-muted)';
+
+            // Critical count
+            document.getElementById('news-critical-count').textContent = impact.critical_count || 0;
 
             // Direction badge
             var dir = impact.overall_direction || 'neutral';
@@ -3481,6 +3578,27 @@
             badge.className = 'news-direction-badge ' + dir;
             var dirLabels = { bullish: '↑ BULLISH', bearish: '↓ BEARISH', neutral: '→ NEUTRAL' };
             badge.textContent = dirLabels[dir] || '→ NEUTRAL';
+
+            // News signal bar
+            var sigBar = document.getElementById('news-signal-bar');
+            if (signal.composite_score !== undefined) {
+                sigBar.style.display = 'flex';
+                var sc = signal.composite_score || 0;
+                var scoreEl = document.getElementById('news-signal-score');
+                scoreEl.textContent = (sc >= 0 ? '+' : '') + sc.toFixed(3);
+                scoreEl.style.color = sc > 0.1 ? 'var(--green)' : sc < -0.1 ? 'var(--red)' : 'var(--text-muted)';
+                var strEl = document.getElementById('news-signal-strength');
+                strEl.textContent = ((signal.signal_strength || 0) * 100).toFixed(0) + '%';
+                var biasEl = document.getElementById('news-signal-bias');
+                biasEl.textContent = (signal.bias || 'neutral').toUpperCase();
+                biasEl.style.color = signal.bias === 'bullish' ? 'var(--green)' : signal.bias === 'bearish' ? 'var(--red)' : 'var(--text-muted)';
+                document.getElementById('news-signal-category').textContent = (signal.dominant_category || '—').toUpperCase();
+                if (signal.critical_alert) {
+                    sigBar.style.borderColor = '#ef444480';
+                } else {
+                    sigBar.style.borderColor = '';
+                }
+            }
 
             // News list
             var listEl = document.getElementById('news-list');
@@ -3490,11 +3608,11 @@
             }
 
             listEl.innerHTML = news.map(function(n) {
-                var impactPct = n.impact_pct || 0;
-                var absImpact = Math.abs(impactPct);
-                var impactClass = impactPct > 0.2 ? 'positive' : impactPct < -0.2 ? 'negative' : 'flat';
-                var arrow = impactPct > 0.2 ? '▲' : impactPct < -0.2 ? '▼' : '—';
-                var sign = impactPct >= 0 ? '+' : '';
+                var effImpact = n.effective_impact || 0;
+                var absImpact = Math.abs(effImpact);
+                var impactClass = effImpact > 0.1 ? 'positive' : effImpact < -0.1 ? 'negative' : 'flat';
+                var arrow = effImpact > 0.1 ? '▲' : effImpact < -0.1 ? '▼' : '—';
+                var sign = effImpact >= 0 ? '+' : '';
 
                 var coinsHtml = '';
                 if (n.coins_mentioned && n.coins_mentioned.length) {
@@ -3504,8 +3622,27 @@
                 }
 
                 var modeTag = n.analysis_mode === 'llm'
-                    ? '<span class="news-mode-tag llm" title="Analyzed by AI (Groq LLM)">🧠 AI</span>'
-                    : '<span class="news-mode-tag kw" title="Keyword analysis">📝</span>';
+                    ? '<span class="news-mode-tag llm" title="Analyzed by AI">🧠 AI</span>'
+                    : '<span class="news-mode-tag kw" title="Pending analysis">⏳</span>';
+
+                // Urgency badge
+                var urgHtml = '';
+                if (n.urgency && n.urgency !== 'low') {
+                    urgHtml = '<span class="news-urgency-badge ' + n.urgency + '">' + n.urgency + '</span>';
+                }
+
+                // Category tag
+                var catHtml = '';
+                if (n.category && n.category !== 'other') {
+                    catHtml = '<span class="news-category-tag">' + n.category + '</span>';
+                }
+
+                // Confidence bar
+                var conf = n.confidence || 0;
+                var confColor = conf > 0.7 ? 'var(--green)' : conf > 0.4 ? 'var(--amber)' : 'var(--red)';
+                var confHtml = n.analysis_mode === 'llm'
+                    ? '<span class="news-confidence-bar"><span class="news-confidence-fill"><span class="news-confidence-fill-inner" style="width:' + (conf*100) + '%;background:' + confColor + '"></span></span>' + (conf*100).toFixed(0) + '%</span>'
+                    : '';
 
                 var reasoningHtml = '';
                 if (n.llm_reasoning) {
@@ -3517,17 +3654,17 @@
                 return '<div class="news-item">' +
                     '<div class="news-impact-badge ' + impactClass + '">' +
                         '<span class="news-impact-arrow">' + arrow + '</span>' +
-                        '<span>' + sign + absImpact.toFixed(1) + '%</span>' +
+                        '<span>' + sign + absImpact.toFixed(2) + '%</span>' +
                     '</div>' +
                     '<div class="news-content">' +
                         '<div class="news-title">' + titleHtml + '</div>' +
                         reasoningHtml +
                         '<div class="news-meta">' +
-                            modeTag +
+                            modeTag + urgHtml + catHtml +
                             '<span class="news-source">' + escapeHtml(n.source || 'Unknown') + '</span>' +
                             '<span>·</span>' +
                             '<span>' + timeAgo(n.published_at || 0) + '</span>' +
-                            coinsHtml +
+                            confHtml + coinsHtml +
                         '</div>' +
                     '</div>' +
                 '</div>';

@@ -313,8 +313,9 @@ class Repository:
             "timestamp_open, timestamp_close, entry_price, exit_price, quantity, "
             "pnl_usd, pnl_pct, is_win, confidence, hour_of_day, day_of_week, "
             "rsi_at_entry, adx_at_entry, volume_ratio_at_entry, exit_reason, "
-            "hold_duration_hours, max_drawdown_during_trade, max_profit_during_trade, commission_usd) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "hold_duration_hours, max_drawdown_during_trade, max_profit_during_trade, "
+            "commission_usd, news_sentiment, fear_greed_index) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 st.trade_id, st.signal_id, st.symbol, st.strategy_name, st.market_regime,
                 st.timestamp_open, st.timestamp_close, st.entry_price, st.exit_price, st.quantity,
@@ -323,6 +324,7 @@ class Repository:
                 st.rsi_at_entry, st.adx_at_entry, st.volume_ratio_at_entry,
                 st.exit_reason, st.hold_duration_hours,
                 st.max_drawdown_during_trade, st.max_profit_during_trade, st.commission_usd,
+                st.news_sentiment, st.fear_greed_index,
             ),
         )
         self._db.commit()

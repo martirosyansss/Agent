@@ -313,3 +313,198 @@ def price_change_pct(closes: list[float], lookback: int = 1) -> Optional[float]:
 def momentum(closes: list[float], period: int = 10) -> Optional[float]:
     """Rate of Change за period свечей (в %)."""
     return price_change_pct(closes, period)
+
+
+# ──────────────────────────────────────────────
+# CCI — Commodity Channel Index
+# ──────────────────────────────────────────────
+
+def cci(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 20,
+) -> Optional[float]:
+    """CCI = (TP - SMA_TP) / (0.015 * MAD). Возвращает последнее значение."""
+    if len(closes) < period or len(highs) < period or len(lows) < period:
+        return None
+    tp = [(h + l + c) / 3.0 for h, l, c in zip(highs[-period:], lows[-period:], closes[-period:])]
+    sma_tp = sum(tp) / period
+    mad = sum(abs(t - sma_tp) for t in tp) / period
+    if mad == 0:
+        return 0.0
+    return safe_value((tp[-1] - sma_tp) / (0.015 * mad))
+
+
+# ──────────────────────────────────────────────
+# ROC — Rate of Change (отдельный от momentum)
+# ──────────────────────────────────────────────
+
+def roc(closes: list[float], period: int = 12) -> Optional[float]:
+    """ROC за period свечей (в %)."""
+    return price_change_pct(closes, period)
+
+
+# ──────────────────────────────────────────────
+# VROC — Volume Rate of Change
+# ──────────────────────────────────────────────
+
+def vroc(volumes: list[float], period: int = 12) -> Optional[float]:
+    """Изменение объёма за period свечей (в %)."""
+    if len(volumes) < period + 1:
+        return None
+    old_vol = volumes[-(period + 1)]
+    if old_vol == 0:
+        return None
+    return safe_value((volumes[-1] - old_vol) / old_vol * 100.0)
+
+
+# ──────────────────────────────────────────────
+# CMF — Chaikin Money Flow
+# ──────────────────────────────────────────────
+
+def cmf(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    volumes: list[float],
+    period: int = 20,
+) -> Optional[float]:
+    """CMF = Σ(MFV, period) / Σ(Volume, period). Range: -1 to +1."""
+    n = min(len(highs), len(lows), len(closes), len(volumes))
+    if n < period:
+        return None
+    mfv_sum = 0.0
+    vol_sum = 0.0
+    for i in range(-period, 0):
+        hl = highs[i] - lows[i]
+        if hl == 0:
+            mf_mult = 0.0
+        else:
+            mf_mult = ((closes[i] - lows[i]) - (highs[i] - closes[i])) / hl
+        mfv_sum += mf_mult * volumes[i]
+        vol_sum += volumes[i]
+    if vol_sum == 0:
+        return 0.0
+    return safe_value(mfv_sum / vol_sum)
+
+
+# ──────────────────────────────────────────────
+# Bollinger %B
+# ──────────────────────────────────────────────
+
+def bollinger_pct_b(closes: list[float], period: int = 20, std_dev: float = 2.0) -> Optional[float]:
+    """Bollinger %B = (close - lower) / (upper - lower). Range: ~0 to ~1."""
+    bb = bollinger_bands(closes, period, std_dev)
+    if bb is None:
+        return None
+    upper, _middle, lower, _bw = bb
+    band_width = upper - lower
+    if band_width == 0:
+        return 0.5
+    return safe_value((closes[-1] - lower) / band_width)
+
+
+# ──────────────────────────────────────────────
+# VWAP — Volume Weighted Average Price (simplified intraday)
+# ──────────────────────────────────────────────
+
+def vwap(closes: list[float], volumes: list[float], period: int = 20) -> Optional[float]:
+    """Simplified VWAP за последних period свечей."""
+    n = min(len(closes), len(volumes))
+    if n < period:
+        return None
+    p_slice = closes[-period:]
+    v_slice = volumes[-period:]
+    total_vol = sum(v_slice)
+    if total_vol == 0:
+        return None
+    return safe_value(sum(p * v for p, v in zip(p_slice, v_slice)) / total_vol)
+
+
+# ──────────────────────────────────────────────
+# Historical Volatility
+# ──────────────────────────────────────────────
+
+def historical_volatility(closes: list[float], period: int = 20) -> Optional[float]:
+    """Historical volatility (std of returns) за period свечей."""
+    if len(closes) < period + 1:
+        return None
+    returns = [(closes[i] - closes[i - 1]) / closes[i - 1]
+               for i in range(-period, 0) if closes[i - 1] != 0]
+    if len(returns) < 2:
+        return None
+    mean_r = sum(returns) / len(returns)
+    variance = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
+    return safe_value(math.sqrt(variance))
+
+
+# ──────────────────────────────────────────────
+# DMI — +DI / -DI spread
+# ──────────────────────────────────────────────
+
+def dmi_spread(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 14,
+) -> Optional[float]:
+    """+DI minus -DI. Positive = bullish, negative = bearish."""
+    n = len(closes)
+    if n < period * 2 + 1 or len(highs) != n or len(lows) != n:
+        return None
+
+    plus_dm = []
+    minus_dm = []
+    tr_list = []
+
+    for i in range(1, n):
+        h_diff = highs[i] - highs[i - 1]
+        l_diff = lows[i - 1] - lows[i]
+        plus_dm.append(h_diff if h_diff > l_diff and h_diff > 0 else 0.0)
+        minus_dm.append(l_diff if l_diff > h_diff and l_diff > 0 else 0.0)
+        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+        tr_list.append(tr)
+
+    def _wilder(data: list[float], p: int) -> list[float]:
+        s = [sum(data[:p])]
+        for v in data[p:]:
+            s.append(s[-1] - s[-1] / p + v)
+        return s
+
+    s_tr = _wilder(tr_list, period)
+    s_plus = _wilder(plus_dm, period)
+    s_minus = _wilder(minus_dm, period)
+
+    if not s_tr or s_tr[-1] == 0:
+        return 0.0
+    plus_di = 100.0 * s_plus[-1] / s_tr[-1]
+    minus_di = 100.0 * s_minus[-1] / s_tr[-1]
+    return safe_value(plus_di - minus_di)
+
+
+# ──────────────────────────────────────────────
+# Trend Alignment (multi-timeframe)
+# ──────────────────────────────────────────────
+
+def trend_alignment(ema_fast: Optional[float], ema_slow: Optional[float],
+                    close: float, ema_daily: Optional[float] = None) -> float:
+    """Score 0-1: сколько TF-трендов выровнены вверх.
+
+    1.0 = все тренды вверх, 0.0 = все вниз.
+    """
+    count = 0
+    total = 0
+    if ema_fast is not None and ema_slow is not None:
+        total += 1
+        if ema_fast > ema_slow:
+            count += 1
+    if ema_slow is not None:
+        total += 1
+        if close > ema_slow:
+            count += 1
+    if ema_daily is not None:
+        total += 1
+        if close > ema_daily:
+            count += 1
+    return count / total if total > 0 else 0.5

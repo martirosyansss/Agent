@@ -22,6 +22,7 @@ log = logger.bind(module="features")
 # Минимальное количество свечей для стабильного расчёта
 MIN_CANDLES_1H = 55   # EMA 50 + запас
 MIN_CANDLES_4H = 55
+MIN_CANDLES_1D = 55   # для daily EMA 50
 
 
 class FeatureBuilder:
@@ -98,6 +99,27 @@ class FeatureBuilder:
         pc_15 = ind.price_change_pct(closes_1h, 15)
         mom = ind.momentum(closes_1h, 10)
 
+        # ── Новые индикаторы (Phase 1) ──
+        cci_val = ind.cci(highs_1h, lows_1h, closes_1h, 20)
+        roc_val = ind.roc(closes_1h, 12)
+        vroc_val = ind.vroc(volumes_1h, 12)
+        cmf_val = ind.cmf(highs_1h, lows_1h, closes_1h, volumes_1h, 20)
+        bb_pct_b_val = ind.bollinger_pct_b(closes_4h, 20, 2.0)
+        vwap_val = ind.vwap(closes_1h, volumes_1h, 20)
+        hvol_val = ind.historical_volatility(closes_1h, 20)
+        dmi_val = ind.dmi_spread(highs_4h, lows_4h, closes_4h, 14)
+
+        # ── Daily timeframe (если есть) ──
+        ema_50_daily = None
+        rsi_14_daily = None
+        if candles_1d and len(candles_1d) >= MIN_CANDLES_1D:
+            c1d = _extract(candles_1d)
+            ema_50_daily = ind.ema(c1d["close"], 50)
+            rsi_14_daily = ind.rsi(c1d["close"], 14)
+
+        # ── Trend alignment (multi-TF) ──
+        ta_val = ind.trend_alignment(ema_9, ema_21, closes_1h[-1], ema_50_daily)
+
         # Проверка: базовые индикаторы должны быть не None
         if any(v is None for v in (ema_9, ema_21, rsi_val)):
             log.debug("Базовые индикаторы не готовы для {}", symbol)
@@ -136,6 +158,19 @@ class FeatureBuilder:
             spread=0.0,  # Обновляется отдельно через order book
             # Текущая цена
             close=closes_1h[-1],
+            # Phase 1: Enhanced indicators
+            cci=safe_value(cci_val),
+            roc=safe_value(roc_val),
+            vroc=safe_value(vroc_val),
+            cmf=safe_value(cmf_val),
+            bb_pct_b=safe_value(bb_pct_b_val) if bb_pct_b_val is not None else 0.5,
+            vwap=safe_value(vwap_val),
+            hist_volatility=safe_value(hvol_val),
+            dmi_spread=safe_value(dmi_val),
+            trend_alignment=ta_val,
+            # Daily timeframe
+            ema_50_daily=safe_value(ema_50_daily),
+            rsi_14_daily=safe_value(rsi_14_daily),
         )
         return fv
 

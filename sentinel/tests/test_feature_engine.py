@@ -253,8 +253,8 @@ class TestEMACrossoverRSI:
         result1 = strat.generate_signal(f1, has_open_position=False)
         assert result1 is None  # Первый тик — нет данных для crossover
 
-        # Второй тик: EMA9 > EMA21 (кроссовер!)
-        f2 = self._make_features(ema_9=67100.0, ema_21=67000.0, close=67100.0)
+        # Второй тик: EMA9 > EMA21 (кроссовер!) — разница должна быть > ATR*0.3
+        f2 = self._make_features(ema_9=67600.0, ema_21=67000.0, close=67100.0, atr=500.0)
         result2 = strat.generate_signal(f2, has_open_position=False)
         assert result2 is not None
         assert result2.direction == Direction.BUY

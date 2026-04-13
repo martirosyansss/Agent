@@ -124,8 +124,31 @@ class LiveExecutor(BaseExecutor):
         try:
             return await self._execute_with_protection(signal, quantity, current_price)
         except Exception as e:
-            logger.error("Live execution error: %s", e)
+            logger.error("Live execution error for %s: %s — verifying order status", signal.symbol, e)
+            # Critical: verify if order was partially or fully filled on exchange
+            orphan = await self._check_recent_order(signal.symbol, signal.direction)
+            if orphan:
+                logger.critical(
+                    "ORPHAN ORDER DETECTED: %s %s was filled on exchange despite error! "
+                    "Manual intervention required. Order: %s",
+                    signal.direction.value, signal.symbol, orphan,
+                )
             return None
+
+    async def _check_recent_order(self, symbol: str, direction: Direction) -> Optional[dict]:
+        """Check if a recent order was filled on exchange despite local error."""
+        if not self._client:
+            return None
+        try:
+            orders = self._client.get_all_orders(symbol=symbol, limit=1)
+            if orders:
+                last = orders[-1]
+                if (last.get("status") == "FILLED"
+                        and abs(time.time() * 1000 - float(last.get("time", 0))) < 30_000):
+                    return last
+        except Exception as check_err:
+            logger.error("Failed to verify order status: %s", check_err)
+        return None
 
     async def _execute_with_protection(
         self,

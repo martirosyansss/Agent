@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core.models import Direction, FeatureVector, Signal
-from strategy.base_strategy import BaseStrategy
+from strategy.base_strategy import BaseStrategy, news_confidence_adjustment
 
 
 @dataclass
@@ -50,6 +50,7 @@ class DCABot(BaseStrategy):
     NAME = "dca_bot"
 
     def __init__(self, config: DCAConfig | None = None) -> None:
+        super().__init__()
         self._cfg = config or DCAConfig()
         self._last_buy_time: dict[str, int] = {}
         self._daily_buys: dict[str, int] = {}
@@ -144,22 +145,27 @@ class DCABot(BaseStrategy):
         amount = cfg.base_amount_usd * multiplier
         qty = amount / features.close if features.close > 0 else 0
 
-        # DCA: sentiment-aware multiplier (fear = buy more, greed = buy less)
-        dca_confidence = 0.80
-        if features.news_sentiment < -0.3 or features.fear_greed_index <= 20:
-            multiplier *= 1.3  # увеличить DCA при страхе
+        # DCA: professional news-aware sizing
+        news_delta, news_reason = news_confidence_adjustment(features, direction="buy")
+        dca_confidence = 0.80 + news_delta
+
+        # Scale DCA amount based on news signal
+        if features.news_composite_score < -0.2 and features.news_actionable:
+            multiplier *= 1.3  # more DCA in fear (contrarian)
             amount = cfg.base_amount_usd * multiplier
             qty = amount / features.close if features.close > 0 else 0
-            dca_confidence = 0.85
-        elif features.news_sentiment > 0.3 or features.fear_greed_index >= 80:
-            multiplier *= 0.7  # уменьшить DCA при жадности
+        elif features.news_composite_score > 0.3 and features.news_actionable:
+            multiplier *= 0.7  # less DCA at euphoria
             amount = cfg.base_amount_usd * multiplier
             qty = amount / features.close if features.close > 0 else 0
-            dca_confidence = 0.70
+        elif features.news_critical_alert:
+            multiplier *= 0.5  # reduce position on critical news
+            amount = cfg.base_amount_usd * multiplier
+            qty = amount / features.close if features.close > 0 else 0
 
         reason = f"DCA buy: ${amount:.2f} (mult={multiplier:.1f}x)"
-        if features.news_sentiment != 0.0:
-            reason += f", sentiment={features.news_sentiment:+.2f}"
+        if news_delta != 0:
+            reason += f", {news_reason}"
 
         return Signal(
             timestamp=now_ms, symbol=sym, direction=Direction.BUY,

@@ -27,6 +27,9 @@ loguru>=0.7.3,<1.0
 aiohttp>=3.11.0,<4.0
 httpx>=0.28.0,<1.0
 
+# === RSS ===
+feedparser>=6.0.0,<7.0
+
 # === ML (Trade Analyzer Level 3, опционально) ===
 scikit-learn>=1.6.0,<2.0
 joblib>=1.4.0,<2.0

@@ -138,6 +138,27 @@ class FeatureVector:
     fear_greed_index: int = 50         # 0-100 (Fear & Greed Index)
     news_impact_pct: float = 0.0      # средний impact_pct новостей
     high_impact_news: int = 0          # количество новостей с |impact| >= 1.5%
+    # Pro news fields
+    news_composite_score: float = 0.0  # -1.0..+1.0 weighted effective_impact
+    news_signal_strength: float = 0.0  # 0.0..1.0 agreement + data depth
+    news_critical_alert: bool = False  # есть ли critical urgency
+    news_actionable: bool = False      # достаточно ли strong для торговли
+    news_dominant_category: str = ""   # macro/regulatory/adoption/technical/etc
+
+    # Phase 1: Enhanced indicators
+    cci: float = 0.0                   # Commodity Channel Index
+    roc: float = 0.0                   # Rate of Change 12-period (%)
+    vroc: float = 0.0                  # Volume Rate of Change (%)
+    cmf: float = 0.0                   # Chaikin Money Flow (-1..+1)
+    bb_pct_b: float = 0.5             # Bollinger %B (0..1)
+    vwap: float = 0.0                  # Volume Weighted Average Price
+    hist_volatility: float = 0.0       # Historical Volatility (std of returns)
+    dmi_spread: float = 0.0            # +DI minus -DI
+    trend_alignment: float = 0.5       # Multi-TF trend alignment (0..1)
+
+    # Daily timeframe
+    ema_50_daily: float = 0.0          # EMA 50 на дневном TF
+    rsi_14_daily: float = 0.0          # RSI 14 на дневном TF
 
 
 # ──────────────────────────────────────────────
@@ -244,6 +265,13 @@ class StrategyTrade:
     max_drawdown_during_trade: float = 0.0
     max_profit_during_trade: float = 0.0
     commission_usd: float = 0.0
+    news_sentiment: float = 0.0       # -1.0 .. +1.0 at entry
+    fear_greed_index: int = 50         # 0-100 at entry
+    ema_9_at_entry: float = 0.0
+    ema_21_at_entry: float = 0.0
+    bb_bandwidth_at_entry: float = 0.0
+    macd_histogram_at_entry: float = 0.0
+    atr_at_entry: float = 0.0
 
 
 # ──────────────────────────────────────────────

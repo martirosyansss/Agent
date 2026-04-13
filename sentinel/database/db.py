@@ -178,6 +178,26 @@ CREATE INDEX IF NOT EXISTS idx_signal_exec_ts
     ON signal_executions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_signal_exec_strategy
     ON signal_executions(strategy_name, outcome);
+
+-- news_cache — кэш LLM-анализа новостей (чтобы не переанализировать)
+CREATE TABLE IF NOT EXISTS news_cache (
+    url TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    source TEXT NOT NULL,
+    published_at INTEGER NOT NULL,
+    sentiment_score REAL DEFAULT 0,
+    impact_pct REAL DEFAULT 0,
+    direction TEXT DEFAULT 'neutral',
+    coins_mentioned TEXT DEFAULT '[]',
+    llm_reasoning TEXT DEFAULT '',
+    urgency TEXT DEFAULT 'low',
+    confidence REAL DEFAULT 0.5,
+    category TEXT DEFAULT 'other',
+    impact_timeframe TEXT DEFAULT 'hours',
+    cached_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_news_cache_published
+    ON news_cache(published_at);
 """
 
 
@@ -236,6 +256,21 @@ class Database:
         """Создать таблицы и индексы если не существуют."""
         self.conn.executescript(SCHEMA_SQL)
         self.conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Добавить новые колонки (safe: ALTER TABLE ADD IF NOT EXISTS)."""
+        migrations = [
+            ("strategy_trades", "news_sentiment", "REAL DEFAULT 0"),
+            ("strategy_trades", "fear_greed_index", "INTEGER DEFAULT 50"),
+        ]
+        for table, column, col_type in migrations:
+            try:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                self.conn.commit()
+                log.info("Migration: added {}.{}", table, column)
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     def integrity_check(self) -> bool:
         """PRAGMA integrity_check — вернуть True если БД целая."""

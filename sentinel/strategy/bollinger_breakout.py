@@ -45,6 +45,7 @@ class BollingerBreakout(BaseStrategy):
     NAME = "bollinger_breakout"
 
     def __init__(self, config: BBBreakoutConfig | None = None) -> None:
+        super().__init__()
         self._cfg = config or BBBreakoutConfig()
         self._max_price: dict[str, float] = {}
 
@@ -121,13 +122,18 @@ class BollingerBreakout(BaseStrategy):
         if features.volume_ratio < cfg.volume_confirm_mult:
             return None
         # RSI not too hot
-        if features.rsi_14 >= 80:
+        if features.rsi_14 >= 70:
             return None
         # ADX confirms trend
         if features.adx < 20:
             return None
-        # Squeeze preceded (low bandwidth)
-        is_squeeze = features.bb_bandwidth < cfg.squeeze_threshold
+        # Squeeze preceded — use bb_pct_b (relative) instead of fixed threshold
+        # bb_pct_b near 1.0 means at upper BB; low bb_bandwidth = squeeze
+        # Use hist_volatility as adaptive reference if available
+        if hasattr(features, 'hist_volatility') and features.hist_volatility > 0:
+            is_squeeze = features.bb_bandwidth < features.hist_volatility * 0.5
+        else:
+            is_squeeze = features.bb_bandwidth < cfg.squeeze_threshold
 
         # Confidence
         confidence = 0.60

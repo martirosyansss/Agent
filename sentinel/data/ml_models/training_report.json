@@ -1,0 +1,23 @@
+{
+  "trained_at": "2026-04-13T16:16:06.170750+00:00",
+  "total_trades": 1587,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "strategies": [
+    "ema_crossover_rsi",
+    "bollinger_breakout",
+    "mean_reversion",
+    "macd_divergence"
+  ],
+  "metrics": {
+    "precision": 0.4899328859060403,
+    "recall": 0.5289855072463768,
+    "roc_auc": 0.5904589371980677,
+    "accuracy": 0.5566037735849056,
+    "skill_score": 0.0
+  },
+  "feature_importances": {},
+  "model_ready": false
+}

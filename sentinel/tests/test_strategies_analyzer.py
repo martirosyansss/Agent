@@ -69,32 +69,46 @@ def make_trade(
 
 class TestMarketRegime:
     def test_trending_up(self):
-        from strategy.market_regime import detect_regime
+        from strategy.market_regime import detect_regime, reset_hysteresis
+        reset_hysteresis()
         f = make_fv(ema_9=103, ema_21=101, ema_50=99, adx=30)
+        # Hysteresis: call 3 times to confirm regime change
+        detect_regime(f)
+        detect_regime(f)
         r = detect_regime(f)
         assert r.regime == MarketRegimeType.TRENDING_UP
 
     def test_trending_down(self):
-        from strategy.market_regime import detect_regime
+        from strategy.market_regime import detect_regime, reset_hysteresis
+        reset_hysteresis()
         f = make_fv(ema_9=95, ema_21=97, ema_50=99, adx=28)
+        detect_regime(f)
+        detect_regime(f)
         r = detect_regime(f)
         assert r.regime == MarketRegimeType.TRENDING_DOWN
 
     def test_sideways(self):
-        from strategy.market_regime import detect_regime
+        from strategy.market_regime import detect_regime, reset_hysteresis
+        reset_hysteresis()
         f = make_fv(ema_9=100, ema_21=100.5, ema_50=99.5, adx=15, close=100,
                      bb_lower=96, bb_upper=104)
+        detect_regime(f)
+        detect_regime(f)
         r = detect_regime(f)
         assert r.regime == MarketRegimeType.SIDEWAYS
 
     def test_volatile(self):
-        from strategy.market_regime import detect_regime
-        f = make_fv(atr=5.0, bb_middle=100.0)  # ATR/price = 5% > 4%
+        from strategy.market_regime import detect_regime, reset_hysteresis
+        reset_hysteresis()
+        # Use non-trending EMAs so volatile is not masked by trend detection
+        f = make_fv(atr=5.0, bb_middle=100.0, ema_9=100, ema_21=101, ema_50=99, adx=15)
+        detect_regime(f)
         r = detect_regime(f)
         assert r.regime == MarketRegimeType.VOLATILE
 
     def test_unknown(self):
-        from strategy.market_regime import detect_regime
+        from strategy.market_regime import detect_regime, reset_hysteresis
+        reset_hysteresis()
         f = make_fv(ema_9=100, ema_21=101, ema_50=99, adx=22,
                      close=110, bb_upper=105, atr=1.0)  # Close > upper BB, mild ADX
         r = detect_regime(f)
@@ -316,9 +330,9 @@ class TestMACDDivergence:
         from strategy.macd_divergence import MACDDivergence
         s = MACDDivergence()
         sym = "BTCUSDT"
-        # Build history: price lower lows, MACD higher lows
-        s._price_history[sym] = [105, 103, 101, 100, 99]
-        s._macd_history[sym] = [-0.5, -0.4, -0.3, -0.2, -0.1]
+        # 10+ bars for min_divergence_bars=10
+        s._price_history[sym] = [110, 108, 106, 105, 104, 103, 102, 101, 100, 99]
+        s._macd_history[sym] = [-0.5, -0.4, -0.3, -0.2, -0.1, -0.15, -0.12, -0.08, -0.05, -0.02]
         f = make_fv(close=98.0, rsi_14=30.0, volume_ratio=1.5, macd_histogram=0.0)
         sig = s.generate_signal(f, has_open_position=False)
         assert sig is not None
@@ -563,13 +577,32 @@ class TestMLPredictor:
         from analyzer.ml_predictor import MLPredictor, FEATURE_NAMES
         ml = MLPredictor()
         trade = make_trade(rsi=45.0, adx=30.0, vol_ratio=1.5)
+        # Set raw indicator attributes for new feature extraction
+        trade = StrategyTrade(
+            trade_id=trade.trade_id, signal_id=trade.signal_id,
+            symbol=trade.symbol, strategy_name=trade.strategy_name,
+            market_regime=trade.market_regime,
+            timestamp_open=trade.timestamp_open, timestamp_close=trade.timestamp_close,
+            entry_price=trade.entry_price, exit_price=trade.exit_price,
+            quantity=trade.quantity, pnl_usd=trade.pnl_usd, pnl_pct=trade.pnl_pct,
+            is_win=trade.is_win, confidence=trade.confidence,
+            hour_of_day=trade.hour_of_day, day_of_week=trade.day_of_week,
+            rsi_at_entry=45.0, adx_at_entry=30.0, volume_ratio_at_entry=1.5,
+            exit_reason=trade.exit_reason, hold_duration_hours=trade.hold_duration_hours,
+            max_drawdown_during_trade=trade.max_drawdown_during_trade,
+            max_profit_during_trade=trade.max_profit_during_trade,
+            commission_usd=trade.commission_usd,
+            ema_9_at_entry=102.0, ema_21_at_entry=100.0,
+            bb_bandwidth_at_entry=0.08, macd_histogram_at_entry=0.3,
+            atr_at_entry=1.5,
+        )
         features = ml.extract_features(trade)
         assert len(features) == len(FEATURE_NAMES)
         assert features[0] == 45.0  # rsi
         assert features[1] == 30.0  # adx
-        assert features[2] > 0.0
-        assert features[3] > 0.0
-        assert features[5] > 0.0
+        assert features[2] > 0.0    # ema_9_vs_21
+        assert features[3] > 0.0    # bb_bandwidth
+        assert features[5] > 0.0    # macd_histogram
 
     def test_extract_features_with_history_context(self):
         from analyzer.ml_predictor import MLPredictor

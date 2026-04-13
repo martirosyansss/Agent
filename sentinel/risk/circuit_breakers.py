@@ -110,16 +110,16 @@ class CircuitBreakers:
     # ──────────────────────────────────────────────
 
     def record_trade_result(self, is_win: bool) -> Optional[str]:
-        """CB-2: 3 убыточных сделки подряд."""
+        """CB-2: 5 убыточных сделок подряд."""
         if is_win:
             self._consecutive_losses = 0
             return None
 
         self._consecutive_losses += 1
-        if self._consecutive_losses >= 3:
+        if self._consecutive_losses >= 5:
             self._breakers["CB-2"].trip()
             self._consecutive_losses = 0
-            return f"3 consecutive losses"
+            return f"5 consecutive losses"
         return None
 
     # ──────────────────────────────────────────────

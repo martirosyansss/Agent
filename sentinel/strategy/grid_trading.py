@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core.models import Direction, FeatureVector, Signal
-from strategy.base_strategy import BaseStrategy
+from strategy.base_strategy import BaseStrategy, news_confidence_adjustment
 
 
 @dataclass
@@ -45,6 +45,7 @@ class GridTrading(BaseStrategy):
     NAME = "grid_trading"
 
     def __init__(self, config: GridConfig | None = None) -> None:
+        super().__init__()
         self._cfg = config or GridConfig()
         self._grid_levels: dict[str, list[float]] = {}
         self._last_rebuild: dict[str, int] = {}
@@ -136,16 +137,13 @@ class GridTrading(BaseStrategy):
                     sl = price * (1 - cfg.max_loss_pct / 100)
                     tp = price * (1 + cfg.min_profit_pct / 100)
 
-                    # Grid: sentiment-adjusted confidence
-                    grid_conf = 0.75
-                    if features.news_sentiment > 0.15:
-                        grid_conf += 0.05
-                    elif features.news_sentiment < -0.3:
-                        grid_conf -= 0.05
+                    # Grid: professional news-adjusted confidence
+                    news_delta, news_reason = news_confidence_adjustment(features, direction="buy")
+                    grid_conf = 0.75 + news_delta
 
                     reason = f"Grid BUY at level {i}/{len(levels)-1}, price={price:.2f}"
-                    if features.news_sentiment != 0.0:
-                        reason += f", sentiment={features.news_sentiment:+.2f}"
+                    if news_delta != 0:
+                        reason += f", {news_reason}"
 
                     return Signal(
                         timestamp=now_ms,

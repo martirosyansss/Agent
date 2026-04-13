@@ -32,7 +32,7 @@ class EMAConfig:
     ema_trend: int = 50
     rsi_overbought: float = 70.0
     rsi_oversold: float = 30.0
-    min_volume_ratio: float = 1.0
+    min_volume_ratio: float = 1.3
     stop_loss_pct: float = 3.0
     take_profit_pct: float = 5.0
     min_confidence: float = 0.75
@@ -51,6 +51,7 @@ class EMACrossoverRSI(BaseStrategy):
     NAME = "ema_crossover_rsi"
 
     def __init__(self, config: EMAConfig | None = None) -> None:
+        super().__init__()
         self._cfg = config or EMAConfig()
         # Для детекции crossover храним предыдущее значение EMA-разницы
         self._prev_ema_diff: dict[str, float | None] = {}
@@ -102,6 +103,12 @@ class EMACrossoverRSI(BaseStrategy):
         is_crossover = prev_diff <= 0 and current_diff > 0
 
         if not is_crossover:
+            return None
+
+        # ATR-based crossover threshold — prevent whipsaw in sideways markets
+        min_cross_threshold = f.atr * 0.3 if f.atr > 0 else f.close * 0.001
+        if current_diff < min_cross_threshold:
+            log.debug("{} BUY skip: crossover too weak {:.4f} < {:.4f}", f.symbol, current_diff, min_cross_threshold)
             return None
 
         # RSI filter

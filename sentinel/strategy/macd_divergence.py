@@ -24,8 +24,8 @@ class MACDDivConfig:
     macd_fast: int = 12
     macd_slow: int = 26
     macd_signal_period: int = 9
-    lookback_candles: int = 30
-    min_divergence_bars: int = 5
+    lookback_candles: int = 50
+    min_divergence_bars: int = 10
     require_rsi_confirm: bool = True
     rsi_oversold: float = 35.0
     rsi_overbought: float = 65.0
@@ -34,7 +34,7 @@ class MACDDivConfig:
     stop_loss_pct: float = 3.5
     take_profit_pct: float = 7.0
     max_position_pct: float = 15.0
-    min_confidence: float = 0.72
+    min_confidence: float = 0.68
 
     def __post_init__(self):
         if self.stop_loss_pct <= 0 or self.stop_loss_pct > 50:
@@ -49,6 +49,7 @@ class MACDDivergence(BaseStrategy):
     NAME = "macd_divergence"
 
     def __init__(self, config: MACDDivConfig | None = None) -> None:
+        super().__init__()
         self._cfg = config or MACDDivConfig()
         # History buffers for divergence detection
         self._price_history: dict[str, list[float]] = {}

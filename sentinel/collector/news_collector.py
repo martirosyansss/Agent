@@ -1,19 +1,27 @@
 """
 Сбор крипто-новостей с бесплатных API и оценка их влияния на курс.
 
-Два режима анализа:
-1. LLM (Groq / Llama 3.3 70B) — точный контекстный анализ, если задан GROQ_API_KEY
-2. Keyword fallback — если ключа нет, работает на словарях
+Режим анализа: LLM (Groq primary → OpenRouter fallback).
+Без LLM новости остаются нейтральными (keyword отключён).
 
 Источники:
-- RSS: CoinDesk, CoinTelegraph, Decrypt (через rss2json, бесплатный)
+- RSS: 10 крипто-изданий (через rss2json, бесплатный)
 - Fear & Greed Index (alternative.me, бесплатный)
+
+Улучшения v2:
+- Fuzzy-дедупликация заголовков (n-gram similarity)
+- Backup LLM: OpenRouter (если Groq лимит исчерпан)
+- Анализ полного текста (title + description)
+- Вес источника (trust score)
+- Группировка одинаковых событий
 
 Каждая новость получает:
 - sentiment_score: от -1.0 (крайне негативно) до +1.0 (крайне позитивно)
 - impact_pct: предполагаемое изменение курса BTC в %
 - direction: "bullish" / "bearish" / "neutral"
-- llm_reasoning: объяснение от LLM (только в LLM-режиме)
+- llm_reasoning: объяснение от LLM
+- source_trust: коэффициент доверия источника
+- event_group: ID группы события (дублирующие новости → одна группа)
 """
 
 from __future__ import annotations
@@ -27,6 +35,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 import aiohttp
+import feedparser
 
 logger = logging.getLogger(__name__)
 
@@ -160,8 +169,17 @@ class NewsItem:
     direction: str = "neutral"  # bullish / bearish / neutral
     coins_mentioned: list[str] = field(default_factory=list)
     categories: list[str] = field(default_factory=list)
-    llm_reasoning: str = ""  # пояснение от LLM (пусто если keyword-режим)
-    analysis_mode: str = "keyword"  # "llm" или "keyword"
+    llm_reasoning: str = ""  # пояснение от LLM
+    analysis_mode: str = "pending"  # "llm" или "pending"
+    description: str = ""  # краткое описание статьи (для LLM)
+    source_trust: float = 1.0  # коэффициент доверия источника 0.5-1.0
+    event_group: str = ""  # ID группы события (дублирующие новости)
+    # Pro-level fields
+    urgency: str = "low"  # "critical" / "high" / "medium" / "low"
+    confidence: float = 0.5  # LLM уверенность в оценке 0.0-1.0
+    category: str = "other"  # macro / regulatory / adoption / technical / security / market / defi / other
+    impact_timeframe: str = "hours"  # "minutes" / "hours" / "days" / "weeks"
+    effective_impact: float = 0.0  # impact с учётом decay, trust, confidence, consensus
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -189,45 +207,75 @@ class NewsCollector:
     FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1&format=json"
     COINGECKO_TRENDING_URL = "https://api.coingecko.com/api/v3/search/trending"
     GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+    OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-    # RSS через rss2json (бесплатный, до 10000 запросов/день)
+    # Коэффициент доверия источника (0.5 = низкий, 1.0 = высокий)
+    SOURCE_TRUST: dict[str, float] = {
+        "CoinDesk": 1.0,
+        "TheBlock": 1.0,
+        "CoinTelegraph": 0.95,
+        "Decrypt": 0.9,
+        "CryptoSlate": 0.85,
+        "Bitcoin.com": 0.8,
+        "CryptoPotato": 0.75,
+        "UToday": 0.7,
+        "Bitcoinist": 0.7,
+        "NewsBTC": 0.65,
+    }
+
+    # Порог похожести заголовков для ДЕДУПЛИКАЦИИ (0-1, выше = строже)
+    SIMILARITY_THRESHOLD = 0.60
+
+    # RSS напрямую (без rss2json — парсим через feedparser)
     RSS_FEEDS = [
-        ("CoinDesk", "https://api.rss2json.com/v1/api.json?rss_url=https://www.coindesk.com/arc/outboundfeeds/rss/"),
-        ("CoinTelegraph", "https://api.rss2json.com/v1/api.json?rss_url=https://cointelegraph.com/rss"),
-        ("Decrypt", "https://api.rss2json.com/v1/api.json?rss_url=https://decrypt.co/feed"),
-        ("Bitcoin.com", "https://api.rss2json.com/v1/api.json?rss_url=https://news.bitcoin.com/feed/"),
-        ("NewsBTC", "https://api.rss2json.com/v1/api.json?rss_url=https://www.newsbtc.com/feed/"),
-        ("Bitcoinist", "https://api.rss2json.com/v1/api.json?rss_url=https://bitcoinist.com/feed/"),
-        ("CryptoSlate", "https://api.rss2json.com/v1/api.json?rss_url=https://cryptoslate.com/feed/"),
-        ("TheBlock", "https://api.rss2json.com/v1/api.json?rss_url=https://www.theblock.co/rss.xml"),
-        ("CryptoPotato", "https://api.rss2json.com/v1/api.json?rss_url=https://cryptopotato.com/feed/"),
-        ("UToday", "https://api.rss2json.com/v1/api.json?rss_url=https://u.today/rss"),
+        ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+        ("CoinTelegraph", "https://cointelegraph.com/rss"),
+        ("Decrypt", "https://decrypt.co/feed"),
+        ("Bitcoin.com", "https://news.bitcoin.com/feed/"),
+        ("NewsBTC", "https://www.newsbtc.com/feed/"),
+        ("Bitcoinist", "https://bitcoinist.com/feed/"),
+        ("CryptoSlate", "https://cryptoslate.com/feed/"),
+        ("TheBlock", "https://www.theblock.co/rss.xml"),
+        ("CryptoPotato", "https://cryptopotato.com/feed/"),
+        ("UToday", "https://u.today/rss"),
     ]
 
     MAX_NEWS = 200          # макс новостей в памяти
-    MAX_AGE_DAYS = 3        # хранить за последние N дней
+    MAX_AGE_DAYS = 1        # хранить за последние N дней
     ITEMS_PER_FEED = 20     # статей с каждого RSS
 
-    # Промпт для batch-анализа новостей
-    _LLM_SYSTEM_PROMPT = """You are a crypto market analyst. Analyze each news headline for its impact on Bitcoin/crypto prices.
+    # Промпт для batch-анализа новостей (professional-grade)
+    _LLM_SYSTEM_PROMPT = """You are a senior crypto market analyst at a quantitative trading fund. Your job is to assess news impact on BTC/crypto prices with institutional precision.
 
-For EACH news item, respond with a JSON object containing:
-- "sentiment": float from -1.0 (extremely bearish) to +1.0 (extremely bullish)
-- "impact_pct": estimated BTC price change in % (e.g. +2.5 or -1.3). Use realistic values: most news = 0.1-1%, major events = 1-5%, black swans = 5-15%
-- "direction": "bullish", "bearish", or "neutral"  
-- "coins": list of mentioned/affected ticker symbols (e.g. ["BTC", "ETH"])
-- "reasoning": 1 sentence in Russian explaining why this affects the price
+For EACH news item, respond with a JSON object:
+- "sentiment": float -1.0 to +1.0 (extremely bearish to extremely bullish)
+- "impact_pct": estimated BTC price change in % within the impact_timeframe. CALIBRATION:
+  * Noise/irrelevant: 0.0%
+  * Minor (partnership, listing, small fund move): 0.1-0.5%
+  * Moderate (regulatory guidance, ETF flow, whale move): 0.5-2.0%
+  * Major (ETF approval/denial, country ban, exchange hack): 2.0-5.0%
+  * Black swan (systemic failure, war, global ban): 5.0-15.0%
+- "direction": "bullish", "bearish", or "neutral"
+- "coins": list of directly affected tickers (e.g. ["BTC", "ETH"])
+- "category": one of: "macro" (economic/geopolitical), "regulatory" (SEC, laws, bans), "adoption" (institutional/retail adoption), "technical" (protocol upgrades, forks), "security" (hacks, exploits), "market" (whale moves, liquidations, flows), "defi" (DeFi/yield/staking), "other"
+- "urgency": "critical" (act immediately), "high" (within hours), "medium" (within day), "low" (informational)
+- "confidence": 0.0-1.0 how confident you are in the assessment. Lower if: clickbait, vague, opinion piece, unverified rumor. Higher if: official announcement, on-chain data, regulatory filing
+- "impact_timeframe": "minutes" (flash crash/pump), "hours" (same day), "days" (1-3 days), "weeks" (structural shift)
+- "reasoning": 1 concise sentence in Russian explaining the MECHANISM (cause → effect on price)
 
-IMPORTANT:
-- Understand CONTEXT. "ETF rejected" is bearish even though "ETF" alone might seem bullish
-- "Bitcoin drops to X" is bearish. "Bitcoin surges to X" is bullish
-- Regulatory crackdowns = bearish. Adoption news = bullish
-- Consider the MAGNITUDE: SEC lawsuit > minor partnership
-- If news is not crypto-related or has no price impact, set impact_pct to 0 and direction to "neutral"
+CRITICAL RULES:
+- Read BOTH headline AND summary. Clickbait headlines often contradict the content
+- "ETF rejected" is BEARISH. "ETF approved" is BULLISH. Context > keywords
+- Regulatory clarity (clear rules) can be bullish even if it seems restrictive
+- Distinguish between REALIZED events (already priced in) and NEW information
+- Old news rehashed = lower impact. "Bitcoin hits $X" after it already did = near zero
+- Correlation: if ETH-specific news, BTC impact is ~0.3x. If altcoin-only, BTC impact ≈ 0
+- Whale/flow data is medium impact unless it's record-breaking
+- Opinion pieces and price predictions = low confidence, low impact
 
-Respond ONLY with a JSON array, one object per news item, in the same order as input. No markdown, no explanation outside JSON."""
+Respond ONLY with a JSON array. No markdown, no text outside JSON."""
 
-    def __init__(self, update_interval: int = 300, groq_api_key: str = "") -> None:
+    def __init__(self, update_interval: int = 300, groq_api_key: str = "", openrouter_api_key: str = "", db=None) -> None:
         self._update_interval = update_interval
         self._news: list[NewsItem] = []
         self._sentiment = MarketSentiment()
@@ -235,8 +283,13 @@ Respond ONLY with a JSON array, one object per news item, in the same order as i
         self._running = False
         self._session: Optional[aiohttp.ClientSession] = None
         self._groq_api_key = groq_api_key
-        self._llm_available = bool(groq_api_key)
-        self._llm_failures = 0  # подряд неудач LLM, после 3 → fallback
+        self._openrouter_api_key = openrouter_api_key
+        self._llm_available = bool(groq_api_key) or bool(openrouter_api_key)
+        self._groq_available = bool(groq_api_key)
+        self._openrouter_available = bool(openrouter_api_key)
+        self._llm_failures = 0  # подряд неудач LLM, после 3 → переключаемся
+        self._task: Optional[asyncio.Task] = None
+        self._db = db  # Database instance for caching LLM results
 
     async def start(self) -> None:
         """Запустить фоновый сбор новостей."""
@@ -244,13 +297,23 @@ Respond ONLY with a JSON array, one object per news item, in the same order as i
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30)
         )
-        mode = "LLM (Groq)" if self._llm_available else "keyword"
-        asyncio.create_task(self._loop())
-        logger.info("NewsCollector started (interval=%ds, mode=%s)", self._update_interval, mode)
+        providers = []
+        if self._groq_available:
+            providers.append("Groq")
+        if self._openrouter_available:
+            providers.append("OpenRouter")
+        mode = " + ".join(providers) if providers else "no LLM"
+        self._cleanup_cache()
+        self._task = asyncio.create_task(self._loop())
+        cache_info = f", db_cache={'on' if self._db else 'off'}"
+        logger.info("NewsCollector started (interval=%ds, llm=%s%s)", self._update_interval, mode, cache_info)
 
     async def stop(self) -> None:
         """Остановить сбор."""
         self._running = False
+        if self._task:
+            self._task.cancel()
+            self._task = None
         if self._session:
             await self._session.close()
             self._session = None
@@ -280,73 +343,98 @@ Respond ONLY with a JSON array, one object per news item, in the same order as i
         self._update_overall_sentiment()
 
     async def _fetch_rss_news(self) -> None:
-        """Получить новости с RSS-лент через rss2json."""
+        """Получить новости с RSS-лент напрямую через feedparser."""
         if not self._session:
             return
 
         all_items: list[NewsItem] = []
 
-        for source_name, feed_url in self.RSS_FEEDS:
+        for idx, (source_name, feed_url) in enumerate(self.RSS_FEEDS):
+            # Задержка между запросами
+            if idx > 0:
+                await asyncio.sleep(1.0)
             try:
-                async with self._session.get(feed_url) as resp:
+                async with self._session.get(
+                    feed_url,
+                    headers={"User-Agent": "SENTINEL/1.5 CryptoNewsBot"},
+                ) as resp:
+                    if resp.status == 429:
+                        logger.warning("RSS %s rate-limited (429), skipping", source_name)
+                        continue
                     if resp.status != 200:
                         logger.debug("RSS %s returned %d", source_name, resp.status)
                         continue
-                    data = await resp.json()
+                    raw_xml = await resp.text()
             except Exception as e:
                 logger.debug("RSS %s failed: %s", source_name, e)
                 continue
 
-            if data.get("status") != "ok":
+            # Парсим XML через feedparser в executor (CPU-bound)
+            loop = asyncio.get_event_loop()
+            try:
+                feed = await loop.run_in_executor(None, feedparser.parse, raw_xml)
+            except Exception as e:
+                logger.debug("RSS %s parse error: %s", source_name, e)
                 continue
 
-            items = data.get("items", [])
-            for article in items[:self.ITEMS_PER_FEED]:
+            entries = feed.get("entries", [])
+            for article in entries[:self.ITEMS_PER_FEED]:
                 title = article.get("title", "")
-                description = article.get("description", "")
+                description = article.get("summary", article.get("description", ""))
                 url = article.get("link", "")
-                pub_date = article.get("pubDate", "")
-                categories = article.get("categories", [])
 
-                # Парсим дату (rss2json даёт "2026-04-13 10:00:00")
+                # Парсим дату — feedparser даёт struct_time или строку
                 published = int(time.time())
-                if pub_date:
+                published_parsed = article.get("published_parsed")
+                if published_parsed:
                     try:
-                        from datetime import datetime
-                        dt = datetime.strptime(pub_date[:19], "%Y-%m-%d %H:%M:%S")
-                        published = int(dt.timestamp())
-                    except (ValueError, TypeError):
+                        import calendar
+                        published = int(calendar.timegm(published_parsed))
+                    except (TypeError, ValueError, OverflowError):
                         pass
 
-                # Анализ sentiment
+                categories = [t.get("term", "") for t in article.get("tags", []) if t.get("term")]
+
                 # Убираем HTML тэги из description
                 clean_desc = re.sub(r'<[^>]+>', '', description)
+                # Обрезаем description до 300 символов для LLM
+                short_desc = clean_desc[:300].strip()
                 text = f"{title} {clean_desc}".lower()
-                sentiment, impact = self._analyze_sentiment(text)
                 coins = self._extract_coins(text)
-                direction = "bullish" if sentiment > 0.15 else "bearish" if sentiment < -0.15 else "neutral"
+                trust = self.SOURCE_TRUST.get(source_name, 0.7)
 
                 item = NewsItem(
                     title=title,
                     source=source_name,
                     url=url,
                     published_at=published,
-                    sentiment_score=round(sentiment, 3),
-                    impact_pct=round(impact, 2),
-                    direction=direction,
+                    sentiment_score=0.0,
+                    impact_pct=0.0,
+                    direction="neutral",
                     coins_mentioned=coins,
-                    categories=[str(c).strip() for c in categories if c] if isinstance(categories, list) else [],
+                    categories=[str(c).strip() for c in categories if c],
+                    description=short_desc,
+                    source_trust=trust,
                 )
                 all_items.append(item)
+
+            logger.debug("RSS %s: %d entries parsed", source_name, len(entries))
 
         if all_items:
             # Фильтруем: только за последние N дней
             cutoff = int(time.time()) - self.MAX_AGE_DAYS * 86400
             all_items = [n for n in all_items if n.published_at >= cutoff]
 
-            # Дедупликация: объединяем с существующими (по URL)
+            # Дедупликация: URL + fuzzy title similarity
             existing_urls = {n.url for n in self._news if n.url}
-            new_items = [n for n in all_items if n.url not in existing_urls]
+            new_items = []
+            for item in all_items:
+                if item.url in existing_urls:
+                    continue
+                # Fuzzy проверка — не дубль ли существующей новости
+                if self._is_duplicate_title(item.title, self._news + new_items):
+                    continue
+                new_items.append(item)
 
             # Сохраняем старые (ещё в окне) + новые
             old_valid = [n for n in self._news if n.published_at >= cutoff]
@@ -355,23 +443,40 @@ Respond ONLY with a JSON array, one object per news item, in the same order as i
             merged.sort(key=lambda n: n.published_at, reverse=True)
             merged = merged[:self.MAX_NEWS]
 
-            # LLM-анализ только для новых (ещё не проанализированных)
+            # Группировка событий (похожие новости → один event_group)
+            self._group_events(merged)
+
+            # Восстановить из кэша то, что уже анализировалось
+            cached = self._load_from_cache(merged)
+
+            # LLM-анализ только для реально новых (нет в кэше и не проанализированы)
             unanalyzed = [n for n in merged if n.analysis_mode != "llm"]
             if unanalyzed and self._llm_available and self._llm_failures < 3:
                 success = await self._analyze_batch_llm(unanalyzed)
                 if success:
-                    logger.info("LLM analyzed %d new items", len(unanalyzed))
+                    logger.info("LLM analyzed %d new items (cached=%d)", len(unanalyzed), cached)
+                    # Сохранить свежие результаты в кэш
+                    just_analyzed = [n for n in unanalyzed if n.analysis_mode == "llm"]
+                    self._save_to_cache(just_analyzed)
                 else:
-                    logger.info("LLM failed, using keyword analysis as fallback")
+                    logger.info("LLM unavailable, %d items unanalyzed (cached=%d)", len(unanalyzed), cached)
+            elif unanalyzed and (not self._llm_available or self._llm_failures >= 3):
+                logger.info("LLM unavailable, %d items waiting (cached=%d)", len(unanalyzed), cached)
+
+            # Compute effective impact (decay × confidence × consensus)
+            self._compute_effective_impacts(merged)
 
             self._news = merged
+            analyzed = sum(1 for n in self._news if n.analysis_mode == "llm")
+            critical = sum(1 for n in self._news if n.urgency in ("critical", "high"))
             logger.info(
-                "Fetched %d news items (bull=%d, bear=%d, neutral=%d, mode=%s)",
+                "Fetched %d news (bull=%d bear=%d neutral=%d llm=%d critical=%d)",
                 len(self._news),
                 sum(1 for n in self._news if n.direction == "bullish"),
                 sum(1 for n in self._news if n.direction == "bearish"),
                 sum(1 for n in self._news if n.direction == "neutral"),
-                "llm" if any(n.analysis_mode == "llm" for n in self._news) else "keyword",
+                analyzed,
+                critical,
             )
 
     async def _fetch_fear_greed(self) -> None:
@@ -420,12 +525,53 @@ Respond ONLY with a JSON array, one object per news item, in the same order as i
         return any_success
 
     async def _analyze_single_batch(self, items: list[NewsItem]) -> bool:
-        """Отправить одну пачку (≤10) новостей в Groq."""
-        headlines = [f"{i+1}. [{item.source}] {item.title}" for i, item in enumerate(items)]
-        user_msg = "Analyze these crypto news headlines:\n" + "\n".join(headlines)
+        """Отправить одну пачку (≤10) новостей в LLM. Groq primary → OpenRouter fallback."""
+        # Формируем сообщение с title + description
+        lines = []
+        for i, item in enumerate(items):
+            entry = f"{i+1}. [{item.source}] {item.title}"
+            if item.description:
+                entry += f"\n   Summary: {item.description}"
+            lines.append(entry)
+        user_msg = "Analyze these crypto news items:\n" + "\n".join(lines)
 
+        # Пробуем Groq первым
+        if self._groq_available:
+            data = await self._call_llm_api(
+                url=self.GROQ_API_URL,
+                api_key=self._groq_api_key,
+                model="llama-3.3-70b-versatile",
+                user_msg=user_msg,
+                provider="Groq",
+            )
+            if data is not None:
+                return self._apply_llm_results(data, items)
+            # Groq не сработал — пробуем OpenRouter
+            logger.info("Groq failed, trying OpenRouter fallback")
+
+        # OpenRouter fallback
+        if self._openrouter_available:
+            data = await self._call_llm_api(
+                url=self.OPENROUTER_API_URL,
+                api_key=self._openrouter_api_key,
+                model="meta-llama/llama-3.3-70b-instruct:free",
+                user_msg=user_msg,
+                provider="OpenRouter",
+            )
+            if data is not None:
+                return self._apply_llm_results(data, items)
+
+        # Оба провалились
+        self._llm_failures += 1
+        if self._llm_failures >= 5:
+            self._llm_available = False
+            logger.warning("All LLMs failed %d times, disabling LLM", self._llm_failures)
+        return False
+
+    async def _call_llm_api(self, url: str, api_key: str, model: str, user_msg: str, provider: str) -> Optional[dict]:
+        """Вызвать LLM API (Groq или OpenRouter). Возвращает parsed JSON или None."""
         payload = {
-            "model": "llama-3.3-70b-versatile",
+            "model": model,
             "messages": [
                 {"role": "system", "content": self._LLM_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -434,35 +580,24 @@ Respond ONLY with a JSON array, one object per news item, in the same order as i
             "max_tokens": 4000,
         }
         headers = {
-            "Authorization": f"Bearer {self._groq_api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
 
         try:
-            async with self._session.post(
-                self.GROQ_API_URL, json=payload, headers=headers
-            ) as resp:
+            async with self._session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    logger.warning("Groq API error %d: %s", resp.status, body[:200])
-                    self._llm_failures += 1
-                    if self._llm_failures >= 3:
-                        logger.warning("LLM failed %d times, switching to keyword mode", self._llm_failures)
-                        self._llm_available = False
-                    return False
-
+                    logger.warning("%s API error %d: %s", provider, resp.status, body[:200])
+                    return None
                 data = await resp.json()
         except Exception as e:
-            logger.warning("Groq API request failed: %s", e)
-            self._llm_failures += 1
-            if self._llm_failures >= 3:
-                self._llm_available = False
-            return False
+            logger.warning("%s API request failed: %s", provider, e)
+            return None
 
         # Парсим ответ LLM
         try:
             content = data["choices"][0]["message"]["content"].strip()
-            # Убираем возможное markdown-обёртывание
             if content.startswith("```"):
                 content = content.split("\n", 1)[1] if "\n" in content else content[3:]
                 if content.endswith("```"):
@@ -471,36 +606,228 @@ Respond ONLY with a JSON array, one object per news item, in the same order as i
 
             analyses = json.loads(content)
             if not isinstance(analyses, list):
-                logger.warning("LLM returned non-list JSON")
-                return False
+                logger.warning("%s returned non-list JSON", provider)
+                return None
+            return analyses
 
         except (KeyError, json.JSONDecodeError, IndexError) as e:
-            logger.warning("Failed to parse LLM response: %s", e)
-            self._llm_failures += 1
-            if self._llm_failures >= 3:
-                self._llm_available = False
-            return False
+            logger.warning("Failed to parse %s response: %s", provider, e)
+            return None
 
-        # Применяем результаты LLM к элементам
+    def _apply_llm_results(self, analyses: list, items: list[NewsItem]) -> bool:
+        """Применить результаты LLM к новостям. Учитывает source_trust + confidence."""
+        _VALID_CATEGORIES = {"macro", "regulatory", "adoption", "technical", "security", "market", "defi", "other"}
+        _VALID_URGENCY = {"critical", "high", "medium", "low"}
+        _VALID_TIMEFRAME = {"minutes", "hours", "days", "weeks"}
+
         for i, item in enumerate(items):
             if i >= len(analyses):
                 break
             a = analyses[i]
             try:
-                item.sentiment_score = round(max(-1.0, min(1.0, float(a.get("sentiment", 0)))), 3)
-                item.impact_pct = round(max(-15.0, min(15.0, float(a.get("impact_pct", 0)))), 2)
+                raw_sentiment = max(-1.0, min(1.0, float(a.get("sentiment", 0))))
+                raw_impact = max(-15.0, min(15.0, float(a.get("impact_pct", 0))))
+                confidence = max(0.0, min(1.0, float(a.get("confidence", 0.5))))
+
+                # Корректируем на вес источника × confidence
+                trust = item.source_trust
+                item.sentiment_score = round(raw_sentiment * trust, 3)
+                item.impact_pct = round(raw_impact * trust, 2)
                 item.direction = str(a.get("direction", "neutral"))
                 if item.direction not in ("bullish", "bearish", "neutral"):
                     item.direction = "neutral"
                 item.coins_mentioned = [str(c).upper() for c in a.get("coins", [])]
                 item.llm_reasoning = str(a.get("reasoning", ""))
                 item.analysis_mode = "llm"
+
+                # Pro fields
+                item.confidence = confidence
+                cat = str(a.get("category", "other")).lower()
+                item.category = cat if cat in _VALID_CATEGORIES else "other"
+                urg = str(a.get("urgency", "low")).lower()
+                item.urgency = urg if urg in _VALID_URGENCY else "low"
+                tf = str(a.get("impact_timeframe", "hours")).lower()
+                item.impact_timeframe = tf if tf in _VALID_TIMEFRAME else "hours"
+
             except (TypeError, ValueError):
-                pass  # оставляем дефолтные значения
+                pass
 
         self._llm_failures = 0
-        logger.info("LLM analyzed %d/%d news items", min(len(analyses), len(items)), len(items))
+        logger.info("LLM analyzed %d/%d items", min(len(analyses), len(items)), len(items))
         return True
+
+    # ── Fuzzy дедупликация ────────────────────────
+
+    # Стоп-слова которые не несут смысла для сравнения
+    _STOP_WORDS = frozenset({
+        "the", "a", "an", "is", "are", "was", "were", "in", "on", "at", "to",
+        "for", "of", "with", "by", "from", "as", "its", "it", "this", "that",
+        "and", "or", "but", "not", "has", "have", "had", "be", "been", "will",
+        "can", "could", "would", "should", "may", "might", "do", "does", "did",
+        "just", "now", "new", "says", "said", "after", "before", "into", "over",
+        "up", "down", "out", "about", "here", "heres", "what", "why", "how",
+    })
+
+    @classmethod
+    def _title_keywords(cls, title: str) -> set[str]:
+        """Извлечь значимые слова из заголовка (без стоп-слов и чисел)."""
+        clean = re.sub(r'[^\w\s]', '', title.lower())
+        words = clean.split()
+        return {w for w in words if w not in cls._STOP_WORDS and len(w) > 1 and not w.isdigit()}
+
+    @classmethod
+    def _title_similarity(cls, t1: str, t2: str) -> float:
+        """Jaccard similarity между значимыми словами двух заголовков. 0-1."""
+        kw1 = cls._title_keywords(t1)
+        kw2 = cls._title_keywords(t2)
+        if not kw1 or not kw2:
+            return 0.0
+        intersection = kw1 & kw2
+        union = kw1 | kw2
+        return len(intersection) / len(union) if union else 0.0
+
+    def _is_duplicate_title(self, title: str, existing: list[NewsItem]) -> bool:
+        """Проверить, есть ли похожий заголовок в списке."""
+        for n in existing:
+            if self._title_similarity(title, n.title) >= self.SIMILARITY_THRESHOLD:
+                return True
+        return False
+
+    # ── Группировка событий ───────────────────────
+
+    def _group_events(self, items: list[NewsItem]) -> None:
+        """
+        Группировать похожие новости в события.
+        Новости с similarity >= 0.4 попадают в одну группу.
+        Внутри группы: лучший source_trust получает полный вес,
+        остальные получают пониженный impact (чтобы не мультиплицировать).
+        """
+        GROUP_THRESHOLD = 0.25  # ниже чем dedup — группируем даже при частичном сходстве
+        group_id = 0
+        assigned: set[int] = set()
+
+        for i, item_i in enumerate(items):
+            if i in assigned:
+                continue
+            # Собираем группу
+            group = [i]
+            assigned.add(i)
+            for j in range(i + 1, len(items)):
+                if j in assigned:
+                    continue
+                if self._title_similarity(item_i.title, items[j].title) >= GROUP_THRESHOLD:
+                    group.append(j)
+                    assigned.add(j)
+
+            if len(group) > 1:
+                group_id += 1
+                gid = f"evt_{group_id}"
+                # Сортируем по trust (лучший первый)
+                group.sort(key=lambda idx: items[idx].source_trust, reverse=True)
+                for rank, idx in enumerate(group):
+                    items[idx].event_group = gid
+                    if rank > 0 and items[idx].analysis_mode == "llm":
+                        # Понижаем impact дублей — они об одном событии
+                        items[idx].impact_pct = round(items[idx].impact_pct * 0.3, 2)
+                        items[idx].sentiment_score = round(items[idx].sentiment_score * 0.3, 3)
+
+    # ── Effective Impact (professional scoring) ───
+
+    # Temporal decay half-lives per timeframe (hours)
+    _TIMEFRAME_HALFLIFE: dict[str, float] = {
+        "minutes": 0.5,   # decays fast
+        "hours": 3.0,
+        "days": 12.0,
+        "weeks": 48.0,
+    }
+
+    # Urgency multipliers
+    _URGENCY_MULT: dict[str, float] = {
+        "critical": 1.5,
+        "high": 1.2,
+        "medium": 1.0,
+        "low": 0.7,
+    }
+
+    def _compute_effective_impacts(self, items: list[NewsItem]) -> None:
+        """
+        Вычислить effective_impact для каждой новости.
+        
+        effective_impact = impact_pct × temporal_decay × confidence × urgency_mult × consensus_boost
+        
+        Это единственная метрика, используемая для торговых решений.
+        """
+        now = time.time()
+
+        # Step 1: Cross-source consensus per event group
+        group_consensus = self._compute_consensus(items)
+
+        for item in items:
+            if item.analysis_mode != "llm":
+                item.effective_impact = 0.0
+                continue
+
+            # 1. Temporal decay (exponential)
+            age_hours = max(0, (now - item.published_at) / 3600)
+            halflife = self._TIMEFRAME_HALFLIFE.get(item.impact_timeframe, 3.0)
+            decay = 0.5 ** (age_hours / halflife) if halflife > 0 else 0.0
+
+            # 2. Urgency multiplier
+            urgency_mult = self._URGENCY_MULT.get(item.urgency, 1.0)
+
+            # 3. Confidence filter (low confidence → diminished impact)
+            conf_mult = max(0.2, item.confidence)
+
+            # 4. Consensus boost (multiple sources agree → stronger signal)
+            consensus_mult = group_consensus.get(item.event_group, 1.0) if item.event_group else 1.0
+
+            # Composite
+            raw = item.impact_pct
+            effective = raw * decay * urgency_mult * conf_mult * consensus_mult
+            item.effective_impact = round(effective, 3)
+
+    def _compute_consensus(self, items: list[NewsItem]) -> dict[str, float]:
+        """
+        Cross-source consensus: если N разных источников подтверждают
+        одно событие с одинаковым direction → boost.
+        
+        Returns: {event_group_id: consensus_multiplier}
+        """
+        groups: dict[str, list[NewsItem]] = {}
+        for item in items:
+            if item.event_group and item.analysis_mode == "llm":
+                groups.setdefault(item.event_group, []).append(item)
+
+        consensus: dict[str, float] = {}
+        for gid, members in groups.items():
+            if len(members) < 2:
+                consensus[gid] = 1.0
+                continue
+
+            # Count unique sources
+            unique_sources = len({m.source for m in members})
+
+            # Direction agreement: are they all pointing the same way?
+            directions = [m.direction for m in members if m.direction != "neutral"]
+            if not directions:
+                consensus[gid] = 1.0
+                continue
+
+            bullish = sum(1 for d in directions if d == "bullish")
+            bearish = sum(1 for d in directions if d == "bearish")
+            agreement = max(bullish, bearish) / len(directions)
+
+            # Boost: 2 sources → 1.15, 3 → 1.25, 4+ → 1.35 (capped)
+            # But only if agreement >= 70%
+            if agreement >= 0.7:
+                source_boost = min(1.0 + unique_sources * 0.1, 1.35)
+            else:
+                # Conflicting signals → dampen
+                source_boost = 0.8
+
+            consensus[gid] = round(source_boost, 2)
+
+        return consensus
 
     def _analyze_sentiment(self, text: str) -> tuple[float, float]:
         """
@@ -575,22 +902,28 @@ Respond ONLY with a JSON array, one object per news item, in the same order as i
         return sorted(found)
 
     def _update_overall_sentiment(self) -> None:
-        """Обновить общий sentiment по всем новостям."""
+        """Обновить общий sentiment по всем новостям (professional scoring)."""
         if not self._news:
             return
+
+        # Refresh effective_impact (temporal decay changes every cycle)
+        self._compute_effective_impacts(self._news)
 
         bullish = sum(1 for n in self._news if n.direction == "bullish")
         bearish = sum(1 for n in self._news if n.direction == "bearish")
         neutral = sum(1 for n in self._news if n.direction == "neutral")
 
-        scores = [n.sentiment_score for n in self._news]
-        # Взвешиваем более свежие новости сильнее
+        # Weighted average using effective_impact × confidence × trust
         now = time.time()
         weighted_sum = 0.0
         weight_total = 0.0
         for n in self._news:
+            if n.analysis_mode != "llm":
+                continue
             age_hours = (now - n.published_at) / 3600
-            weight = max(0.05, 1.0 - age_hours / 72)  # свежие (0h) = 1.0, 3 дня = 0.05
+            halflife = self._TIMEFRAME_HALFLIFE.get(n.impact_timeframe, 3.0)
+            decay = 0.5 ** (age_hours / halflife) if halflife > 0 else 0.0
+            weight = decay * n.source_trust * n.confidence
             weighted_sum += n.sentiment_score * weight
             weight_total += weight
 
@@ -602,6 +935,95 @@ Respond ONLY with a JSON array, one object per news item, in the same order as i
         self._sentiment.bearish_count = bearish
         self._sentiment.neutral_count = neutral
         self._sentiment.updated_at = int(time.time())
+
+    # ── DB cache ──────────────────────────────────
+
+    def _save_to_cache(self, items: list[NewsItem]) -> int:
+        """Сохранить LLM-проанализированные новости в БД. Возвращает кол-во сохранённых."""
+        if not self._db or not items:
+            return 0
+        saved = 0
+        now = int(time.time())
+        for n in items:
+            if n.analysis_mode != "llm" or not n.url:
+                continue
+            try:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO news_cache "
+                    "(url, title, source, published_at, sentiment_score, impact_pct, "
+                    "direction, coins_mentioned, llm_reasoning, urgency, confidence, "
+                    "category, impact_timeframe, cached_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        n.url, n.title, n.source, n.published_at,
+                        n.sentiment_score, n.impact_pct, n.direction,
+                        json.dumps(n.coins_mentioned), n.llm_reasoning,
+                        n.urgency, n.confidence, n.category, n.impact_timeframe, now,
+                    ),
+                )
+                saved += 1
+            except Exception as e:
+                logger.debug("Cache save error for %s: %s", n.url[:60], e)
+        if saved:
+            self._db.commit()
+            logger.info("Saved %d analyzed news to cache", saved)
+        return saved
+
+    def _load_from_cache(self, items: list[NewsItem]) -> int:
+        """Восстановить LLM-результаты из кэша для items. Возвращает кол-во восстановленных."""
+        if not self._db or not items:
+            return 0
+        urls = [n.url for n in items if n.url and n.analysis_mode != "llm"]
+        if not urls:
+            return 0
+        # Забираем всё из кэша за последние MAX_AGE_DAYS
+        cutoff = int(time.time()) - self.MAX_AGE_DAYS * 86400
+        try:
+            rows = self._db.fetchall(
+                "SELECT url, sentiment_score, impact_pct, direction, coins_mentioned, "
+                "llm_reasoning, urgency, confidence, category, impact_timeframe "
+                "FROM news_cache WHERE published_at >= ?",
+                (cutoff,),
+            )
+        except Exception as e:
+            logger.warning("Cache load error: %s", e)
+            return 0
+        cache_map = {row["url"]: row for row in rows}
+        restored = 0
+        for n in items:
+            if n.analysis_mode == "llm" or not n.url:
+                continue
+            row = cache_map.get(n.url)
+            if not row:
+                continue
+            n.sentiment_score = row["sentiment_score"]
+            n.impact_pct = row["impact_pct"]
+            n.direction = row["direction"]
+            try:
+                n.coins_mentioned = json.loads(row["coins_mentioned"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+            n.llm_reasoning = row["llm_reasoning"] or ""
+            n.urgency = row["urgency"] or "low"
+            n.confidence = row["confidence"] if row["confidence"] is not None else 0.5
+            n.category = row["category"] or "other"
+            n.impact_timeframe = row["impact_timeframe"] or "hours"
+            n.analysis_mode = "llm"
+            restored += 1
+        if restored:
+            logger.info("Restored %d news from cache (skipped LLM)", restored)
+        return restored
+
+    def _cleanup_cache(self) -> None:
+        """Удалить устаревшие записи из кэша."""
+        if not self._db:
+            return
+        cutoff = int(time.time()) - self.MAX_AGE_DAYS * 86400 * 2  # 2x window
+        try:
+            self._db.execute("DELETE FROM news_cache WHERE published_at < ?", (cutoff,))
+            self._db.commit()
+        except Exception:
+            pass
 
     # ── Public API ────────────────────────────────
 
@@ -615,24 +1037,126 @@ Respond ONLY with a JSON array, one object per news item, in the same order as i
         return self._sentiment.to_dict()
 
     def get_impact_summary(self) -> dict:
-        """Сводка влияния новостей на рынок."""
+        """Сводка влияния новостей на рынок (professional-grade)."""
         if not self._news:
             return {
                 "status": "no_data",
                 "message": "Ожидание загрузки новостей...",
             }
 
-        high_impact = [n for n in self._news if abs(n.impact_pct) >= 1.5]
-        medium_impact = [n for n in self._news if 0.5 <= abs(n.impact_pct) < 1.5]
+        analyzed = [n for n in self._news if n.analysis_mode == "llm"]
+        high_impact = [n for n in analyzed if abs(n.effective_impact) >= 1.0]
+        medium_impact = [n for n in analyzed if 0.3 <= abs(n.effective_impact) < 1.0]
+        critical_news = [n for n in analyzed if n.urgency in ("critical", "high")]
+        event_groups = len({n.event_group for n in self._news if n.event_group})
 
-        avg_impact = sum(n.impact_pct for n in self._news) / len(self._news) if self._news else 0
+        avg_eff_impact = sum(n.effective_impact for n in analyzed) / len(analyzed) if analyzed else 0
+
+        # Category breakdown
+        cat_counts: dict[str, int] = {}
+        for n in analyzed:
+            cat_counts[n.category] = cat_counts.get(n.category, 0) + 1
+
+        # Consensus direction (what % of analyzed agree on direction)
+        if analyzed:
+            bull_pct = sum(1 for n in analyzed if n.direction == "bullish") / len(analyzed)
+            bear_pct = sum(1 for n in analyzed if n.direction == "bearish") / len(analyzed)
+        else:
+            bull_pct = bear_pct = 0.0
 
         return {
             "status": "ok",
+            "total_news": len(self._news),
+            "llm_analyzed": len(analyzed),
             "high_impact_count": len(high_impact),
             "medium_impact_count": len(medium_impact),
-            "avg_impact_pct": round(avg_impact, 2),
-            "overall_direction": "bullish" if avg_impact > 0.2 else "bearish" if avg_impact < -0.2 else "neutral",
+            "critical_count": len(critical_news),
+            "avg_effective_impact": round(avg_eff_impact, 3),
+            "overall_direction": "bullish" if avg_eff_impact > 0.15 else "bearish" if avg_eff_impact < -0.15 else "neutral",
+            "bull_pct": round(bull_pct * 100, 1),
+            "bear_pct": round(bear_pct * 100, 1),
+            "consensus_strength": round(max(bull_pct, bear_pct) * 100, 1),
+            "event_groups": event_groups,
+            "category_breakdown": cat_counts,
             "fear_greed": self._sentiment.fear_greed_index,
             "fear_greed_label": self._sentiment.fear_greed_label,
+            # Legacy compat
+            "avg_impact_pct": round(avg_eff_impact, 2),
+            "high_impact_count": len(high_impact),
+        }
+
+    def get_news_signal(self) -> dict:
+        """
+        Агрегированный торговый сигнал от новостей.
+        
+        Используется стратегиями для корректировки confidence.
+        
+        Returns:
+            composite_score: -1.0..+1.0 (weighted effective_impact, учтены decay/trust/confidence/consensus)
+            signal_strength: 0.0..1.0 (сила сигнала: 0=нет данных, 1=очень сильный consensus)
+            bias: "bullish"/"bearish"/"neutral" 
+            critical_alert: True если есть critical urgency news
+            dominant_category: str — самая частая категория
+            actionable: bool — достаточно ли strong для торговой коррекции
+        """
+        analyzed = [n for n in self._news if n.analysis_mode == "llm"]
+        if not analyzed:
+            return {
+                "composite_score": 0.0,
+                "signal_strength": 0.0,
+                "bias": "neutral",
+                "critical_alert": False,
+                "dominant_category": "other",
+                "actionable": False,
+            }
+
+        # Composite score = weighted sum of effective_impact × sign(sentiment)
+        total_weight = 0.0
+        weighted_score = 0.0
+        for n in analyzed:
+            w = abs(n.effective_impact) * n.confidence
+            direction_sign = 1.0 if n.direction == "bullish" else (-1.0 if n.direction == "bearish" else 0.0)
+            weighted_score += direction_sign * abs(n.effective_impact) * n.confidence
+            total_weight += w
+
+        composite = weighted_score / total_weight if total_weight > 0 else 0.0
+        composite = max(-1.0, min(1.0, composite))
+
+        # Signal strength: based on agreement + volume of data
+        directions = [n.direction for n in analyzed if n.direction != "neutral"]
+        if directions:
+            majority = max(
+                sum(1 for d in directions if d == "bullish"),
+                sum(1 for d in directions if d == "bearish"),
+            )
+            agreement = majority / len(directions)
+        else:
+            agreement = 0.0
+
+        # More analyzed items + higher agreement → stronger signal
+        data_depth = min(len(analyzed) / 20.0, 1.0)  # saturates at 20 items
+        strength = agreement * data_depth * min(total_weight / 5.0, 1.0)
+        strength = min(1.0, strength)
+
+        # Critical alert
+        has_critical = any(n.urgency == "critical" for n in analyzed)
+
+        # Dominant category
+        cats: dict[str, float] = {}
+        for n in analyzed:
+            cats[n.category] = cats.get(n.category, 0) + abs(n.effective_impact)
+        dominant = max(cats, key=cats.get) if cats else "other"
+
+        # Actionable: composite strong enough AND sufficient agreement
+        actionable = abs(composite) > 0.15 and strength > 0.3
+
+        bias = "bullish" if composite > 0.1 else "bearish" if composite < -0.1 else "neutral"
+
+        return {
+            "composite_score": round(composite, 3),
+            "signal_strength": round(strength, 3),
+            "bias": bias,
+            "critical_alert": has_critical,
+            "dominant_category": dominant,
+            "actionable": actionable,
         }

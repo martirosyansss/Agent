@@ -364,6 +364,7 @@ class Dashboard:
                 "news": self.news_collector.get_news(limit=200),
                 "sentiment": self.news_collector.get_sentiment(),
                 "impact": self.news_collector.get_impact_summary(),
+                "signal": self.news_collector.get_news_signal(),
             })
 
         @app.get("/api/config")

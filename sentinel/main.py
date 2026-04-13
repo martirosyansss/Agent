@@ -289,7 +289,8 @@ async def _run_binance_preflight(settings: Settings) -> dict[str, int | bool | s
                 headers=headers,
                 params=_build_signed_binance_params(settings),
             )
-        except Exception:
+        except Exception as _restr_err:
+            log.debug("API restrictions query failed (non-critical): {}", _restr_err)
             restrictions_payload = None
 
         permissions_ok, permissions_reason = _evaluate_binance_permissions(
@@ -609,7 +610,7 @@ async def run() -> None:
         from strategy.macd_divergence import MACDDivergence
         from strategy.grid_trading import GridTrading
         from strategy.market_regime import detect_regime
-        from strategy.strategy_selector import get_active_strategies, get_strategy_budget_pct
+        from strategy.strategy_selector import get_active_strategies, get_strategy_budget_pct, AdaptiveAllocator
 
         feature_builder = FeatureBuilder()
 
@@ -630,6 +631,12 @@ async def run() -> None:
 
     _current_regime = None
     _last_features = None  # последний FeatureVector для дашборда
+    _adaptive_allocator = None
+    try:
+        _adaptive_allocator = AdaptiveAllocator(lookback_trades=50)
+        log.info("[Module] AdaptiveAllocator initialized")
+    except Exception as e:
+        log.warning("[Module] AdaptiveAllocator failed: {}", e)
 
     # Position sizer & dynamic SL/TP & alerts
     _position_sizer = None
@@ -643,6 +650,28 @@ async def run() -> None:
         log.info("[Module] Position sizer + Dynamic SL/TP + Alert monitor initialized")
     except Exception as e:
         log.warning("[Module] Advanced risk modules failed: {}", e)
+
+    # ML Predictor — фильтрация сигналов
+    _ml_predictor = None
+    try:
+        from analyzer.ml_predictor import MLPredictor, MLConfig
+        _ml_predictor = MLPredictor(MLConfig(
+            block_threshold=settings.analyzer_ml_block_threshold,
+            min_precision=settings.analyzer_ml_min_precision,
+            min_recall=settings.analyzer_ml_min_recall,
+            min_roc_auc=settings.analyzer_ml_min_roc_auc,
+            min_skill_score=settings.analyzer_ml_min_skill_score,
+            min_trades=settings.analyzer_min_trades_ml,
+            retrain_days=settings.analyzer_ml_retrain_days,
+            test_window_days=settings.analyzer_ml_test_window_days,
+        ))
+        if settings.analyzer_ml_shadow_mode:
+            _ml_predictor.rollout_mode = "shadow"
+        elif settings.analyzer_ml_enabled:
+            _ml_predictor.rollout_mode = "block"
+        log.info("[Module] ML Predictor initialized (mode={})", _ml_predictor.rollout_mode)
+    except Exception as e:
+        log.warning("[Module] ML Predictor failed: {}", e)
 
     # ── Strategy Decision Log (ring buffer) ──
     from collections import deque
@@ -667,7 +696,7 @@ async def run() -> None:
 
         symbol = candle.symbol
         ts_now = int(time.time() * 1000)
-        log.debug("Trading loop triggered: {} {} candle closed", symbol, candle.interval)
+        log.info("Trading loop triggered: {} {} candle closed @ {:.2f}", symbol, candle.interval, candle.close)
 
         # 1. Собрать свечи из БД
         try:
@@ -677,13 +706,16 @@ async def run() -> None:
             candles_4h_raw = await asyncio.to_thread(
                 repo.get_candles, symbol, "4h", limit=60
             )
+            candles_1d_raw = await asyncio.to_thread(
+                repo.get_candles, symbol, "1d", limit=60
+            )
         except Exception as e:
             log.warning("Failed to fetch candles for {}: {}", symbol, e)
             _strategy_log.append({"ts": ts_now, "symbol": symbol, "event": "error", "msg": f"Failed to fetch candles: {e}"})
             return
 
         if not candles_1h_raw or not candles_4h_raw:
-            log.debug("Not enough candles for {}", symbol)
+            log.info("Not enough candles for {} (1h={}, 4h={})", symbol, len(candles_1h_raw or []), len(candles_4h_raw or []))
             _strategy_log.append({"ts": ts_now, "symbol": symbol, "event": "skip", "msg": f"Not enough candles (1h={len(candles_1h_raw or [])}, 4h={len(candles_4h_raw or [])})"})
             return
 
@@ -706,10 +738,20 @@ async def run() -> None:
             ) for c in candles_4h_raw
         ]
 
-        # 2. FeatureBuilder
-        features = feature_builder.build(symbol, candles_1h, candles_4h)
+        # Convert daily candles (may be empty, feature_builder handles None)
+        candles_1d = [
+            CandleModel(
+                timestamp=c["timestamp"], symbol=c["symbol"], interval=c["interval"],
+                open=float(c["open"]), high=float(c["high"]), low=float(c["low"]),
+                close=float(c["close"]), volume=float(c.get("volume", 0)),
+                trades_count=int(c.get("trades_count", 0)),
+            ) for c in (candles_1d_raw or [])
+        ] or None
+
+        # 2. FeatureBuilder (with daily candles for multi-TF)
+        features = feature_builder.build(symbol, candles_1h, candles_4h, candles_1d)
         if features is None:
-            log.debug("FeatureBuilder returned None for {} (not enough data)", symbol)
+            log.info("FeatureBuilder returned None for {} (1h={}, 4h={} candles)", symbol, len(candles_1h), len(candles_4h))
             _strategy_log.append({"ts": ts_now, "symbol": symbol, "event": "skip", "msg": "FeatureBuilder: not enough data to compute indicators"})
             return
 
@@ -720,10 +762,17 @@ async def run() -> None:
             try:
                 sentiment_data = news_collector.get_sentiment()
                 impact_data = news_collector.get_impact_summary()
+                news_signal = news_collector.get_news_signal()
                 features.news_sentiment = sentiment_data.get("overall_score", 0.0)
                 features.fear_greed_index = sentiment_data.get("fear_greed_index", 50)
                 features.news_impact_pct = impact_data.get("avg_impact_pct", 0.0)
                 features.high_impact_news = impact_data.get("high_impact_count", 0)
+                # Pro fields
+                features.news_composite_score = news_signal.get("composite_score", 0.0)
+                features.news_signal_strength = news_signal.get("signal_strength", 0.0)
+                features.news_critical_alert = news_signal.get("critical_alert", False)
+                features.news_actionable = news_signal.get("actionable", False)
+                features.news_dominant_category = news_signal.get("dominant_category", "")
             except Exception as e:
                 log.debug("News sentiment enrichment failed: {}", e)
 
@@ -738,7 +787,11 @@ async def run() -> None:
 
         # 4. Определить активные стратегии
         if settings.auto_strategy_selection and _current_regime:
-            active_names = get_active_strategies(_current_regime)
+            if _adaptive_allocator and _adaptive_allocator._skill_scores:
+                allocs = _adaptive_allocator.get_adaptive_allocations(_current_regime)
+                active_names = [a.strategy_name for a in allocs if a.is_active]
+            else:
+                active_names = get_active_strategies(_current_regime)
         else:
             # По умолчанию — только EMA crossover
             active_names = ["ema_crossover_rsi"]
@@ -771,15 +824,33 @@ async def run() -> None:
                 strat_results.append({"strategy": strat_name, "result": "no_signal"})
                 continue
 
-            # Рассчитать suggested_quantity если не задана
+            # Compute position size with real Kelly params from recent trades
             if signal.suggested_quantity <= 0 and signal.direction == Direction.BUY:
                 balance = position_manager.balance
                 if _position_sizer and features.atr > 0:
-                    # Dynamic position sizing via Kelly + ATR
+                    _kelly_win_rate = 0.45
+                    _kelly_avg_win = 2.5
+                    _kelly_avg_loss = 2.5
+                    try:
+                        _recent = await asyncio.to_thread(
+                            repo.get_strategy_trades, strat_name, limit=50
+                        ) if repo else []
+                        if len(_recent) >= 30:
+                            _wins = [t for t in _recent if t.get("pnl_pct", 0) > 0]
+                            _losses = [t for t in _recent if t.get("pnl_pct", 0) <= 0]
+                            _kelly_win_rate = len(_wins) / len(_recent) if _recent else 0.5
+                            _kelly_avg_win = sum(t.get("pnl_pct", 0) for t in _wins) / len(_wins) if _wins else 3.0
+                            _kelly_avg_loss = abs(sum(t.get("pnl_pct", 0) for t in _losses) / len(_losses)) if _losses else 2.0
+                    except Exception as _kelly_err:
+                        log.debug("Kelly stats fetch failed: {}", _kelly_err)
+
                     sizing = calculate_position_size(SizingInput(
                         balance=balance,
                         price=features.close,
                         atr=features.atr,
+                        win_rate=_kelly_win_rate,
+                        avg_win_pct=_kelly_avg_win,
+                        avg_loss_pct=max(_kelly_avg_loss, 0.1),
                         regime_adx=features.adx,
                         max_position_pct=settings.max_position_pct,
                         max_order_usd=settings.max_order_usd,
@@ -812,6 +883,54 @@ async def run() -> None:
                           sltp.method, sltp.stop_loss_price, sltp.stop_loss_pct,
                           sltp.take_profit_price, sltp.take_profit_pct)
 
+            # 6.5 ML Predictor filter
+            if _ml_predictor and settings.analyzer_ml_enabled and _ml_predictor.rollout_mode != "off":
+                try:
+                    from core.models import StrategyTrade as _ST
+                    _ml_trade = _ST(
+                        trade_id="pending",
+                        symbol=symbol,
+                        strategy_name=strat_name,
+                        market_regime=regime_name,
+                        entry_price=features.close,
+                        confidence=signal.confidence,
+                        hour_of_day=int(time.strftime("%H")),
+                        day_of_week=int(time.strftime("%w")),
+                        rsi_at_entry=features.rsi_14,
+                        adx_at_entry=features.adx,
+                        volume_ratio_at_entry=features.volume_ratio,
+                        news_sentiment=features.news_sentiment,
+                        fear_greed_index=features.fear_greed_index,
+                    )
+                    _prev_trades_for_ml = []
+                    if repo:
+                        try:
+                            _raw = await asyncio.to_thread(repo.get_strategy_trades, strat_name, limit=20)
+                            _prev_trades_for_ml = [_ST(**t) if isinstance(t, dict) else t for t in _raw]
+                        except Exception as _ml_hist_err:
+                            log.debug("ML history fetch failed: {}", _ml_hist_err)
+                    _ml_features = _ml_predictor.extract_features(_ml_trade, _prev_trades_for_ml)
+                    _ml_pred = _ml_predictor.predict(_ml_features)
+                    log.info("ML prediction: {} prob={:.2f} decision={} mode={}",
+                             strat_name, _ml_pred.probability, _ml_pred.decision, _ml_pred.rollout_mode)
+                    if _ml_pred.decision == "block":
+                        log.info("ML BLOCKED signal: {} {} {} prob={:.2f}",
+                                 strat_name, signal.direction.value, symbol, _ml_pred.probability)
+                        strat_results.append({"strategy": strat_name, "result": "ml_blocked",
+                                              "detail": f"ML blocked: prob={_ml_pred.probability:.2f}"})
+                        if repo:
+                            try:
+                                repo.insert_signal_execution(
+                                    timestamp=ts_now, symbol=symbol, strategy_name=strat_name,
+                                    direction=signal.direction.value, confidence=signal.confidence,
+                                    outcome="ml_blocked", reason=f"ML prob={_ml_pred.probability:.2f}",
+                                )
+                            except Exception as _ml_audit_err:
+                                log.debug("ML block audit write failed: {}", _ml_audit_err)
+                        continue
+                except Exception as e:
+                    log.debug("ML prediction failed: {}", e)
+
             # 7. Risk check
             daily_pnl = position_manager.total_realized_pnl
             check = risk_sentinel.check_signal(
@@ -836,8 +955,8 @@ async def run() -> None:
                             direction=signal.direction.value, confidence=signal.confidence,
                             outcome="rejected", reason=check.reason,
                         )
-                    except Exception:
-                        pass
+                    except Exception as _rej_audit_err:
+                        log.debug("Rejection audit write failed: {}", _rej_audit_err)
                 if _alert_monitor:
                     _alert_monitor.record_signal_rejection(check.reason)
                 continue
@@ -871,8 +990,8 @@ async def run() -> None:
                                 direction=signal.direction.value, confidence=signal.confidence,
                                 outcome="filled", reason=signal.reason, latency_ms=_exec_ms,
                             )
-                        except Exception:
-                            pass
+                        except Exception as _fill_audit_err:
+                            log.debug("Fill audit write failed: {}", _fill_audit_err)
                     if _alert_monitor:
                         _alert_monitor.check_execution_latency(ts_now, ts_now + _exec_ms)
             except Exception as e:
@@ -886,8 +1005,8 @@ async def run() -> None:
                             direction=signal.direction.value, confidence=signal.confidence,
                             outcome="error", reason=str(e),
                         )
-                    except Exception:
-                        pass
+                    except Exception as _err_audit_err:
+                        log.debug("Error audit write failed: {}", _err_audit_err)
 
             strat_results.append({"strategy": strat_name, "result": "signal", "detail": order_msg})
             signal_found = True
@@ -974,7 +1093,8 @@ async def run() -> None:
 
         try:
             candles = repo.get_candles(primary_symbol, interval, limit=limit)
-        except Exception:
+        except Exception as _candle_err:
+            log.debug("Chart candle fetch failed: {}", _candle_err)
             candles = []
 
         time_fmt = "%H:%M" if interval in ("1m", "5m", "15m") else (
@@ -987,7 +1107,8 @@ async def run() -> None:
             raw_limit = bucket_mins * limit
             try:
                 raw = repo.get_candles(primary_symbol, "1m", limit=raw_limit)
-            except Exception:
+            except Exception as _agg_err:
+                log.debug("Aggregation candle fetch failed: {}", _agg_err)
                 raw = []
             if len(raw) >= bucket_mins:
                 aggregated = []
@@ -1030,7 +1151,8 @@ async def run() -> None:
         if interval == "1m":
             try:
                 trades = repo.get_recent_trades(primary_symbol, limit=120)
-            except Exception:
+            except Exception as _trade_err:
+                log.debug("Chart trades fetch failed: {}", _trade_err)
                 trades = []
             trades = list(reversed(trades[-60:])) if trades else []
             if len(trades) >= 2:
@@ -1200,8 +1322,8 @@ async def run() -> None:
                     {"name": f"4h candles", "done": pct_4h >= 100, "detail": f"{n_4h}/{MIN_CANDLES_4H}", "pct": round(pct_4h, 1)},
                 ],
             }
-        except Exception:
-            pass
+        except Exception as _ready_err:
+            log.debug("Readiness check failed: {}", _ready_err)
 
         return {
             "mode": settings.trading_mode,
@@ -1269,7 +1391,12 @@ async def run() -> None:
 
         # News collector
         from collector.news_collector import NewsCollector
-        news_collector = NewsCollector(update_interval=300, groq_api_key=settings.groq_api_key)
+        news_collector = NewsCollector(
+            update_interval=300,
+            groq_api_key=settings.groq_api_key,
+            openrouter_api_key=settings.openrouter_api_key,
+            db=db,
+        )
         dashboard.news_collector = news_collector
         await news_collector.start()
         log.info("[Module] NewsCollector started (5min interval)")
@@ -1291,6 +1418,28 @@ async def run() -> None:
     # Heartbeat writer (шаг 19)
     heartbeat_task = asyncio.create_task(heartbeat_writer(settings))
 
+    # Monitor background tasks for unexpected failures
+    _background_tasks: list[tuple[str, asyncio.Task]] = [
+        ("equity_snapshot", equity_task),
+        ("heartbeat", heartbeat_task),
+    ]
+    if collector_task:
+        _background_tasks.append(("collector", collector_task))
+
+    async def _task_watchdog():
+        """Monitor background tasks and log if any fail unexpectedly."""
+        while True:
+            await asyncio.sleep(10)
+            for name, task in _background_tasks:
+                if task.done() and not task.cancelled():
+                    exc = task.exception()
+                    if exc:
+                        log.error("Background task '{}' crashed: {} — system may be inconsistent!", name, exc)
+                        if _alert_monitor:
+                            _alert_monitor.send_critical_alert(f"Task '{name}' crashed: {exc}")
+
+    watchdog_task = asyncio.create_task(_task_watchdog())
+
     log.info("🟢 Система запущена. Режим: {} TRADING", settings.trading_mode.upper())
 
     # Ожидание сигнала остановки
@@ -1298,9 +1447,10 @@ async def run() -> None:
 
     # Graceful shutdown sequence
     log.info("Остановка системы...")
+    watchdog_task.cancel()
     heartbeat_task.cancel()
     equity_task.cancel()
-    await asyncio.gather(heartbeat_task, equity_task, return_exceptions=True)
+    await asyncio.gather(watchdog_task, heartbeat_task, equity_task, return_exceptions=True)
     if collector:
         await collector.stop()
     if collector_task:

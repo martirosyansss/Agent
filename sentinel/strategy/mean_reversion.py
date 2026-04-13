@@ -21,12 +21,12 @@ from strategy.base_strategy import BaseStrategy
 
 @dataclass
 class MeanRevConfig:
-    rsi_oversold: float = 25.0
+    rsi_oversold: float = 30.0
     rsi_overbought: float = 75.0
     stop_loss_pct: float = 4.0
     take_profit_pct: float = 6.0
     min_volume_ratio: float = 1.5
-    min_confidence: float = 0.80
+    min_confidence: float = 0.72
     max_position_pct: float = 15.0
 
     def __post_init__(self):
@@ -42,6 +42,7 @@ class MeanReversion(BaseStrategy):
     NAME = "mean_reversion"
 
     def __init__(self, config: MeanRevConfig | None = None) -> None:
+        super().__init__()
         self._cfg = config or MeanRevConfig()
 
     def generate_signal(
@@ -106,6 +107,11 @@ class MeanReversion(BaseStrategy):
             return None
         # Volume confirmation
         if features.volume_ratio < cfg.min_volume_ratio:
+            return None
+
+        # Trend filter: do NOT buy in strong downtrend (catching a falling knife)
+        if (features.ema_9 < features.ema_21 < features.ema_50
+                and features.ema_50 > 0 and features.adx > 25):
             return None
 
         # Confidence scoring

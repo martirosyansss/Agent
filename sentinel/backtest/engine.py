@@ -82,6 +82,7 @@ class BacktestEngine:
         candles_1h: list[Candle],
         candles_4h: list[Candle],
         symbol: str = "BTCUSDT",
+        candles_1d: list[Candle] | None = None,
     ) -> BacktestResult:
         """Прогнать стратегию по историческим свечам.
 
@@ -90,6 +91,7 @@ class BacktestEngine:
             candles_1h: 1h свечи (отсортированы по времени).
             candles_4h: 4h свечи.
             symbol: Торговый символ.
+            candles_1d: 1d свечи (опционально, для multi-TF).
 
         Returns:
             BacktestResult с полными метриками.
@@ -124,7 +126,14 @@ class BacktestEngine:
             if len(window_4h) > min_history:
                 window_4h = window_4h[-min_history:]
 
-            features = self._feature_builder.build(symbol, window_1h, window_4h)
+            # 1d свечи (если есть)
+            window_1d = None
+            if candles_1d:
+                window_1d = [c for c in candles_1d if c.timestamp <= candle.timestamp]
+                if len(window_1d) > min_history:
+                    window_1d = window_1d[-min_history:]
+
+            features = self._feature_builder.build(symbol, window_1h, window_4h, window_1d)
             if features is None:
                 continue
 
@@ -137,7 +146,7 @@ class BacktestEngine:
 
             # Проверить SL/TP для открытой позиции
             if in_position:
-                if stop_loss > 0 and price <= stop_loss:
+                if stop_loss > 0 and candle.low <= stop_loss:
                     # Stop-loss triggered
                     exit_price = stop_loss * (1 - cfg.slippage_pct / 100)
                     comm = quantity * exit_price * cfg.commission_pct / 100
@@ -154,7 +163,7 @@ class BacktestEngine:
                     in_position = False
                     continue
 
-                if take_profit > 0 and price >= take_profit:
+                if take_profit > 0 and candle.high >= take_profit:
                     exit_price = take_profit * (1 - cfg.slippage_pct / 100)
                     comm = quantity * exit_price * cfg.commission_pct / 100
                     pnl = (exit_price - entry_price) * quantity - comm

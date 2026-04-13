@@ -10,6 +10,7 @@ Position Manager — управление позициями и расчёт PnL
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -58,6 +59,7 @@ class PositionManager:
             usdt_balance=initial_balance,
         )
         self._max_open_positions = max_open_positions
+        self._lock = asyncio.Lock()  # Protects position open/close operations
         self._positions: dict[str, Position] = {}  # symbol → Position
         self._sl_tp: dict[str, tuple[float, float]] = {}  # symbol → (stop_loss, take_profit)
         self._closed_positions: list[Position] = []
@@ -155,76 +157,77 @@ class PositionManager:
         take_profit_price: float = 0.0,
     ) -> Optional[Position]:
         """Открыть позицию по исполненному BUY ордеру."""
-        if order.side != Direction.BUY:
-            logger.warning("Cannot open position from SELL order")
-            return None
+        async with self._lock:
+            if order.side != Direction.BUY:
+                logger.warning("Cannot open position from SELL order")
+                return None
 
-        if self.open_positions_count >= self._max_open_positions:
-            logger.warning("Max open positions reached (%d)", self._max_open_positions)
-            return None
+            if self.open_positions_count >= self._max_open_positions:
+                logger.warning("Max open positions reached (%d)", self._max_open_positions)
+                return None
 
-        if self.has_position(order.symbol):
-            logger.warning("Position already open for %s", order.symbol)
-            return None
+            if self.has_position(order.symbol):
+                logger.warning("Position already open for %s", order.symbol)
+                return None
 
-        fill_price = order.fill_price or order.price or 0
-        fill_qty = order.fill_quantity or order.quantity
+            fill_price = order.fill_price or order.price or 0
+            fill_qty = order.fill_quantity or order.quantity
 
-        if fill_price <= 0:
-            logger.error("Invalid fill_price for %s: %s — rejecting open", order.symbol, fill_price)
-            return None
-        if fill_qty <= 0:
-            logger.error("Invalid fill_qty for %s: %s — rejecting open", order.symbol, fill_qty)
-            return None
+            if fill_price <= 0:
+                logger.error("Invalid fill_price for %s: %s — rejecting open", order.symbol, fill_price)
+                return None
+            if fill_qty <= 0:
+                logger.error("Invalid fill_qty for %s: %s — rejecting open", order.symbol, fill_qty)
+                return None
 
-        cost = fill_qty * fill_price + order.commission
-        effective_stop_loss = stop_loss_price or order.stop_loss_price
-        effective_take_profit = take_profit_price or order.take_profit_price
+            cost = fill_qty * fill_price + order.commission
+            effective_stop_loss = stop_loss_price or order.stop_loss_price
+            effective_take_profit = take_profit_price or order.take_profit_price
 
-        if cost > self.wallet.usdt_balance:
-            logger.warning(
-                "Insufficient balance: need $%.2f, have $%.2f",
-                cost, self.wallet.usdt_balance,
+            if cost > self.wallet.usdt_balance:
+                logger.warning(
+                    "Insufficient balance: need $%.2f, have $%.2f",
+                    cost, self.wallet.usdt_balance,
+                )
+                return None
+
+            # Списать средства
+            self.wallet.usdt_balance -= cost
+            if self.wallet.usdt_balance < 0:
+                logger.error("Balance went negative after open: $%.4f — reverting", self.wallet.usdt_balance)
+                self.wallet.usdt_balance += cost
+                return None
+
+            position = Position(
+                symbol=order.symbol,
+                side="LONG",
+                entry_price=fill_price,
+                quantity=fill_qty,
+                current_price=fill_price,
+                unrealized_pnl=0.0,
+                realized_pnl=0.0,
+                stop_loss_price=effective_stop_loss,
+                take_profit_price=effective_take_profit,
+                strategy_name=order.strategy_name,
+                signal_id=order.signal_id,
+                signal_reason=order.signal_reason,
+                status=PositionStatus.OPEN,
+                opened_at=str(int(time.time() * 1000)),
+                is_paper=order.is_paper,
             )
-            return None
 
-        # Списать средства
-        self.wallet.usdt_balance -= cost
-        if self.wallet.usdt_balance < 0:
-            logger.error("Balance went negative after open: $%.4f — reverting", self.wallet.usdt_balance)
-            self.wallet.usdt_balance += cost
-            return None
+            # Сохранить SL/TP
+            self._sl_tp[order.symbol] = (effective_stop_loss, effective_take_profit)
 
-        position = Position(
-            symbol=order.symbol,
-            side="LONG",
-            entry_price=fill_price,
-            quantity=fill_qty,
-            current_price=fill_price,
-            unrealized_pnl=0.0,
-            realized_pnl=0.0,
-            stop_loss_price=effective_stop_loss,
-            take_profit_price=effective_take_profit,
-            strategy_name=order.strategy_name,
-            signal_id=order.signal_id,
-            signal_reason=order.signal_reason,
-            status=PositionStatus.OPEN,
-            opened_at=str(int(time.time() * 1000)),
-            is_paper=order.is_paper,
-        )
+            self._positions[order.symbol] = position
+            self._record_equity_snapshot()
+            logger.info(
+                "Position opened: %s @ %.2f qty=%.6f SL=%.2f TP=%.2f",
+                order.symbol, fill_price, fill_qty, effective_stop_loss, effective_take_profit,
+            )
 
-        # Сохранить SL/TP
-        self._sl_tp[order.symbol] = (effective_stop_loss, effective_take_profit)
-
-        self._positions[order.symbol] = position
-        self._record_equity_snapshot()
-        logger.info(
-            "Position opened: %s @ %.2f qty=%.6f SL=%.2f TP=%.2f",
-            order.symbol, fill_price, fill_qty, effective_stop_loss, effective_take_profit,
-        )
-
-        await self._event_bus.emit(EVENT_POSITION_OPENED, position)
-        return position
+            await self._event_bus.emit(EVENT_POSITION_OPENED, position)
+            return position
 
     # ──────────────────────────────────────────────
     # Close position
@@ -235,53 +238,54 @@ class PositionManager:
         order: Order,
     ) -> Optional[Position]:
         """Закрыть позицию по исполненному SELL ордеру."""
-        if order.side != Direction.SELL:
-            logger.warning("Cannot close position from BUY order")
-            return None
+        async with self._lock:
+            if order.side != Direction.SELL:
+                logger.warning("Cannot close position from BUY order")
+                return None
 
-        position = self._positions.get(order.symbol)
-        if not position:
-            logger.warning("No open position for %s", order.symbol)
-            return None
+            position = self._positions.get(order.symbol)
+            if not position:
+                logger.warning("No open position for %s", order.symbol)
+                return None
 
-        fill_price = order.fill_price or order.price or 0
-        fill_qty = order.fill_quantity or order.quantity
+            fill_price = order.fill_price or order.price or 0
+            fill_qty = order.fill_quantity or order.quantity
 
-        if fill_price <= 0:
-            logger.error("Invalid fill_price on close for %s: %s", order.symbol, fill_price)
-            return None
+            if fill_price <= 0:
+                logger.error("Invalid fill_price on close for %s: %s", order.symbol, fill_price)
+                return None
 
-        # Расчёт PnL
-        realized_pnl = (fill_price - position.entry_price) * fill_qty - order.commission
-        position.realized_pnl = realized_pnl
-        position.current_price = fill_price
-        position.status = PositionStatus.CLOSED
-        position.closed_at = str(int(time.time() * 1000))
+            # Расчёт PnL
+            realized_pnl = (fill_price - position.entry_price) * fill_qty - order.commission
+            position.realized_pnl = realized_pnl
+            position.current_price = fill_price
+            position.status = PositionStatus.CLOSED
+            position.closed_at = str(int(time.time() * 1000))
 
-        # Вернуть средства
-        self.wallet.usdt_balance += fill_qty * fill_price - order.commission
-        self._total_realized_pnl += realized_pnl
+            # Вернуть средства
+            self.wallet.usdt_balance += fill_qty * fill_price - order.commission
+            self._total_realized_pnl += realized_pnl
 
-        # Статистика
-        self._trades_today += 1
-        if realized_pnl > 0:
-            self._wins_today += 1
-        else:
-            self._losses_today += 1
+            # Статистика
+            self._trades_today += 1
+            if realized_pnl > 0:
+                self._wins_today += 1
+            else:
+                self._losses_today += 1
 
-        # Переместить в закрытые
-        del self._positions[order.symbol]
-        self._sl_tp.pop(order.symbol, None)
-        self._closed_positions.append(position)
-        self._record_equity_snapshot()
+            # Переместить в закрытые
+            del self._positions[order.symbol]
+            self._sl_tp.pop(order.symbol, None)
+            self._closed_positions.append(position)
+            self._record_equity_snapshot()
 
-        logger.info(
-            "Position closed: %s @ %.2f PnL=%.2f",
-            order.symbol, fill_price, realized_pnl,
-        )
+            logger.info(
+                "Position closed: %s @ %.2f PnL=%.2f",
+                order.symbol, fill_price, realized_pnl,
+            )
 
-        await self._event_bus.emit(EVENT_POSITION_CLOSED, position)
-        return position
+            await self._event_bus.emit(EVENT_POSITION_CLOSED, position)
+            return position
 
     # ──────────────────────────────────────────────
     # Price updates & SL/TP checker

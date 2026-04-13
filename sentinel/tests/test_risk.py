@@ -290,6 +290,8 @@ class TestCircuitBreakers:
     def test_cb2_consecutive_losses(self, cbs):
         cbs.record_trade_result(False)
         cbs.record_trade_result(False)
+        cbs.record_trade_result(False)
+        cbs.record_trade_result(False)
         assert cbs.is_trading_allowed() is True
         result = cbs.record_trade_result(False)
         assert result is not None
