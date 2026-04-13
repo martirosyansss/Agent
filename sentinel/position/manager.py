@@ -68,7 +68,8 @@ class PositionManager:
         self._peak_balance: float = initial_balance
         self._max_drawdown_pct: float = 0.0
         self._equity_history: list[dict[str, float | str]] = []
-        self._record_equity_snapshot()
+        self._last_snapshot_time: float = 0.0
+        self._record_equity_snapshot(force=True)
 
     # ──────────────────────────────────────────────
     # Queries
@@ -118,7 +119,7 @@ class PositionManager:
     def equity_history(self) -> list[dict[str, float | str]]:
         return list(self._equity_history)
 
-    def _record_equity_snapshot(self) -> None:
+    def _record_equity_snapshot(self, force: bool = False) -> None:
         balance = self.balance
         if balance > self._peak_balance:
             self._peak_balance = balance
@@ -128,15 +129,20 @@ class PositionManager:
             drawdown_pct = max(0.0, (self._peak_balance - balance) / self._peak_balance * 100)
         self._max_drawdown_pct = max(self._max_drawdown_pct, drawdown_pct)
 
+        # Throttle chart history: max 1 snapshot per 30s unless forced
+        now = time.time()
+        if not force and (now - self._last_snapshot_time) < 30:
+            return
+
         snapshot = {
             "date": str(int(time.time() * 1000)),
             "label": time.strftime("%H:%M:%S", time.localtime()),
             "pnl": round(balance - self.wallet.initial_balance, 4),
             "balance": round(balance, 4),
         }
-        if not self._equity_history or self._equity_history[-1]["pnl"] != snapshot["pnl"]:
-            self._equity_history.append(snapshot)
-            self._equity_history = self._equity_history[-100:]
+        self._equity_history.append(snapshot)
+        self._equity_history = self._equity_history[-100:]
+        self._last_snapshot_time = now
 
     # ──────────────────────────────────────────────
     # Open position
@@ -163,6 +169,14 @@ class PositionManager:
 
         fill_price = order.fill_price or order.price or 0
         fill_qty = order.fill_quantity or order.quantity
+
+        if fill_price <= 0:
+            logger.error("Invalid fill_price for %s: %s — rejecting open", order.symbol, fill_price)
+            return None
+        if fill_qty <= 0:
+            logger.error("Invalid fill_qty for %s: %s — rejecting open", order.symbol, fill_qty)
+            return None
+
         cost = fill_qty * fill_price + order.commission
         effective_stop_loss = stop_loss_price or order.stop_loss_price
         effective_take_profit = take_profit_price or order.take_profit_price
@@ -176,6 +190,10 @@ class PositionManager:
 
         # Списать средства
         self.wallet.usdt_balance -= cost
+        if self.wallet.usdt_balance < 0:
+            logger.error("Balance went negative after open: $%.4f — reverting", self.wallet.usdt_balance)
+            self.wallet.usdt_balance += cost
+            return None
 
         position = Position(
             symbol=order.symbol,
@@ -228,6 +246,10 @@ class PositionManager:
 
         fill_price = order.fill_price or order.price or 0
         fill_qty = order.fill_quantity or order.quantity
+
+        if fill_price <= 0:
+            logger.error("Invalid fill_price on close for %s: %s", order.symbol, fill_price)
+            return None
 
         # Расчёт PnL
         realized_pnl = (fill_price - position.entry_price) * fill_qty - order.commission

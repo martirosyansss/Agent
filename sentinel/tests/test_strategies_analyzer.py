@@ -567,6 +567,35 @@ class TestMLPredictor:
         assert len(features) == len(FEATURE_NAMES)
         assert features[0] == 45.0  # rsi
         assert features[1] == 30.0  # adx
+        assert features[2] > 0.0
+        assert features[3] > 0.0
+        assert features[5] > 0.0
+
+    def test_extract_features_with_history_context(self):
+        from analyzer.ml_predictor import MLPredictor
+
+        ml = MLPredictor()
+        prev_1 = make_trade(pnl=1.0, is_win=True)
+        prev_1.timestamp_open = "2026-01-01T08:00:00"
+        prev_1.timestamp_close = "2026-01-01T09:00:00"
+
+        prev_2 = make_trade(pnl=-0.5, is_win=False)
+        prev_2.timestamp_open = "2026-01-01T09:30:00"
+        prev_2.timestamp_close = "2026-01-01T10:00:00"
+
+        prev_3 = make_trade(pnl=-0.25, is_win=False)
+        prev_3.timestamp_open = "2026-01-01T10:30:00"
+        prev_3.timestamp_close = "2026-01-01T11:00:00"
+
+        current = make_trade(pnl=0.75, is_win=True)
+        current.timestamp_open = "2026-01-01T12:00:00"
+        current.timestamp_close = "2026-01-01T13:00:00"
+
+        features = ml.extract_features(current, previous_trades=[prev_1, prev_2, prev_3])
+        assert features[11] == pytest.approx(1 / 3, abs=1e-6)
+        assert features[12] == pytest.approx(1.0, abs=1e-6)
+        assert features[13] == pytest.approx(0.25, abs=1e-6)
+        assert features[14] == 2.0
 
     def test_insufficient_trades_for_train(self):
         from analyzer.ml_predictor import MLPredictor

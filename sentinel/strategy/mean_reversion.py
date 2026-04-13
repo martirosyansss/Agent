@@ -29,6 +29,12 @@ class MeanRevConfig:
     min_confidence: float = 0.80
     max_position_pct: float = 15.0
 
+    def __post_init__(self):
+        if self.stop_loss_pct <= 0 or self.stop_loss_pct > 50:
+            raise ValueError(f"stop_loss_pct must be (0, 50], got {self.stop_loss_pct}")
+        if self.take_profit_pct <= 0:
+            raise ValueError(f"take_profit_pct must be > 0, got {self.take_profit_pct}")
+
 
 class MeanReversion(BaseStrategy):
     """Стратегия V3: Mean Reversion — торговля от экстремумов RSI + BB."""
@@ -50,6 +56,12 @@ class MeanReversion(BaseStrategy):
 
         # ── SELL (если есть позиция) ──
         if has_open_position and entry_price is not None:
+            if entry_price <= 0:
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=0.99, strategy_name=self.NAME,
+                    reason=f"SAFETY: invalid entry_price={entry_price}",
+                )
             pnl_pct = (features.close - entry_price) / entry_price * 100
 
             # Take profit
@@ -104,6 +116,15 @@ class MeanReversion(BaseStrategy):
             confidence += 0.08
         if features.ema_50 > 0 and features.close > features.ema_50 * 0.95:
             confidence += 0.07
+
+        # News sentiment: fear = contrarian buy signal for mean reversion
+        if features.news_sentiment < -0.3 or features.fear_greed_index <= 20:
+            confidence += 0.10  # extreme fear = хорошо для mean reversion
+        elif features.news_sentiment < -0.15:
+            confidence += 0.05
+        elif features.news_sentiment > 0.3:
+            confidence -= 0.05  # bullish news = меньше шансов на reversion
+
         confidence = min(confidence, 0.95)
 
         if confidence < cfg.min_confidence:
@@ -112,9 +133,13 @@ class MeanReversion(BaseStrategy):
         sl = features.close * (1 - cfg.stop_loss_pct / 100)
         tp = features.close * (1 + cfg.take_profit_pct / 100)
 
+        reason = f"MeanRev BUY: RSI={features.rsi_14:.1f}, price<lowerBB, vol_ratio={features.volume_ratio:.1f}"
+        if features.news_sentiment != 0.0:
+            reason += f", sentiment={features.news_sentiment:+.2f}"
+
         return Signal(
             timestamp=now_ms, symbol=sym, direction=Direction.BUY,
             confidence=confidence, strategy_name=self.NAME,
-            reason=f"MeanRev BUY: RSI={features.rsi_14:.1f}, price<lowerBB, vol_ratio={features.volume_ratio:.1f}",
+            reason=reason,
             stop_loss_price=sl, take_profit_price=tp,
         )

@@ -61,6 +61,11 @@ def validate_candle(c: Candle) -> bool:
         log.warning("Candle rejected: high < low ({} {} h={} l={})", c.symbol, c.interval, c.high, c.low)
         return False
 
+    if not (c.low <= c.close <= c.high):
+        log.warning("Candle rejected: close outside high/low ({} {} c={} h={} l={})",
+                    c.symbol, c.interval, c.close, c.high, c.low)
+        return False
+
     if c.volume < 0:
         log.warning("Candle rejected: negative volume ({} {})", c.symbol, c.interval)
         return False

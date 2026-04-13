@@ -32,6 +32,12 @@ class GridConfig:
     max_loss_pct: float = 5.0
     min_confidence: float = 0.70
 
+    def __post_init__(self):
+        if self.num_grids <= 0:
+            raise ValueError(f"num_grids must be > 0, got {self.num_grids}")
+        if self.max_loss_pct <= 0 or self.max_loss_pct > 50:
+            raise ValueError(f"max_loss_pct must be (0, 50], got {self.max_loss_pct}")
+
 
 class GridTrading(BaseStrategy):
     """Стратегия V2: Grid Trading."""
@@ -48,7 +54,7 @@ class GridTrading(BaseStrategy):
         """Построить сетку уровней от lower BB до upper BB."""
         low = f.bb_lower
         high = f.bb_upper
-        if high <= low or low <= 0:
+        if high <= low or low <= 0 or self._cfg.num_grids <= 0:
             return []
         step = (high - low) / self._cfg.num_grids
         return [low + step * i for i in range(self._cfg.num_grids + 1)]
@@ -89,6 +95,12 @@ class GridTrading(BaseStrategy):
 
         # SELL: if has position and price moved up enough from entry
         if has_open_position and entry_price is not None:
+            if entry_price <= 0:
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=0.99, strategy_name=self.NAME,
+                    reason=f"SAFETY: invalid entry_price={entry_price}",
+                )
             pnl_pct = (price - entry_price) / entry_price * 100
             if pnl_pct >= cfg.min_profit_pct:
                 return Signal(
@@ -123,13 +135,25 @@ class GridTrading(BaseStrategy):
                     self._filled_buys.setdefault(sym, set()).add(i)
                     sl = price * (1 - cfg.max_loss_pct / 100)
                     tp = price * (1 + cfg.min_profit_pct / 100)
+
+                    # Grid: sentiment-adjusted confidence
+                    grid_conf = 0.75
+                    if features.news_sentiment > 0.15:
+                        grid_conf += 0.05
+                    elif features.news_sentiment < -0.3:
+                        grid_conf -= 0.05
+
+                    reason = f"Grid BUY at level {i}/{len(levels)-1}, price={price:.2f}"
+                    if features.news_sentiment != 0.0:
+                        reason += f", sentiment={features.news_sentiment:+.2f}"
+
                     return Signal(
                         timestamp=now_ms,
                         symbol=sym,
                         direction=Direction.BUY,
-                        confidence=0.75,
+                        confidence=grid_conf,
                         strategy_name=self.NAME,
-                        reason=f"Grid BUY at level {i}/{len(levels)-1}, price={price:.2f}",
+                        reason=reason,
                         stop_loss_price=sl,
                         take_profit_price=tp,
                     )

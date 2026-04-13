@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTINEL — Settings</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg-page: #06080d;
+            --bg-card: #0c1018;
+            --bg-elevated: #131a27;
+            --bg-hover: #1a2236;
+            --bg-input: #0f1520;
+            --border: rgba(56, 68, 91, 0.45);
+            --border-light: rgba(75, 90, 120, 0.5);
+            --text-primary: #edf0f7;
+            --text-secondary: #8c95a8;
+            --text-muted: #505b6e;
+            --accent: #6366f1;
+            --accent-light: #818cf8;
+            --accent-dim: rgba(99, 102, 241, 0.12);
+            --green: #22c55e;
+            --green-dim: rgba(34, 197, 94, 0.10);
+            --red: #ef4444;
+            --red-dim: rgba(239, 68, 68, 0.10);
+            --amber: #eab308;
+            --amber-dim: rgba(234, 179, 8, 0.10);
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
+            --z-sticky: 20;
+            --ease: cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        html {
+            font-size: 16px;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg-page);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        @media (prefers-reduced-motion: no-preference) {
+            .fade-in { animation: fadeIn 0.35s var(--ease) both; }
+            .fade-in-delay-1 { animation-delay: 0.05s; }
+            .fade-in-delay-2 { animation-delay: 0.1s; }
+            .fade-in-delay-3 { animation-delay: 0.15s; }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes gradientShift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        .accent-bar {
+            height: 3px;
+            background: linear-gradient(90deg, #6366f1, #8b5cf6, #a855f7, #6366f1);
+            background-size: 300% 100%;
+            animation: gradientShift 8s ease-in-out infinite;
+        }
+
+        .header {
+            background: rgba(12, 16, 24, 0.85);
+            backdrop-filter: blur(16px) saturate(180%);
+            -webkit-backdrop-filter: blur(16px) saturate(180%);
+            border-bottom: 1px solid var(--border);
+            padding: 0 28px;
+            height: 56px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: var(--z-sticky);
+        }
+
+        .header-logo {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 16px;
+            font-weight: 800;
+            color: var(--text-primary);
+            text-decoration: none;
+            letter-spacing: -0.03em;
+        }
+
+        .header-logo:hover { color: var(--accent-light); }
+
+        .header-logo-icon {
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, var(--accent), #8b5cf6);
+            border-radius: 8px;
+            color: #fff;
+            flex-shrink: 0;
+        }
+
+        .header-logo-icon svg { width: 16px; height: 16px; }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-sep {
+            width: 1px;
+            height: 20px;
+            background: var(--border);
+        }
+
+        .header-nav-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            border-radius: var(--radius-sm);
+            color: var(--text-muted);
+            transition: all 0.2s var(--ease);
+            text-decoration: none;
+        }
+
+        .header-nav-link:hover,
+        .header-nav-link.active {
+            color: var(--accent-light);
+            background: var(--accent-dim);
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .badge-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .badge-paper { background: var(--accent-dim); color: var(--accent-light); }
+        .badge-paper .badge-dot { background: var(--accent-light); }
+        .badge-live { background: var(--green-dim); color: var(--green); }
+        .badge-live .badge-dot { background: var(--green); }
+
+        .container {
+            max-width: 1360px;
+            margin: 0 auto;
+            padding: 24px 28px 40px;
+        }
+
+        .page-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 22px;
+        }
+
+        .page-title {
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .page-title svg { width: 22px; height: 22px; color: var(--accent-light); }
+
+        .page-subtitle {
+            margin-top: 6px;
+            font-size: 13px;
+            color: var(--text-muted);
+            max-width: 760px;
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 44px;
+            padding: 0 16px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s var(--ease);
+        }
+
+        .back-link:hover {
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            border-color: var(--border-light);
+        }
+
+        .save-bar {
+            position: sticky;
+            top: 72px;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            background: rgba(12, 16, 24, 0.92);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 14px 16px;
+            margin-bottom: 20px;
+        }
+
+        .save-bar-copy { display: grid; gap: 2px; }
+        .save-bar-title { font-size: 13px; font-weight: 700; }
+        .save-bar-subtitle { font-size: 12px; color: var(--text-muted); }
+
+        .save-bar-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .status-note {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            background: rgba(80, 91, 110, 0.12);
+            color: var(--text-muted);
+        }
+
+        .status-note.saved { background: var(--green-dim); color: var(--green); }
+        .status-note.error { background: var(--red-dim); color: var(--red); }
+        .status-note.warning { background: var(--amber-dim); color: var(--amber); }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            min-height: 44px;
+            padding: 0 20px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-family: 'Inter', sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s var(--ease);
+        }
+
+        .btn:focus-visible,
+        .form-control:focus-visible,
+        .toggle-input:focus-visible + .toggle-track {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+            color: #fff;
+            box-shadow: 0 6px 16px rgba(99, 102, 241, 0.2);
+        }
+
+        .btn-primary:hover { background: linear-gradient(135deg, #585af0, #4338ca); }
+
+        .btn-secondary {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover { background: var(--bg-hover); border-color: var(--border-light); }
+
+        .tabs-shell {
+            margin-bottom: 16px;
+        }
+
+        .tab-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .tab-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            min-height: 40px;
+            padding: 0 14px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--bg-elevated);
+            color: var(--text-secondary);
+            font: inherit;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+            cursor: pointer;
+            transition: all 0.2s var(--ease);
+        }
+
+        .tab-button:hover {
+            color: var(--text-primary);
+            border-color: var(--border-light);
+            background: var(--bg-hover);
+        }
+
+        .tab-button.active {
+            color: var(--accent-light);
+            background: var(--accent-dim);
+            border-color: rgba(99, 102, 241, 0.45);
+        }
+
+        .tab-button svg {
+            width: 14px;
+            height: 14px;
+            flex-shrink: 0;
+        }
+
+        .tab-dirty-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--amber);
+            box-shadow: 0 0 8px rgba(234, 179, 8, 0.35);
+            display: inline-block;
+        }
+
+        .settings-grid { display: grid; gap: 20px; }
+
+        .panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 22px 24px;
+            transition: border-color 0.25s var(--ease);
+        }
+
+        .panel:hover { border-color: var(--border-light); }
+
+    .panel.hidden { display: none; }
+
+        .panel-title {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+
+        .panel-title h3 {
+            font-size: 13px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            letter-spacing: -0.01em;
+        }
+
+        .panel-title h3 svg { width: 16px; height: 16px; color: var(--text-muted); }
+        .panel-subtitle { margin-top: 4px; font-size: 12px; color: var(--text-muted); }
+
+        .field-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .field-card {
+            background: var(--bg-elevated);
+            border: 1px solid rgba(56, 68, 91, 0.25);
+            border-radius: var(--radius-md);
+            padding: 14px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .field-card.span-2 { grid-column: span 2; }
+        .field-label { font-size: 12px; font-weight: 700; color: var(--text-primary); }
+        .field-hint { font-size: 11px; color: var(--text-muted); line-height: 1.45; }
+
+        .form-control {
+            width: 100%;
+            min-height: 42px;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg-input);
+            color: var(--text-primary);
+            font: inherit;
+            transition: border-color 0.2s var(--ease), background 0.2s var(--ease);
+        }
+
+        .form-control:hover { border-color: var(--border-light); }
+        .form-control::placeholder { color: var(--text-muted); }
+        textarea.form-control { min-height: 92px; resize: vertical; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+
+        select.form-control {
+            appearance: none;
+            background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+            background-position: calc(100% - 18px) 18px, calc(100% - 12px) 18px;
+            background-size: 6px 6px, 6px 6px;
+            background-repeat: no-repeat;
+            padding-right: 36px;
+        }
+
+        .toggle-wrap { display: inline-flex; align-items: center; gap: 10px; }
+        .toggle-input { position: absolute; opacity: 0; pointer-events: none; }
+
+        .toggle-track {
+            width: 46px;
+            height: 26px;
+            border-radius: 999px;
+            background: rgba(80, 91, 110, 0.4);
+            border: 1px solid rgba(80, 91, 110, 0.35);
+            position: relative;
+            cursor: pointer;
+            transition: all 0.2s var(--ease);
+        }
+
+        .toggle-track::after {
+            content: '';
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #fff;
+            transition: transform 0.2s var(--ease);
+        }
+
+        .toggle-input:checked + .toggle-track {
+            background: var(--accent);
+            border-color: rgba(99, 102, 241, 0.7);
+        }
+
+        .toggle-input:checked + .toggle-track::after {
+            transform: translateX(20px);
+        }
+
+        .toggle-text { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+
+        .panel-meta {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(80, 91, 110, 0.12);
+            color: var(--text-muted);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .footer {
+            border-top: 1px solid var(--border);
+            padding: 14px 28px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--text-muted);
+            background: var(--bg-card);
+        }
+
+        .loading-state {
+            padding: 40px 16px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        @media (max-width: 1100px) {
+            .field-grid { grid-template-columns: 1fr; }
+            .field-card.span-2 { grid-column: span 1; }
+        }
+
+        @media (max-width: 768px) {
+            /* max-width: 768px */
+            .header { padding: 0 16px; }
+            .container { padding: 16px 16px 32px; }
+            .page-header { flex-direction: column; }
+            .save-bar { top: 68px; flex-direction: column; align-items: flex-start; }
+            .save-bar-actions { width: 100%; }
+            .save-bar-actions .btn { flex: 1; }
+            .footer { flex-direction: column; gap: 6px; text-align: center; }
+        }
+    </style>
+</head>
+<body>
+    <div class="accent-bar" aria-hidden="true"></div>
+
+    <header class="header" role="banner">
+        <a href="/" class="header-logo">
+            <div class="header-logo-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+            </div>
+            SENTINEL
+        </a>
+        <div class="header-right">
+            <a href="/" class="header-nav-link" aria-label="Dashboard">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            </a>
+            <a href="/settings" class="header-nav-link active" aria-label="Settings">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </a>
+            <div class="header-sep"></div>
+            <span id="mode-badge" class="badge badge-paper"><span class="badge-dot"></span>PAPER</span>
+        </div>
+    </header>
+
+    <main class="container" role="main">
+        <div class="page-header fade-in">
+            <div>
+                <div class="page-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    Settings
+                </div>
+                <div class="page-subtitle">Редактирование конфигурации прямо из UI. Изменения сохраняются в <span class="mono">.env</span>. Для модулей исполнения и риска потребуется restart процесса.</div>
+            </div>
+            <a href="/" class="back-link">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                Back to Dashboard
+            </a>
+        </div>
+
+        <div class="save-bar fade-in fade-in-delay-1">
+            <div class="save-bar-copy">
+                <div class="save-bar-title">Editable Configuration</div>
+                <div class="save-bar-subtitle">Сохранение обновляет <span class="mono">sentinel/.env</span>. Дашборд обновится сразу, engine-level модули после restart.</div>
+            </div>
+            <div class="save-bar-actions">
+                <span id="save-status" class="status-note">Not saved yet</span>
+                <button id="reload-btn" class="btn btn-secondary" type="button">Reload</button>
+                <button id="reset-section-btn" class="btn btn-secondary" type="button">Reset section</button>
+                <button id="save-btn" class="btn btn-primary" type="button">Save to .env</button>
+            </div>
+        </div>
+
+        <div class="tabs-shell fade-in fade-in-delay-2">
+            <div id="settings-tabs" class="tab-list" role="tablist" aria-label="Settings sections"></div>
+        </div>
+
+        <form id="settings-form" class="settings-grid fade-in fade-in-delay-3">
+            <div id="settings-loading" class="panel loading-state">Loading editable settings…</div>
+        </form>
+    </main>
+
+    <footer class="footer" role="contentinfo">
+        <span>SENTINEL Trading System</span>
+        <span id="footer-version">v1.5.0</span>
+    </footer>
+
+    <script>
+    'use strict';
+
+    const SETTINGS_SCHEMA = [
+        {
+            id: 'control',
+            title: 'Control Center',
+            subtitle: 'Trading mode, symbols and signal routing.',
+            icon: '<circle cx="12" cy="12" r="3"></circle><path d="M12 1v6m0 6v6m-7-10h6m6 0h6"></path>',
+            tabIcon: '<circle cx="12" cy="12" r="3"></circle><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"></path>',
+            badge: 'live inputs',
+            fields: [
+                { name: 'trading_mode', label: 'Trading Mode', type: 'select', options: [['paper', 'Paper'], ['live', 'Live']], hint: 'Paper is safer for simulation and validation.' },
+                { name: 'trading_symbols', label: 'Trading Symbols', type: 'textarea', span: 2, hint: 'Comma or newline separated. Example: BTCUSDT, ETHUSDT' },
+                { name: 'signal_timeframe', label: 'Signal Timeframe', type: 'text', placeholder: '1h', hint: 'Primary signal timeframe.' },
+                { name: 'trend_timeframe', label: 'Trend Timeframe', type: 'text', placeholder: '4h', hint: 'Higher timeframe confirmation.' },
+                { name: 'min_confidence', label: 'Min Confidence', type: 'number', numberType: 'float', step: '0.01', min: '0', max: '1', hint: 'Threshold for strategy acceptance.' },
+                { name: 'auto_strategy_selection', label: 'Auto Strategy Selection', type: 'checkbox', hint: 'Let the regime selector route the active strategy automatically.' }
+            ]
+        },
+        {
+            id: 'execution',
+            title: 'Execution Profile',
+            subtitle: 'Paper execution economics and slippage model.',
+            icon: '<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M7 8h10"></path><path d="M7 12h6"></path>',
+            tabIcon: '<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M7 8h10"></path><path d="M7 12h6"></path>',
+            badge: 'execution model',
+            fields: [
+                { name: 'paper_initial_balance', label: 'Paper Initial Balance', type: 'number', numberType: 'float', step: '10', min: '0', hint: 'Starting balance for paper trading.' },
+                { name: 'paper_commission_pct', label: 'Commission %', type: 'number', numberType: 'float', step: '0.001', min: '0', hint: 'Per-trade commission percentage.' },
+                { name: 'paper_slippage_pct', label: 'Slippage %', type: 'number', numberType: 'float', step: '0.001', min: '0', hint: 'Applied execution slippage for fills.' }
+            ]
+        },
+        {
+            id: 'risk',
+            title: 'Risk Limits',
+            subtitle: 'Soft limits from UI; hard caps remain enforced in code.',
+            icon: '<path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"></path><path d="M9 12l2 2 4-4"></path>',
+            tabIcon: '<path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"></path><path d="M12 8v4"></path><path d="M12 16h.01"></path>',
+            badge: 'clamped by code',
+            fields: [
+                { name: 'max_daily_loss_usd', label: 'Max Daily Loss USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Will be clamped by absolute limits.' },
+                { name: 'max_daily_loss_pct', label: 'Max Daily Loss %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Portfolio percentage loss cap.' },
+                { name: 'max_position_pct', label: 'Max Position %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Per-position capital allocation ceiling.' },
+                { name: 'max_total_exposure_pct', label: 'Total Exposure %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Aggregate exposure across all positions.' },
+                { name: 'max_open_positions', label: 'Max Open Positions', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Concurrent position limit.' },
+                { name: 'max_order_usd', label: 'Max Order USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Upper order size guardrail.' },
+                { name: 'max_trades_per_hour', label: 'Trades Per Hour', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Trade frequency limiter.' },
+                { name: 'max_trades_per_day', label: 'Trades Per Day', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Daily trade volume limiter.' },
+                { name: 'resume_cooldown_min', label: 'Resume Cooldown (min)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Pause before resume after stop.' }
+            ]
+        },
+        {
+            id: 'system',
+            title: 'System Profile',
+            subtitle: 'Data freshness, watchdog timing and analytics switches.',
+            icon: '<rect x="4" y="4" width="16" height="16" rx="2"></rect><path d="M9 9h6"></path><path d="M9 13h6"></path><path d="M9 17h4"></path>',
+            tabIcon: '<rect x="4" y="4" width="16" height="16" rx="2"></rect><path d="M9 9h6"></path><path d="M9 13h6"></path><path d="M9 17h4"></path>',
+            badge: 'service behavior',
+            fields: [
+                { name: 'max_data_age_sec', label: 'Max Data Age (sec)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Staleness cutoff for market data.' },
+                { name: 'price_cross_validation_interval', label: 'Cross Validation Interval (sec)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Cross-source price verification cadence.' },
+                { name: 'watchdog_heartbeat_interval', label: 'Watchdog Heartbeat (sec)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Heartbeat write interval.' },
+                { name: 'watchdog_timeout', label: 'Watchdog Timeout (sec)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Time to consider worker dead.' },
+                { name: 'db_backup_interval_hours', label: 'DB Backup Interval (hours)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Database backup cadence.' },
+                { name: 'max_ram_mb', label: 'Max RAM (MB)', type: 'number', numberType: 'int', step: '64', min: '128', hint: 'Memory ceiling for safety checks.' },
+                { name: 'analyzer_stats_enabled', label: 'Analyzer Stats Enabled', type: 'checkbox', hint: 'Enable trade analyzer statistics.' },
+                { name: 'analyzer_ml_shadow_mode', label: 'ML Shadow Mode', type: 'checkbox', hint: 'Collect ML decisions without taking control.' }
+            ]
+        },
+        {
+            id: 'strategies',
+            title: 'Strategy Stack',
+            subtitle: 'Enable or tune the built-in strategy families.',
+            icon: '<polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline>',
+            tabIcon: '<polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline>',
+            badge: 'strategy tuning',
+            fields: [
+                { name: 'grid_enabled', label: 'Grid Enabled', type: 'checkbox', hint: 'Activate grid trading strategy.' },
+                { name: 'grid_num_levels', label: 'Grid Levels', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Number of grid levels.' },
+                { name: 'grid_capital_pct', label: 'Grid Capital %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital assigned to the grid.' },
+                { name: 'grid_auto_range', label: 'Grid Auto Range', type: 'checkbox', hint: 'Auto-calculate grid range.' },
+                { name: 'grid_min_profit_pct', label: 'Grid Min Profit %', type: 'number', numberType: 'float', step: '0.01', min: '0', hint: 'Minimum profitable spread.' },
+                { name: 'grid_max_loss_pct', label: 'Grid Max Loss %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Grid stop-loss limit.' },
+                { name: 'meanrev_enabled', label: 'Mean Reversion Enabled', type: 'checkbox', hint: 'Activate mean reversion module.' },
+                { name: 'meanrev_rsi_oversold', label: 'MeanRev RSI Oversold', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Oversold threshold.' },
+                { name: 'meanrev_rsi_overbought', label: 'MeanRev RSI Overbought', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Overbought threshold.' },
+                { name: 'meanrev_capital_pct', label: 'MeanRev Capital %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital assigned to mean reversion.' },
+                { name: 'meanrev_stop_loss_pct', label: 'MeanRev SL %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Mean reversion stop-loss.' },
+                { name: 'meanrev_take_profit_pct', label: 'MeanRev TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Mean reversion take-profit.' },
+                { name: 'bb_breakout_enabled', label: 'Bollinger Breakout Enabled', type: 'checkbox', hint: 'Activate breakout strategy.' },
+                { name: 'bb_period', label: 'BB Period', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Bollinger lookback window.' },
+                { name: 'bb_std_dev', label: 'BB Std Dev', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Standard deviation multiplier.' },
+                { name: 'bb_volume_confirm_mult', label: 'BB Volume Confirm', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Volume confirmation multiplier.' },
+                { name: 'bb_stop_loss_pct', label: 'BB SL %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Breakout stop-loss.' },
+                { name: 'bb_take_profit_pct', label: 'BB TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Breakout take-profit.' },
+                { name: 'bb_trailing_stop_pct', label: 'BB Trailing %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Trailing stop amount.' },
+                { name: 'dca_enabled', label: 'DCA Enabled', type: 'checkbox', hint: 'Activate DCA bot.' },
+                { name: 'dca_base_amount_usd', label: 'DCA Base USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Base DCA order amount.' },
+                { name: 'dca_interval_hours', label: 'DCA Interval (hours)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Hours between DCA orders.' },
+                { name: 'dca_max_daily_buys', label: 'DCA Max Buys / Day', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Daily DCA order cap.' },
+                { name: 'dca_max_invested_pct', label: 'DCA Max Invested %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital ceiling for DCA.' },
+                { name: 'dca_take_profit_pct', label: 'DCA TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'DCA take-profit threshold.' },
+                { name: 'macd_div_enabled', label: 'MACD Divergence Enabled', type: 'checkbox', hint: 'Activate MACD divergence module.' },
+                { name: 'macd_fast', label: 'MACD Fast', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Fast EMA period.' },
+                { name: 'macd_slow', label: 'MACD Slow', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Slow EMA period.' },
+                { name: 'macd_signal_period', label: 'MACD Signal', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Signal line period.' },
+                { name: 'macd_lookback_candles', label: 'MACD Lookback', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Candles used to detect divergence.' },
+                { name: 'macd_require_rsi_confirm', label: 'MACD RSI Confirm', type: 'checkbox', hint: 'Require RSI confirmation.' },
+                { name: 'macd_require_vol_confirm', label: 'MACD Volume Confirm', type: 'checkbox', hint: 'Require volume confirmation.' }
+            ]
+        }
+    ];
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = String(str ?? '');
+        return div.innerHTML;
+    }
+
+    function setSaveStatus(text, type) {
+        const node = document.getElementById('save-status');
+        node.textContent = text;
+        node.className = 'status-note' + (type ? ' ' + type : '');
+    }
+
+    let baselineValues = null;
+    let hasUnsavedChanges = false;
+    let activeSectionId = null;
+
+    function stableStringify(value) {
+        if (Array.isArray(value)) {
+            return '[' + value.map(stableStringify).join(',') + ']';
+        }
+        if (value && typeof value === 'object') {
+            return '{' + Object.keys(value).sort().map(function(key) {
+                return JSON.stringify(key) + ':' + stableStringify(value[key]);
+            }).join(',') + '}';
+        }
+        return JSON.stringify(value);
+    }
+
+    function valuesEqual(left, right) {
+        return stableStringify(left) === stableStringify(right);
+    }
+
+    function getSectionById(sectionId) {
+        return SETTINGS_SCHEMA.find(function(section) {
+            return section.id === sectionId;
+        }) || null;
+    }
+
+    function sectionHasChanges(section, currentValues) {
+        if (!baselineValues) return false;
+        return section.fields.some(function(field) {
+            return !valuesEqual(currentValues[field.name], baselineValues[field.name]);
+        });
+    }
+
+    function updateDirtyIndicators(currentValues) {
+        SETTINGS_SCHEMA.forEach(function(section) {
+            const tab = document.querySelector('.tab-button[data-section="' + section.id + '"]');
+            if (!tab) return;
+            const hasChanges = sectionHasChanges(section, currentValues);
+            let dot = tab.querySelector('.tab-dirty-dot');
+            if (hasChanges && !dot) {
+                dot = document.createElement('span');
+                dot.className = 'tab-dirty-dot';
+                dot.setAttribute('aria-label', 'Unsaved changes');
+                tab.appendChild(dot);
+            }
+            if (!hasChanges && dot) {
+                dot.remove();
+            }
+        });
+    }
+
+    function updateDirtyState() {
+        const currentValues = collectValues();
+        hasUnsavedChanges = baselineValues ? !valuesEqual(currentValues, baselineValues) : false;
+        updateDirtyIndicators(currentValues);
+        if (hasUnsavedChanges) {
+            setSaveStatus('Unsaved changes', 'warning');
+        } else if (!document.getElementById('save-status').classList.contains('saved') && !document.getElementById('save-status').classList.contains('error')) {
+            setSaveStatus('Loaded');
+        }
+    }
+
+    function renderBadge(mode) {
+        const badge = document.getElementById('mode-badge');
+        const normalized = (mode || 'paper').toLowerCase();
+        badge.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(normalized.toUpperCase());
+        badge.className = 'badge ' + (normalized === 'live' ? 'badge-live' : 'badge-paper');
+    }
+
+    function activateSection(sectionId) {
+        activeSectionId = sectionId;
+        Array.from(document.querySelectorAll('.tab-button')).forEach(function(button) {
+            const isActive = button.getAttribute('data-section') === sectionId;
+            button.classList.toggle('active', isActive);
+            button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        });
+
+        Array.from(document.querySelectorAll('.panel[data-section]')).forEach(function(panel) {
+            panel.classList.toggle('hidden', panel.getAttribute('data-section') !== sectionId);
+        });
+    }
+
+    function renderTabs() {
+        const tabs = document.getElementById('settings-tabs');
+        tabs.innerHTML = SETTINGS_SCHEMA.map(function(section, index) {
+            return '<button class="tab-button' + (index === 0 ? ' active' : '') + '" type="button" role="tab" aria-selected="' + (index === 0 ? 'true' : 'false') + '" data-section="' + escapeHtml(section.id) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + section.tabIcon + '</svg>' + escapeHtml(section.title) + '</button>';
+        }).join('');
+
+        Array.from(tabs.querySelectorAll('.tab-button')).forEach(function(button) {
+            button.addEventListener('click', function() {
+                activateSection(button.getAttribute('data-section'));
+            });
+        });
+    }
+
+    function setFieldInputValue(field, value) {
+        const input = document.querySelector('[name="' + field.name + '"]');
+        if (!input) return;
+
+        if (field.type === 'checkbox') {
+            input.checked = !!value;
+            const text = input.parentElement.querySelector('.toggle-text');
+            if (text) text.textContent = input.checked ? 'Enabled' : 'Disabled';
+            return;
+        }
+
+        if (field.name === 'trading_symbols') {
+            input.value = Array.isArray(value) ? value.join(', ') : String(value || '');
+            return;
+        }
+
+        input.value = value == null ? '' : String(value);
+    }
+
+    function resetActiveSection() {
+        if (!baselineValues || !activeSectionId) return;
+
+        const section = getSectionById(activeSectionId);
+        if (!section) return;
+
+        const currentValues = collectValues();
+        if (!sectionHasChanges(section, currentValues)) {
+            setSaveStatus('Section already clean');
+            return;
+        }
+
+        if (!confirm('Reset changes in the active section?')) {
+            return;
+        }
+
+        section.fields.forEach(function(field) {
+            setFieldInputValue(field, baselineValues[field.name]);
+        });
+
+        updateDirtyState();
+
+        if (hasUnsavedChanges) {
+            setSaveStatus('Section reset, other changes remain', 'warning');
+        } else {
+            setSaveStatus('Section reset');
+        }
+    }
+
+    function renderField(field, value) {
+        const fieldValue = value == null ? '' : value;
+        const spanClass = field.span === 2 ? 'field-card span-2' : 'field-card';
+
+        if (field.type === 'checkbox') {
+            return '<div class="' + spanClass + '">' +
+                '<div class="field-label">' + escapeHtml(field.label) + '</div>' +
+                '<label class="toggle-wrap">' +
+                '<input class="toggle-input" type="checkbox" data-type="checkbox" name="' + escapeHtml(field.name) + '" ' + (fieldValue ? 'checked' : '') + '>' +
+                '<span class="toggle-track"></span>' +
+                '<span class="toggle-text">' + (fieldValue ? 'Enabled' : 'Disabled') + '</span>' +
+                '</label>' +
+                '<div class="field-hint">' + escapeHtml(field.hint || '') + '</div>' +
+                '</div>';
+        }
+
+        if (field.type === 'select') {
+            const options = (field.options || []).map(function(option) {
+                const selected = String(option[0]) === String(fieldValue) ? ' selected' : '';
+                return '<option value="' + escapeHtml(option[0]) + '"' + selected + '>' + escapeHtml(option[1]) + '</option>';
+            }).join('');
+            return '<div class="' + spanClass + '">' +
+                '<div class="field-label">' + escapeHtml(field.label) + '</div>' +
+                '<select class="form-control" data-type="select" name="' + escapeHtml(field.name) + '">' + options + '</select>' +
+                '<div class="field-hint">' + escapeHtml(field.hint || '') + '</div>' +
+                '</div>';
+        }
+
+        if (field.type === 'textarea') {
+            const textValue = Array.isArray(fieldValue) ? fieldValue.join(', ') : String(fieldValue);
+            return '<div class="' + spanClass + '">' +
+                '<div class="field-label">' + escapeHtml(field.label) + '</div>' +
+                '<textarea class="form-control mono" data-type="textarea" name="' + escapeHtml(field.name) + '" placeholder="' + escapeHtml(field.placeholder || '') + '">' + escapeHtml(textValue) + '</textarea>' +
+                '<div class="field-hint">' + escapeHtml(field.hint || '') + '</div>' +
+                '</div>';
+        }
+
+        return '<div class="' + spanClass + '">' +
+            '<div class="field-label">' + escapeHtml(field.label) + '</div>' +
+            '<input class="form-control ' + (field.type === 'number' ? 'mono' : '') + '" ' +
+            'type="' + escapeHtml(field.type) + '" ' +
+            'data-type="' + escapeHtml(field.type) + '" ' +
+            'data-number-type="' + escapeHtml(field.numberType || '') + '" ' +
+            'name="' + escapeHtml(field.name) + '" ' +
+            (field.step ? 'step="' + escapeHtml(field.step) + '" ' : '') +
+            (field.min ? 'min="' + escapeHtml(field.min) + '" ' : '') +
+            (field.max ? 'max="' + escapeHtml(field.max) + '" ' : '') +
+            'value="' + escapeHtml(fieldValue) + '" ' +
+            'placeholder="' + escapeHtml(field.placeholder || '') + '">' +
+            '<div class="field-hint">' + escapeHtml(field.hint || '') + '</div>' +
+            '</div>';
+    }
+
+    function renderSections(values) {
+        const form = document.getElementById('settings-form');
+        form.innerHTML = SETTINGS_SCHEMA.map(function(section, index) {
+            const fieldsHtml = section.fields.map(function(field) {
+                return renderField(field, values[field.name]);
+            }).join('');
+
+            return '<section class="panel fade-in fade-in-delay-' + Math.min(index + 1, 3) + (index === 0 ? '' : ' hidden') + '" data-section="' + escapeHtml(section.id) + '">' +
+                '<div class="panel-title">' +
+                    '<div>' +
+                        '<h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + section.icon + '</svg>' + escapeHtml(section.title) + '</h3>' +
+                        '<div class="panel-subtitle">' + escapeHtml(section.subtitle) + '</div>' +
+                    '</div>' +
+                    '<span class="panel-meta">' + escapeHtml(section.badge) + '</span>' +
+                '</div>' +
+                '<div class="field-grid">' + fieldsHtml + '</div>' +
+                '</section>';
+        }).join('');
+
+        Array.from(document.querySelectorAll('.toggle-input')).forEach(function(input) {
+            input.addEventListener('change', function() {
+                const text = input.parentElement.querySelector('.toggle-text');
+                if (text) text.textContent = input.checked ? 'Enabled' : 'Disabled';
+                updateDirtyState();
+            });
+        });
+
+        Array.from(document.querySelectorAll('.form-control')).forEach(function(input) {
+            input.addEventListener('input', updateDirtyState);
+            input.addEventListener('change', updateDirtyState);
+        });
+
+        renderTabs();
+        activateSection(SETTINGS_SCHEMA[0].id);
+    }
+
+    function normalizeTradingSymbols(value) {
+        return String(value)
+            .split(/[\n,\s]+/)
+            .map(function(item) { return item.trim().toUpperCase(); })
+            .filter(Boolean);
+    }
+
+    function collectValues() {
+        const values = {};
+        SETTINGS_SCHEMA.forEach(function(section) {
+            section.fields.forEach(function(field) {
+                const input = document.querySelector('[name="' + field.name + '"]');
+                if (!input) return;
+
+                if (field.type === 'checkbox') {
+                    values[field.name] = input.checked;
+                    return;
+                }
+
+                if (field.name === 'trading_symbols') {
+                    values[field.name] = normalizeTradingSymbols(input.value);
+                    return;
+                }
+
+                if (field.type === 'number') {
+                    const raw = input.value.trim();
+                    values[field.name] = raw ? (field.numberType === 'int' ? parseInt(raw, 10) : parseFloat(raw)) : 0;
+                    return;
+                }
+
+                values[field.name] = input.value;
+            });
+        });
+        return values;
+    }
+
+    async function loadEditableSettings() {
+        if (hasUnsavedChanges && !confirm('You have unsaved changes. Reload values from disk anyway?')) {
+            return;
+        }
+        setSaveStatus('Loading…');
+        try {
+            const response = await fetch('/api/settings/editable');
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || 'Failed to load settings');
+            renderSections(payload.values || {});
+            baselineValues = payload.values || {};
+            hasUnsavedChanges = false;
+            renderBadge(payload.values && payload.values.trading_mode ? payload.values.trading_mode : 'paper');
+            setSaveStatus('Loaded');
+        } catch (error) {
+            document.getElementById('settings-form').innerHTML = '<div class="panel loading-state">' + escapeHtml(error.message) + '</div>';
+            setSaveStatus('Load error', 'error');
+        }
+    }
+
+    async function saveSettings() {
+        const button = document.getElementById('save-btn');
+        button.disabled = true;
+        setSaveStatus('Saving…');
+        try {
+            const response = await fetch('/api/settings/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(collectValues())
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || 'Save failed');
+            baselineValues = collectValues();
+            hasUnsavedChanges = false;
+            updateDirtyIndicators(baselineValues);
+            renderBadge(payload.values && payload.values.trading_mode ? payload.values.trading_mode : 'paper');
+            setSaveStatus('Saved, restart needed', 'saved');
+        } catch (error) {
+            setSaveStatus(error.message, 'error');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    window.addEventListener('beforeunload', function(event) {
+        if (!hasUnsavedChanges) return;
+        event.preventDefault();
+        event.returnValue = '';
+    });
+
+    document.getElementById('reload-btn').addEventListener('click', loadEditableSettings);
+    document.getElementById('reset-section-btn').addEventListener('click', resetActiveSection);
+    document.getElementById('save-btn').addEventListener('click', saveSettings);
+
+    loadEditableSettings();
+    </script>
+</body>
+</html>

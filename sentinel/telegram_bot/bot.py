@@ -29,6 +29,7 @@ from .formatters import (
     format_daily_report,
     format_error,
     format_order_filled,
+    format_portfolio,
     format_positions,
     format_pnl,
     format_risk_state_changed,
@@ -111,9 +112,11 @@ class TelegramBot:
             "pnl": self._cmd_pnl,
             "positions": self._cmd_positions,
             "trades": self._cmd_trades,
+            "portfolio": self._cmd_portfolio,
             "stop": self._cmd_stop,
             "resume": self._cmd_resume,
             "kill": self._cmd_kill,
+            "kill_confirm": self._cmd_kill_confirm,
             "mode": self._cmd_mode,
             "config": self._cmd_config,
         }
@@ -193,6 +196,7 @@ class TelegramBot:
             "📋 <b>Команды SENTINEL</b>\n\n"
             "/status — Статус системы\n"
             "/pnl — PnL за день/неделю/месяц\n"
+            "/portfolio — PnL по стратегиям\n"
             "/positions — Открытые позиции\n"
             "/trades — Последние 10 сделок\n"
             "/stop — Остановить торговлю\n"
@@ -255,6 +259,17 @@ class TelegramBot:
         text = format_trades(trades)
         await update.message.reply_text(text, parse_mode="HTML")
 
+    async def _cmd_portfolio(self, update, context) -> None:
+        if not self._is_authorized(update.effective_chat.id):
+            return
+        logger.info("CMD /portfolio from %s", update.effective_chat.id)
+
+        state = self._get_state()
+        perf = state.get("strategy_performance", [])
+        balance = state.get("balance", 0.0)
+        text = format_portfolio(perf, balance)
+        await update.message.reply_text(text, parse_mode="HTML")
+
     async def _cmd_stop(self, update, context) -> None:
         if not self._is_authorized(update.effective_chat.id):
             return
@@ -288,6 +303,18 @@ class TelegramBot:
             "Для подтверждения отправьте: /kill_confirm",
             parse_mode="HTML",
         )
+
+    async def _cmd_kill_confirm(self, update, context) -> None:
+        if not self._is_authorized(update.effective_chat.id):
+            return
+        logger.info("CMD /kill_confirm from %s", update.effective_chat.id)
+
+        if self.on_kill:
+            await update.message.reply_text("☠️ Выполняю аварийную остановку...", parse_mode="HTML")
+            await self.on_kill()
+            await update.message.reply_text("☠️ <b>SENTINEL ОСТАНОВЛЕН</b>\nВсе позиции закрыты.", parse_mode="HTML")
+        else:
+            await update.message.reply_text("⚠️ Kill handler не настроен", parse_mode="HTML")
 
     async def _cmd_mode(self, update, context) -> None:
         if not self._is_authorized(update.effective_chat.id):

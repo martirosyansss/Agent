@@ -13,12 +13,16 @@ Web Dashboard SENTINEL — FastAPI + HTML/JS.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import secrets
 import time
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Optional
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from config import get_editable_settings_payload, save_settings_updates
 from core.constants import VERSION
 from core.events import EventBus
 
@@ -65,6 +69,8 @@ class Dashboard:
         self.on_stop: Optional[Callable[[], Coroutine]] = None
         self.on_resume: Optional[Callable[[], Coroutine]] = None
         self.on_kill: Optional[Callable[[], Coroutine]] = None
+        self.market_chart_provider: Optional[Callable[[str], dict]] = None
+        self.news_collector = None  # устанавливается из main.py
 
     def _build_config_payload(self) -> dict[str, Any]:
         settings = self._settings
@@ -177,12 +183,62 @@ class Dashboard:
 
     def _create_app(self):
         """Создать и настроить FastAPI-приложение."""
-        from fastapi import FastAPI, Request
+        from fastapi import FastAPI
+        from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import HTMLResponse, JSONResponse
         from fastapi.staticfiles import StaticFiles
+        from starlette.middleware.base import BaseHTTPMiddleware
         import pathlib
 
         app = FastAPI(title="SENTINEL Dashboard", version=VERSION)
+
+        # ── CORS — restrict to localhost ──────────
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[
+                f"http://localhost:{self._port}",
+                f"http://127.0.0.1:{self._port}",
+            ],
+            allow_methods=["GET", "POST"],
+            allow_headers=["*"],
+            allow_credentials=True,
+        )
+
+        # ── Auth middleware ───────────────────────
+        dashboard_password = self._password
+
+        class AuthMiddleware(BaseHTTPMiddleware):
+            """Token auth for mutating endpoints when password is configured."""
+            _PUBLIC = {"/api/health", "/", "/settings", "/ws"}
+            _READ_ONLY = {"/api/status", "/api/positions", "/api/trades",
+                          "/api/pnl-history", "/api/market-chart",
+                          "/api/backtest-results", "/api/config",
+                          "/api/settings/editable", "/api/strategy-performance",
+                          "/api/trades/export", "/api/news"}
+
+            async def dispatch(self, request: Request, call_next):
+                path = request.url.path
+                # Static files and public endpoints — no auth
+                if path.startswith("/static") or path in self._PUBLIC:
+                    return await call_next(request)
+                # If no password configured, allow everything
+                if not dashboard_password:
+                    return await call_next(request)
+                # Check token
+                token = (request.headers.get("X-Auth-Token")
+                         or request.query_params.get("token")
+                         or "")
+                if not secrets.compare_digest(token, dashboard_password):
+                    # Allow read-only GET without auth for dashboard panels
+                    if request.method == "GET" and path in self._READ_ONLY:
+                        return await call_next(request)
+                    return JSONResponse(
+                        content={"error": "Unauthorized"},
+                        status_code=401,
+                    )
+                return await call_next(request)
+
+        app.add_middleware(AuthMiddleware)
 
         static_dir = pathlib.Path(__file__).parent / "static"
         if static_dir.exists():
@@ -205,6 +261,7 @@ class Dashboard:
             return JSONResponse(content={
                 "mode": state.get("mode", "paper"),
                 "risk_state": state.get("risk_state", "NORMAL"),
+                "trading_paused": state.get("trading_paused", False),
                 "uptime": state.get("uptime", _format_uptime()),
                 "pnl_today": state.get("pnl_today", 0.0),
                 "pnl_total": state.get("pnl_total", 0.0),
@@ -213,6 +270,10 @@ class Dashboard:
                 "balance": state.get("balance", 0.0),
                 "win_rate": state.get("win_rate", 0.0),
                 "risk_details": state.get("risk_details", {}),
+                "activity": state.get("activity", {}),
+                "indicators": state.get("indicators", {}),
+                "readiness": state.get("readiness", {}),
+                "strategy_log": state.get("strategy_log", []),
                 "version": VERSION,
             })
 
@@ -248,14 +309,104 @@ class Dashboard:
             state = self._get_state()
             return JSONResponse(content=state.get("pnl_history", []))
 
+        @app.get("/api/market-chart")
+        async def market_chart(interval: str = "1m"):
+            if self.market_chart_provider:
+                return JSONResponse(content=self.market_chart_provider(interval))
+            state = self._get_state()
+            return JSONResponse(content=state.get("market_chart", {"candles": []}))
+
         @app.get("/api/backtest-results")
         async def backtest_results():
             state = self._get_state()
             return JSONResponse(content=state.get("backtest_results", {}))
 
+        @app.get("/api/strategy-performance")
+        async def strategy_performance():
+            state = self._get_state()
+            return JSONResponse(content=state.get("strategy_performance", []))
+
+        @app.get("/api/trades/export")
+        async def trades_export():
+            """CSV export of all strategy trades."""
+            import csv
+            import io
+            from fastapi.responses import StreamingResponse
+
+            state = self._get_state()
+            rows = state.get("trades_export", [])
+
+            output = io.StringIO()
+            if rows:
+                writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+            else:
+                output.write("No trades to export\n")
+
+            output.seek(0)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="text/csv",
+                headers={"Content-Disposition": "attachment; filename=sentinel_trades.csv"},
+            )
+
+        @app.get("/api/news")
+        async def news_feed():
+            """Крипто-новости с анализом влияния на курс."""
+            if not self.news_collector:
+                return JSONResponse(content={
+                    "news": [],
+                    "sentiment": {"fear_greed_index": 50, "fear_greed_label": "N/A", "overall_score": 0},
+                    "impact": {"status": "disabled", "message": "News collector not initialized"},
+                })
+            return JSONResponse(content={
+                "news": self.news_collector.get_news(limit=200),
+                "sentiment": self.news_collector.get_sentiment(),
+                "impact": self.news_collector.get_impact_summary(),
+            })
+
         @app.get("/api/config")
         async def config_snapshot():
             return JSONResponse(content=self._build_config_payload())
+
+        @app.get("/api/settings/editable")
+        async def editable_settings_snapshot():
+            return JSONResponse(content={
+                "values": get_editable_settings_payload(self._settings),
+                "restart_required": True,
+            })
+
+        @app.post("/api/settings/update")
+        async def update_settings(request: Request):
+            if not hasattr(self._settings, "model_dump"):
+                return JSONResponse(
+                    content={"error": "settings backend is not writable in this runtime"},
+                    status_code=503,
+                )
+
+            try:
+                payload = await request.json()
+            except json.JSONDecodeError:
+                return JSONResponse(content={"error": "invalid JSON payload"}, status_code=400)
+
+            if not isinstance(payload, dict):
+                return JSONResponse(content={"error": "payload must be an object"}, status_code=400)
+
+            try:
+                updated_settings = save_settings_updates(self._settings, payload)
+            except Exception as exc:
+                return JSONResponse(content={"error": str(exc)}, status_code=400)
+
+            self._settings = updated_settings
+            self._password = updated_settings.dashboard_password
+
+            return JSONResponse(content={
+                "result": "saved",
+                "restart_required": True,
+                "message": "Settings saved to .env. Restart the bot to apply engine-level changes.",
+                "values": get_editable_settings_payload(self._settings),
+            })
 
         # ── Control ──────────────────────────────
 
@@ -284,6 +435,12 @@ class Dashboard:
 
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
+            # Auth check for WebSocket (token via query param)
+            if self._password:
+                token = websocket.query_params.get("token", "")
+                if not secrets.compare_digest(token, self._password):
+                    await websocket.close(code=4001, reason="Unauthorized")
+                    return
             await websocket.accept()
             self._ws_clients.append(websocket)
             try:
@@ -294,6 +451,7 @@ class Dashboard:
                         "data": {
                             "mode": state.get("mode", "paper"),
                             "risk_state": state.get("risk_state", "NORMAL"),
+                            "trading_paused": state.get("trading_paused", False),
                             "uptime": state.get("uptime", _format_uptime()),
                             "pnl_today": state.get("pnl_today", 0.0),
                             "pnl_total": state.get("pnl_total", 0.0),
@@ -302,9 +460,13 @@ class Dashboard:
                             "balance": state.get("balance", 0.0),
                             "win_rate": state.get("win_rate", 0.0),
                             "risk_details": state.get("risk_details", {}),
+                            "activity": state.get("activity", {}),
+                            "indicators": state.get("indicators", {}),
+                            "readiness": state.get("readiness", {}),
+                            "strategy_log": state.get("strategy_log", []),
                         },
                     })
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(2)
             except WebSocketDisconnect:
                 logger.debug("Dashboard websocket client disconnected")
             finally:
@@ -316,6 +478,10 @@ class Dashboard:
         @app.get("/", response_class=HTMLResponse)
         async def dashboard_page():
             return _DASHBOARD_HTML
+
+        @app.get("/settings", response_class=HTMLResponse)
+        async def settings_page():
+            return _SETTINGS_HTML
 
         self._app = app
         return app
@@ -378,1222 +544,9 @@ class Dashboard:
             self._ws_clients.remove(ws)
 
 
-# ══════════════════════════════════════════════════
-# HTML Template — Professional Fintech Dashboard
-# UI/UX: Inter font, SVG icons, accessibility,
-# prefers-reduced-motion, 4.5:1 contrast, 44px
-# touch targets, skeleton loading, responsive grid
-# ══════════════════════════════════════════════════
 
-_DASHBOARD_HTML = r"""<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SENTINEL Dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-    <style>
-        /* ── Reset & Base ──────────────────────── */
-        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-        html { font-size: 16px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-        body {
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            background: #0b0e11;
-            color: #e8eaed;
-            min-height: 100vh;
-            line-height: 1.6;
-        }
-        .mono { font-family: 'JetBrains Mono', 'Cascadia Code', monospace; }
-
-        /* ── Z-index scale ─────────────────────── */
-        :root {
-            --z-base: 0;
-            --z-dropdown: 10;
-            --z-sticky: 20;
-            --z-overlay: 30;
-            --z-modal: 50;
-            /* Colors */
-            --bg-primary: #0b0e11;
-            --bg-card: #141821;
-            --bg-elevated: #1c2333;
-            --bg-hover: #222b3a;
-            --border: #2a3040;
-            --border-light: #343e52;
-            --text-primary: #e8eaed;
-            --text-secondary: #8b95a5;
-            --text-muted: #5a6577;
-            --accent: #3b82f6;
-            --accent-dim: rgba(59, 130, 246, 0.15);
-            --green: #10b981;
-            --green-dim: rgba(16, 185, 129, 0.12);
-            --red: #ef4444;
-            --red-dim: rgba(239, 68, 68, 0.12);
-            --amber: #f59e0b;
-            --amber-dim: rgba(245, 158, 11, 0.12);
-            --cyan: #06b6d4;
-        }
-
-        /* ── Animations ────────────────────────── */
-        @media (prefers-reduced-motion: no-preference) {
-            .animate-fade { animation: fadeIn 0.3s ease-out; }
-            .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-        }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
-
-        /* ── Skeleton loader ───────────────────── */
-        .skeleton {
-            background: linear-gradient(90deg, var(--bg-elevated) 25%, var(--bg-hover) 50%, var(--bg-elevated) 75%);
-            background-size: 200% 100%;
-            animation: shimmer 1.5s ease-in-out infinite;
-            border-radius: 6px;
-        }
-        .skeleton-text { height: 14px; width: 60%; margin-bottom: 8px; }
-        .skeleton-value { height: 32px; width: 40%; }
-
-        /* ── Header ────────────────────────────── */
-        .header {
-            background: var(--bg-card);
-            border-bottom: 1px solid var(--border);
-            padding: 0 24px;
-            height: 60px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            position: sticky;
-            top: 0;
-            z-index: var(--z-sticky);
-        }
-        .header-left { display: flex; align-items: center; gap: 12px; }
-        .header-logo {
-            display: flex; align-items: center; gap: 8px;
-            font-size: 18px; font-weight: 700; color: var(--accent);
-            letter-spacing: -0.02em;
-        }
-        .header-logo svg { flex-shrink: 0; }
-        .header-version {
-            font-size: 11px; font-weight: 500; color: var(--text-muted);
-            padding: 2px 8px; border: 1px solid var(--border);
-            border-radius: 4px; letter-spacing: 0.02em;
-        }
-        .header-right { display: flex; align-items: center; gap: 10px; }
-        .header-uptime {
-            display: flex; align-items: center; gap: 6px;
-            font-size: 13px; color: var(--text-secondary);
-        }
-        .header-uptime svg { color: var(--text-muted); }
-
-        /* ── Badges ─────────────────────────────── */
-        .badge {
-            display: inline-flex; align-items: center; gap: 6px;
-            padding: 4px 12px; border-radius: 6px;
-            font-size: 12px; font-weight: 600;
-            letter-spacing: 0.03em; text-transform: uppercase;
-        }
-        .badge-dot {
-            width: 6px; height: 6px; border-radius: 50%;
-            display: inline-block; flex-shrink: 0;
-        }
-        .badge-paper { background: var(--accent-dim); color: var(--accent); }
-        .badge-paper .badge-dot { background: var(--accent); }
-        .badge-live { background: var(--green-dim); color: var(--green); }
-        .badge-live .badge-dot { background: var(--green); }
-        .badge-normal { background: var(--green-dim); color: var(--green); }
-        .badge-normal .badge-dot { background: var(--green); }
-        .badge-reduced { background: var(--amber-dim); color: var(--amber); }
-        .badge-reduced .badge-dot { background: var(--amber); }
-        .badge-safe { background: rgba(249,115,22,0.12); color: #f97316; }
-        .badge-safe .badge-dot { background: #f97316; }
-        .badge-stop { background: var(--red-dim); color: var(--red); }
-        .badge-stop .badge-dot { background: var(--red); }
-
-        /* ── Container & Layout ────────────────── */
-        .container { max-width: 1280px; margin: 0 auto; padding: 20px 24px; }
-
-        .grid-6 {
-            display: grid;
-            grid-template-columns: repeat(6, 1fr);
-            gap: 14px;
-            margin-bottom: 20px;
-        }
-
-        /* ── Cards ─────────────────────────────── */
-        .card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 18px;
-            transition: border-color 0.2s ease, box-shadow 0.2s ease;
-        }
-        .card:hover { border-color: var(--border-light); }
-        .card-header {
-            display: flex; align-items: center; gap: 8px;
-            margin-bottom: 10px;
-        }
-        .card-icon {
-            width: 36px; height: 36px;
-            display: flex; align-items: center; justify-content: center;
-            border-radius: 8px; flex-shrink: 0;
-        }
-        .card-icon svg { width: 18px; height: 18px; }
-        .card-icon-blue { background: var(--accent-dim); color: var(--accent); }
-        .card-icon-green { background: var(--green-dim); color: var(--green); }
-        .card-icon-red { background: var(--red-dim); color: var(--red); }
-        .card-icon-amber { background: var(--amber-dim); color: var(--amber); }
-        .card-icon-cyan { background: rgba(6,182,212,0.12); color: var(--cyan); }
-        .card-icon-purple { background: rgba(139,92,246,0.12); color: #8b5cf6; }
-        .card-label {
-            font-size: 12px; font-weight: 500;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .card-value {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 26px; font-weight: 700;
-            letter-spacing: -0.02em;
-            line-height: 1.2;
-        }
-        .card-sub {
-            font-size: 12px; color: var(--text-muted);
-            margin-top: 4px;
-        }
-        .positive { color: var(--green); }
-        .negative { color: var(--red); }
-        .neutral { color: var(--text-primary); }
-
-        /* ── Chart section ─────────────────────── */
-        .chart-section {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        .section-title {
-            display: flex; align-items: center; justify-content: space-between;
-            margin-bottom: 16px;
-        }
-        .section-title h3 {
-            font-size: 14px; font-weight: 600; color: var(--text-primary);
-            display: flex; align-items: center; gap: 8px;
-        }
-        .section-title h3 svg { color: var(--text-muted); width: 16px; height: 16px; }
-        .chart-wrap { height: 260px; position: relative; }
-
-        /* ── Risk Panel ────────────────────────── */
-        .risk-panel {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        .risk-grid {
-            display: grid;
-            grid-template-columns: repeat(6, 1fr);
-            gap: 12px;
-        }
-        .risk-item {
-            background: var(--bg-elevated);
-            border-radius: 8px;
-            padding: 14px;
-            text-align: center;
-        }
-        .risk-item-label {
-            font-size: 11px; font-weight: 500;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 6px;
-        }
-        .risk-item-value {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 16px; font-weight: 600;
-        }
-
-        /* ── Operations panels ────────────────── */
-        .ops-layout {
-            display: grid;
-            grid-template-columns: 1.25fr 1fr;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        .info-panel {
-            background: linear-gradient(180deg, rgba(20, 24, 33, 0.96) 0%, rgba(14, 18, 25, 0.98) 100%);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-        }
-        .info-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 12px;
-        }
-        .info-item {
-            background: linear-gradient(180deg, rgba(28, 35, 51, 0.96) 0%, rgba(18, 25, 35, 0.94) 100%);
-            border: 1px solid rgba(52, 62, 82, 0.55);
-            border-radius: 10px;
-            padding: 14px;
-            min-height: 108px;
-        }
-        .info-item-label {
-            font-size: 11px;
-            font-weight: 600;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            margin-bottom: 10px;
-        }
-        .info-item-value {
-            font-size: 19px;
-            font-weight: 700;
-            line-height: 1.2;
-            color: var(--text-primary);
-        }
-        .info-item-meta {
-            margin-top: 8px;
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-        .kv-list {
-            display: grid;
-            gap: 10px;
-        }
-        .kv-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 12px 14px;
-            background: var(--bg-elevated);
-            border: 1px solid rgba(52, 62, 82, 0.45);
-            border-radius: 10px;
-        }
-        .kv-key {
-            font-size: 12px;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        .kv-value {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 13px;
-            font-weight: 600;
-            text-align: right;
-        }
-        .strategy-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 14px;
-        }
-        .strategy-card {
-            background: linear-gradient(180deg, rgba(28, 35, 51, 0.95) 0%, rgba(17, 22, 31, 0.98) 100%);
-            border: 1px solid rgba(52, 62, 82, 0.55);
-            border-radius: 12px;
-            padding: 16px;
-        }
-        .strategy-card.off {
-            opacity: 0.72;
-        }
-        .strategy-head {
-            display: flex;
-            align-items: start;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 10px;
-        }
-        .strategy-name {
-            font-size: 15px;
-            font-weight: 700;
-            color: var(--text-primary);
-            letter-spacing: -0.01em;
-        }
-        .strategy-summary {
-            font-size: 12px;
-            color: var(--text-secondary);
-            margin-bottom: 12px;
-        }
-        .chip-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-        .chip {
-            display: inline-flex;
-            align-items: center;
-            padding: 4px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: 0.02em;
-            background: rgba(52, 62, 82, 0.55);
-            color: var(--text-primary);
-        }
-        .chip-positive { background: var(--green-dim); color: var(--green); }
-        .chip-warning { background: var(--amber-dim); color: var(--amber); }
-        .chip-negative { background: var(--red-dim); color: var(--red); }
-        .chip-neutral { background: rgba(59, 130, 246, 0.12); color: #93c5fd; }
-        .chip-off { background: rgba(90, 101, 119, 0.18); color: var(--text-muted); }
-
-        /* ── Tables ────────────────────────────── */
-        .table-section {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            margin-bottom: 20px;
-            overflow: hidden;
-        }
-        .table-section .section-title { padding: 18px 20px 0; }
-        table { width: 100%; border-collapse: collapse; }
-        thead th {
-            padding: 12px 16px;
-            text-align: left;
-            font-size: 11px;
-            font-weight: 600;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            border-bottom: 1px solid var(--border);
-            background: var(--bg-elevated);
-        }
-        tbody td {
-            padding: 12px 16px;
-            font-size: 13px;
-            color: var(--text-secondary);
-            border-bottom: 1px solid rgba(42, 48, 64, 0.5);
-        }
-        tbody tr { transition: background-color 0.15s ease; }
-        tbody tr:hover { background: var(--bg-hover); }
-        tbody tr:last-child td { border-bottom: none; }
-        .td-mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
-        .table-cell-stack {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-        .table-cell-meta {
-            font-size: 11px;
-            color: var(--text-muted);
-            line-height: 1.3;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: 220px;
-        }
-        .empty-state {
-            padding: 40px 16px;
-            text-align: center;
-            color: var(--text-muted);
-            font-size: 13px;
-        }
-        .empty-state svg { margin-bottom: 8px; opacity: 0.4; }
-
-        /* ── Controls ──────────────────────────── */
-        .controls-section {
-            display: flex; align-items: center; gap: 12px;
-            flex-wrap: wrap;
-        }
-        .btn {
-            display: inline-flex; align-items: center; gap: 8px;
-            padding: 0 20px; height: 44px;
-            border: none; border-radius: 8px;
-            font-family: 'Inter', sans-serif;
-            font-size: 13px; font-weight: 600;
-            cursor: pointer;
-            transition: background-color 0.2s ease, transform 0.1s ease, opacity 0.2s ease;
-            white-space: nowrap;
-            letter-spacing: 0.01em;
-        }
-        .btn:focus-visible {
-            outline: 2px solid var(--accent);
-            outline-offset: 2px;
-        }
-        .btn:active { transform: scale(0.97); }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
-        .btn svg { width: 16px; height: 16px; flex-shrink: 0; }
-        .btn-start { background: var(--green); color: #fff; }
-        .btn-start:hover { background: #059669; }
-        .btn-stop { background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); }
-        .btn-stop:hover { background: var(--bg-hover); border-color: var(--border-light); }
-        .btn-kill { background: var(--red-dim); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
-        .btn-kill:hover { background: rgba(239,68,68,0.2); }
-        .controls-spacer { flex: 1; }
-
-        /* ── Connection indicator ───────────────── */
-        .conn-indicator {
-            display: flex; align-items: center; gap: 6px;
-            font-size: 12px; color: var(--text-muted);
-        }
-        .conn-dot {
-            width: 8px; height: 8px; border-radius: 50%;
-            transition: background-color 0.3s ease;
-        }
-        .conn-dot.connected { background: var(--green); box-shadow: 0 0 6px rgba(16,185,129,0.4); }
-        .conn-dot.disconnected { background: var(--red); }
-
-        /* ── Toast ─────────────────────────────── */
-        .toast {
-            position: fixed; bottom: 24px; right: 24px;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 14px 20px;
-            display: flex; align-items: center; gap: 10px;
-            font-size: 13px; color: var(--text-primary);
-            z-index: var(--z-modal);
-            transform: translateY(100px); opacity: 0;
-            transition: transform 0.3s ease, opacity 0.3s ease;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.3);
-        }
-        .toast.show { transform: translateY(0); opacity: 1; }
-        .toast-success { border-left: 3px solid var(--green); }
-        .toast-error { border-left: 3px solid var(--red); }
-        .toast-warning { border-left: 3px solid var(--amber); }
-
-        /* ── Responsive ────────────────────────── */
-        @media (max-width: 1024px) {
-            .grid-6 { grid-template-columns: repeat(3, 1fr); }
-            .risk-grid { grid-template-columns: repeat(2, 1fr); }
-            .ops-layout { grid-template-columns: 1fr; }
-            .info-grid { grid-template-columns: repeat(2, 1fr); }
-        }
-        @media (max-width: 768px) {
-            .header { padding: 0 16px; }
-            .container { padding: 16px; }
-            .grid-6 { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-            .risk-grid { grid-template-columns: repeat(2, 1fr); }
-            .card { padding: 14px; }
-            .card-value { font-size: 22px; }
-            .controls-section { justify-content: stretch; }
-            .controls-section .btn { flex: 1; justify-content: center; }
-            .strategy-grid { grid-template-columns: 1fr; }
-        }
-        @media (max-width: 480px) {
-            .grid-6 { grid-template-columns: 1fr; }
-            .risk-grid { grid-template-columns: 1fr; }
-            .info-grid { grid-template-columns: 1fr; }
-            .kv-row { align-items: flex-start; flex-direction: column; }
-            .kv-value { text-align: left; }
-            .header-version { display: none; }
-        }
-    </style>
-</head>
-<body>
-    <!-- ── Header ──────────────────────────────── -->
-    <header class="header" role="banner">
-        <div class="header-left">
-            <div class="header-logo">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                </svg>
-                SENTINEL
-            </div>
-            <span class="header-version" id="version-label">v1.5.0</span>
-        </div>
-        <div class="header-right">
-            <div class="header-uptime" aria-label="Uptime">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-                </svg>
-                <span id="uptime-label">0m 0s</span>
-            </div>
-            <span id="mode-badge" class="badge badge-paper"><span class="badge-dot"></span>PAPER</span>
-            <span id="state-badge" class="badge badge-normal"><span class="badge-dot"></span>NORMAL</span>
-            <div class="conn-indicator" aria-label="WebSocket connection">
-                <span class="conn-dot disconnected" id="conn-dot"></span>
-                <span id="conn-label">Offline</span>
-            </div>
-        </div>
-    </header>
-
-    <!-- ── Main Content ────────────────────────── -->
-    <main class="container" role="main">
-
-        <!-- Metric Cards -->
-        <div class="grid-6 animate-fade">
-            <!-- PnL Today -->
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-icon card-icon-green">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
-                    </div>
-                    <span class="card-label">PnL Сегодня</span>
-                </div>
-                <div class="card-value neutral" id="pnl-today">$0.00</div>
-            </div>
-
-            <!-- PnL Total -->
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-icon card-icon-blue">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                    </div>
-                    <span class="card-label">PnL Всего</span>
-                </div>
-                <div class="card-value neutral" id="pnl-total">$0.00</div>
-            </div>
-
-            <!-- Balance -->
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-icon card-icon-cyan">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
-                    </div>
-                    <span class="card-label">Баланс</span>
-                </div>
-                <div class="card-value neutral" id="balance">$0.00</div>
-            </div>
-
-            <!-- Open Positions -->
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-icon card-icon-amber">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    </div>
-                    <span class="card-label">Позиции</span>
-                </div>
-                <div class="card-value neutral" id="open-positions">0</div>
-            </div>
-
-            <!-- Trades Today -->
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-icon card-icon-purple">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                    </div>
-                    <span class="card-label">Сделок сегодня</span>
-                </div>
-                <div class="card-value neutral" id="trades-today">0</div>
-            </div>
-
-            <!-- Win Rate -->
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-icon card-icon-green">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                    </div>
-                    <span class="card-label">Win Rate</span>
-                </div>
-                <div class="card-value neutral" id="win-rate">0%</div>
-            </div>
-        </div>
-
-        <div class="ops-layout animate-fade">
-            <section class="info-panel" aria-label="Operating profile">
-                <div class="section-title">
-                    <h3>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19h16"/><path d="M5 15l4-6 4 3 6-8"/></svg>
-                        Control Center
-                    </h3>
-                    <span id="strategy-count-badge" class="badge badge-paper"><span class="badge-dot"></span>0 STRATEGIES</span>
-                </div>
-                <div class="info-grid" id="control-center-grid">
-                    <div class="info-item">
-                        <div class="info-item-label">Trading Universe</div>
-                        <div class="info-item-value">Loading</div>
-                        <div class="info-item-meta">Instruments and execution scope</div>
-                    </div>
-                </div>
-            </section>
-
-            <section class="info-panel" aria-label="Execution profile">
-                <div class="section-title">
-                    <h3>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10"/><path d="M7 12h6"/></svg>
-                        Execution Profile
-                    </h3>
-                </div>
-                <div class="kv-list" id="execution-profile-list">
-                    <div class="kv-row"><span class="kv-key">Loading</span><span class="kv-value">...</span></div>
-                </div>
-            </section>
-        </div>
-
-        <!-- PnL Chart -->
-        <div class="chart-section animate-fade">
-            <div class="section-title">
-                <h3>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    PnL History
-                </h3>
-            </div>
-            <div class="chart-wrap">
-                <canvas id="pnlChart" aria-label="PnL history chart" role="img"></canvas>
-            </div>
-        </div>
-
-        <!-- Risk State Panel -->
-        <div class="risk-panel animate-fade">
-            <div class="section-title">
-                <h3>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                    Risk Overview
-                </h3>
-                <span id="risk-state-big" class="badge badge-normal"><span class="badge-dot"></span>NORMAL</span>
-            </div>
-            <div class="risk-grid" id="risk-grid">
-                <div class="risk-item">
-                    <div class="risk-item-label">Daily Loss</div>
-                    <div class="risk-item-value neutral" id="risk-daily-loss">$0.00</div>
-                </div>
-                <div class="risk-item">
-                    <div class="risk-item-label">Max Drawdown</div>
-                    <div class="risk-item-value neutral" id="risk-max-dd">0.0%</div>
-                </div>
-                <div class="risk-item">
-                    <div class="risk-item-label">Exposure</div>
-                    <div class="risk-item-value neutral" id="risk-exposure">0.0%</div>
-                </div>
-                <div class="risk-item">
-                    <div class="risk-item-label">Trade Freq</div>
-                    <div class="risk-item-value neutral" id="risk-freq">0/h</div>
-                </div>
-                <div class="risk-item">
-                    <div class="risk-item-label">Market Data Age</div>
-                    <div class="risk-item-value neutral" id="risk-data-age">-</div>
-                </div>
-                <div class="risk-item">
-                    <div class="risk-item-label">Commission Today</div>
-                    <div class="risk-item-value neutral" id="risk-commission">$0.00</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="ops-layout animate-fade">
-            <section class="info-panel" aria-label="Risk limits">
-                <div class="section-title">
-                    <h3>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
-                        Risk Limits
-                    </h3>
-                </div>
-                <div class="kv-list" id="risk-limits-list">
-                    <div class="kv-row"><span class="kv-key">Loading</span><span class="kv-value">...</span></div>
-                </div>
-            </section>
-
-            <section class="info-panel" aria-label="System profile">
-                <div class="section-title">
-                    <h3>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
-                        System Profile
-                    </h3>
-                </div>
-                <div class="kv-list" id="system-profile-list">
-                    <div class="kv-row"><span class="kv-key">Loading</span><span class="kv-value">...</span></div>
-                </div>
-            </section>
-        </div>
-
-        <section class="info-panel animate-fade" aria-label="Strategy stack">
-            <div class="section-title">
-                <h3>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 7h12"/><path d="M6 12h12"/><path d="M6 17h12"/></svg>
-                    Strategy Stack
-                </h3>
-            </div>
-            <div class="strategy-grid" id="strategy-grid">
-                <article class="strategy-card off">
-                    <div class="strategy-head">
-                        <div class="strategy-name">Loading</div>
-                        <span class="badge badge-paper"><span class="badge-dot"></span>WAIT</span>
-                    </div>
-                    <div class="strategy-summary">Collecting strategy configuration</div>
-                    <div class="chip-row"><span class="chip chip-off">pending</span></div>
-                </article>
-            </div>
-        </section>
-
-        <!-- Positions Table -->
-        <div class="table-section animate-fade">
-            <div class="section-title">
-                <h3>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    Open Positions
-                </h3>
-            </div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Symbol</th>
-                        <th>Strategy</th>
-                        <th>Side</th>
-                        <th>Entry</th>
-                        <th>Current</th>
-                        <th>SL / TP</th>
-                        <th>Qty</th>
-                        <th>PnL</th>
-                    </tr>
-                </thead>
-                <tbody id="positions-table">
-                    <tr><td colspan="8" class="empty-state">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
-                        <div>No open positions</div>
-                    </td></tr>
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Trades Table -->
-        <div class="table-section animate-fade">
-            <div class="section-title">
-                <h3>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                    Recent Trades
-                </h3>
-            </div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th>Symbol</th>
-                        <th>Strategy</th>
-                        <th>Signal</th>
-                        <th>Side</th>
-                        <th>Price</th>
-                        <th>PnL</th>
-                    </tr>
-                </thead>
-                <tbody id="trades-table">
-                    <tr><td colspan="7" class="empty-state">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
-                        <div>No trades yet</div>
-                    </td></tr>
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Controls -->
-        <div class="controls-section animate-fade">
-            <button class="btn btn-start" id="btn-start" onclick="controlAction('resume')" aria-label="Start trading">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                Start
-            </button>
-            <button class="btn btn-stop" id="btn-stop" onclick="controlAction('stop')" aria-label="Stop trading">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-                Stop
-            </button>
-            <div class="controls-spacer"></div>
-            <button class="btn btn-kill" id="btn-kill" onclick="confirmKill()" aria-label="Emergency stop">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                Emergency Stop
-            </button>
-        </div>
-    </main>
-
-    <!-- Toast container -->
-    <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
-
-    <script>
-    'use strict';
-
-    /* ── Helpers ──────────────────────────────── */
-    function formatPnl(val) {
-        if (val >= 0) return '+$' + val.toFixed(2);
-        return '-$' + Math.abs(val).toFixed(2);
-    }
-    function formatUsd(val) { return '$' + Number(val).toFixed(2); }
-    function pnlClass(val) { return val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral'; }
-    function truncateText(val, maxLen) {
-        const text = String(val || '');
-        if (text.length <= maxLen) return text;
-        return text.slice(0, Math.max(0, maxLen - 1)) + '…';
-    }
-    function escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
-    }
-    function toneClass(tone) {
-        if (tone === 'positive') return 'positive';
-        if (tone === 'negative') return 'negative';
-        if (tone === 'warning') return 'chip-warning';
-        return 'neutral';
-    }
-    function chipToneClass(tone) {
-        if (tone === 'positive') return 'chip chip-positive';
-        if (tone === 'negative') return 'chip chip-negative';
-        if (tone === 'warning') return 'chip chip-warning';
-        if (tone === 'off') return 'chip chip-off';
-        return 'chip chip-neutral';
-    }
-
-    function renderKeyValueList(containerId, items) {
-        const container = document.getElementById(containerId);
-        if (!container) return;
-        container.innerHTML = (items || []).map(function(item) {
-            return '<div class="kv-row">' +
-                '<span class="kv-key">' + escapeHtml(item.label || '-') + '</span>' +
-                '<span class="kv-value ' + toneClass(item.tone) + '">' + escapeHtml(String(item.value || '-')) + '</span>' +
-                '</div>';
-        }).join('');
-    }
-
-    function renderControlCenter(controlCenter) {
-        const container = document.getElementById('control-center-grid');
-        if (!container || !controlCenter) return;
-        const autoSelection = controlCenter.auto_strategy_selection ? 'Auto selection on' : 'Manual strategy profile';
-        container.innerHTML = [
-            {
-                label: 'Trading Universe',
-                value: controlCenter.symbols_display || '-',
-                meta: 'Tracked instruments and scope',
-            },
-            {
-                label: 'Timeframe Ladder',
-                value: (controlCenter.signal_timeframe || '-') + ' / ' + (controlCenter.trend_timeframe || '-'),
-                meta: 'Signal and confirmation frames',
-            },
-            {
-                label: 'Confidence Gate',
-                value: Number(controlCenter.min_confidence || 0).toFixed(2),
-                meta: 'Minimum acceptance score',
-            },
-            {
-                label: 'Strategy Routing',
-                value: autoSelection,
-                meta: 'Allocation and selection policy',
-            }
-        ].map(function(item) {
-            return '<div class="info-item">' +
-                '<div class="info-item-label">' + escapeHtml(item.label) + '</div>' +
-                '<div class="info-item-value">' + escapeHtml(item.value) + '</div>' +
-                '<div class="info-item-meta">' + escapeHtml(item.meta) + '</div>' +
-                '</div>';
-        }).join('');
-
-        const strategyBadge = document.getElementById('strategy-count-badge');
-        if (strategyBadge) {
-            const enabled = controlCenter.enabled_strategies || 0;
-            strategyBadge.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(String(enabled) + ' ACTIVE');
-            strategyBadge.className = 'badge ' + (enabled > 1 ? 'badge-live' : 'badge-paper');
-        }
-    }
-
-    function renderStrategies(strategies) {
-        const container = document.getElementById('strategy-grid');
-        if (!container) return;
-        if (!strategies || !strategies.length) {
-            container.innerHTML = '<article class="strategy-card off"><div class="strategy-name">No strategies configured</div></article>';
-            return;
-        }
-        container.innerHTML = strategies.map(function(strategy) {
-            const enabled = !!strategy.enabled;
-            const badgeClass = enabled ? 'badge-live' : 'badge-stop';
-            const badgeText = enabled ? 'Enabled' : 'Disabled';
-            const details = (strategy.details || []).map(function(detail) {
-                return '<span class="' + chipToneClass(enabled ? 'neutral' : 'off') + '">' + escapeHtml(detail) + '</span>';
-            }).join('');
-            return '<article class="strategy-card ' + (enabled ? '' : 'off') + '">' +
-                '<div class="strategy-head">' +
-                '<div class="strategy-name">' + escapeHtml(strategy.name || '-') + '</div>' +
-                '<span class="badge ' + badgeClass + '"><span class="badge-dot"></span>' + escapeHtml(badgeText) + '</span>' +
-                '</div>' +
-                '<div class="strategy-summary">' + escapeHtml(strategy.summary || '-') + '</div>' +
-                '<div class="chip-row">' + details + '</div>' +
-                '</article>';
-        }).join('');
-    }
-
-    /* ── Toast notifications ─────────────────── */
-    let toastTimer = null;
-    function showToast(message, type) {
-        type = type || 'success';
-        const t = document.getElementById('toast');
-        t.textContent = message;
-        t.className = 'toast toast-' + type + ' show';
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(function() { t.className = 'toast'; }, 3500);
-    }
-
-    /* ── Chart setup ─────────────────────────── */
-    const ctx = document.getElementById('pnlChart').getContext('2d');
-    const gradient = ctx.createLinearGradient(0, 0, 0, 260);
-    gradient.addColorStop(0, 'rgba(59, 130, 246, 0.25)');
-    gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
-
-    const pnlChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [{
-                label: 'PnL ($)',
-                data: [],
-                borderColor: '#3b82f6',
-                backgroundColor: gradient,
-                fill: true,
-                tension: 0.35,
-                borderWidth: 2,
-                pointRadius: 0,
-                pointHitRadius: 10,
-                pointHoverRadius: 5,
-                pointHoverBackgroundColor: '#3b82f6',
-                pointHoverBorderColor: '#fff',
-                pointHoverBorderWidth: 2,
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode: 'index', intersect: false },
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    backgroundColor: '#1c2333',
-                    titleColor: '#8b95a5',
-                    bodyColor: '#e8eaed',
-                    borderColor: '#2a3040',
-                    borderWidth: 1,
-                    padding: 12,
-                    cornerRadius: 8,
-                    displayColors: false,
-                    titleFont: { family: 'Inter', size: 11 },
-                    bodyFont: { family: 'JetBrains Mono', size: 13, weight: '600' },
-                    callbacks: {
-                        label: function(ctx) { return formatPnl(ctx.parsed.y); }
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    grid: { color: 'rgba(42,48,64,0.5)', drawBorder: false },
-                    ticks: { color: '#5a6577', font: { family: 'Inter', size: 11 }, maxRotation: 0 },
-                    border: { display: false }
-                },
-                y: {
-                    grid: { color: 'rgba(42,48,64,0.5)', drawBorder: false },
-                    ticks: {
-                        color: '#5a6577',
-                        font: { family: 'JetBrains Mono', size: 11 },
-                        callback: function(v) { return '$' + v; }
-                    },
-                    border: { display: false }
-                }
-            }
-        }
-    });
-
-    /* ── State update ────────────────────────── */
-    function updateUI(data) {
-        /* PnL Today */
-        const pt = document.getElementById('pnl-today');
-        pt.textContent = formatPnl(data.pnl_today || 0);
-        pt.className = 'card-value ' + pnlClass(data.pnl_today || 0);
-
-        /* PnL Total */
-        const pp = document.getElementById('pnl-total');
-        pp.textContent = formatPnl(data.pnl_total || 0);
-        pp.className = 'card-value ' + pnlClass(data.pnl_total || 0);
-
-        /* Balance */
-        document.getElementById('balance').textContent = formatUsd(data.balance || 0);
-
-        /* Counters */
-        document.getElementById('open-positions').textContent = data.open_positions || 0;
-        document.getElementById('trades-today').textContent = data.trades_today || 0;
-
-        /* Win Rate */
-        const wr = data.win_rate || 0;
-        const wrEl = document.getElementById('win-rate');
-        wrEl.textContent = wr.toFixed(1) + '%';
-        wrEl.className = 'card-value ' + (wr >= 50 ? 'positive' : wr > 0 ? 'negative' : 'neutral');
-
-        /* Uptime */
-        if (data.uptime) document.getElementById('uptime-label').textContent = data.uptime;
-
-        /* Mode badge */
-        const mb = document.getElementById('mode-badge');
-        const mode = (data.mode || 'paper').toLowerCase();
-        mb.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(mode.toUpperCase());
-        mb.className = 'badge badge-' + mode;
-
-        /* Risk state badge (header) */
-        const sb = document.getElementById('state-badge');
-        const rs = (data.risk_state || 'NORMAL').toLowerCase();
-        sb.innerHTML = '<span class="badge-dot"></span>' + escapeHtml((data.risk_state || 'NORMAL').toUpperCase());
-        sb.className = 'badge badge-' + rs;
-
-        /* Risk state badge (panel) */
-        const rb = document.getElementById('risk-state-big');
-        rb.innerHTML = '<span class="badge-dot"></span>' + escapeHtml((data.risk_state || 'NORMAL').toUpperCase());
-        rb.className = 'badge badge-' + rs;
-
-        /* Risk details */
-        if (data.risk_details) {
-            const rd = data.risk_details;
-            const dlEl = document.getElementById('risk-daily-loss');
-            dlEl.textContent = formatPnl(rd.daily_loss || 0);
-            dlEl.className = 'risk-item-value ' + pnlClass(-(Math.abs(rd.daily_loss || 0)));
-
-            document.getElementById('risk-max-dd').textContent = ((rd.max_drawdown || 0) * 100).toFixed(1) + '%';
-            document.getElementById('risk-exposure').textContent = ((rd.exposure || 0) * 100).toFixed(1) + '%';
-            document.getElementById('risk-freq').textContent = (rd.trade_freq || 0) + '/h';
-            document.getElementById('risk-data-age').textContent = rd.market_data_age_sec >= 0 ? Number(rd.market_data_age_sec).toFixed(1) + 's' : '-';
-            document.getElementById('risk-commission').textContent = formatUsd(rd.daily_commission || 0);
-        }
-    }
-
-    /* ── WebSocket ────────────────────────────── */
-    let ws = null;
-    let wsRetry = 0;
-    const MAX_RETRY_DELAY = 30000;
-
-    function connectWS() {
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(proto + '//' + location.host + '/ws');
-
-        ws.onopen = function() {
-            wsRetry = 0;
-            document.getElementById('conn-dot').className = 'conn-dot connected';
-            document.getElementById('conn-label').textContent = 'Live';
-        };
-
-        ws.onmessage = function(e) {
-            try {
-                const msg = JSON.parse(e.data);
-                if (msg.type === 'state_update') updateUI(msg.data);
-            } catch(err) {}
-        };
-
-        ws.onclose = function() {
-            document.getElementById('conn-dot').className = 'conn-dot disconnected';
-            document.getElementById('conn-label').textContent = 'Offline';
-            var delay = Math.min(1000 * Math.pow(2, wsRetry), MAX_RETRY_DELAY);
-            wsRetry++;
-            setTimeout(connectWS, delay);
-        };
-
-        ws.onerror = function() { ws.close(); };
-    }
-    connectWS();
-
-    /* ── REST Polling (fallback) ─────────────── */
-    async function fetchStatus() {
-        try {
-            const r = await fetch('/api/status');
-            const data = await r.json();
-            updateUI(data);
-        } catch(e) {}
-    }
-
-    async function fetchPositions() {
-        try {
-            const r = await fetch('/api/positions');
-            const data = await r.json();
-            const tbody = document.getElementById('positions-table');
-            if (!data.length) {
-                tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><div>No open positions</div></td></tr>';
-                return;
-            }
-            tbody.innerHTML = data.map(function(p) {
-                const pnl = p.unrealized_pnl || 0;
-                const sl = p.stop_loss_price > 0 ? formatUsd(p.stop_loss_price) : '-';
-                const tp = p.take_profit_price > 0 ? formatUsd(p.take_profit_price) : '-';
-                return '<tr>' +
-                    '<td class="td-mono" style="color:var(--text-primary);font-weight:500;">' + escapeHtml(p.symbol) + '</td>' +
-                    '<td>' + escapeHtml(p.strategy_name || '-') + '</td>' +
-                    '<td><span class="badge ' + (p.side === 'BUY' ? 'badge-live' : 'badge-stop') + '" style="font-size:11px;padding:2px 8px;">' + escapeHtml(p.side) + '</span></td>' +
-                    '<td class="td-mono">' + formatUsd(p.entry_price || 0) + '</td>' +
-                    '<td class="td-mono">' + formatUsd(p.current_price || 0) + '</td>' +
-                    '<td class="td-mono">' + sl + ' / ' + tp + '</td>' +
-                    '<td class="td-mono">' + Number(p.quantity || 0).toFixed(6) + '</td>' +
-                    '<td class="td-mono ' + pnlClass(pnl) + '">' + formatPnl(pnl) + '</td></tr>';
-            }).join('');
-        } catch(e) {}
-    }
-
-    async function fetchTrades() {
-        try {
-            const r = await fetch('/api/trades');
-            const data = await r.json();
-            const tbody = document.getElementById('trades-table');
-            if (!data.length) {
-                tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div>No trades yet</div></td></tr>';
-                return;
-            }
-            tbody.innerHTML = data.slice(0, 15).map(function(t) {
-                const pnl = t.pnl || 0;
-                const signalId = t.signal_id || '-';
-                const signalReason = t.signal_reason || '';
-                return '<tr>' +
-                    '<td class="td-mono">' + escapeHtml(t.time || '-') + '</td>' +
-                    '<td class="td-mono" style="color:var(--text-primary);">' + escapeHtml(t.symbol || '-') + '</td>' +
-                    '<td>' + escapeHtml(t.strategy_name || '-') + '</td>' +
-                    '<td title="' + escapeHtml(signalReason) + '"><div class="table-cell-stack"><span class="td-mono">' + escapeHtml(signalId) + '</span><span class="table-cell-meta">' + escapeHtml(truncateText(signalReason || 'No signal reason', 44)) + '</span></div></td>' +
-                    '<td><span class="badge ' + (t.side === 'BUY' ? 'badge-live' : 'badge-stop') + '" style="font-size:11px;padding:2px 8px;">' + escapeHtml(t.side || '-') + '</span></td>' +
-                    '<td class="td-mono">' + formatUsd(t.price || 0) + '</td>' +
-                    '<td class="td-mono ' + pnlClass(pnl) + '">' + (t.pnl != null ? formatPnl(pnl) : '-') + '</td></tr>';
-            }).join('');
-        } catch(e) {}
-    }
-
-    async function fetchPnlHistory() {
-        try {
-            const r = await fetch('/api/pnl-history');
-            const data = await r.json();
-            if (!data.length) return;
-            pnlChart.data.labels = data.map(function(d) { return d.date || d.label || ''; });
-            pnlChart.data.datasets[0].data = data.map(function(d) { return d.pnl || d.value || 0; });
-            pnlChart.update('none');
-        } catch(e) {}
-    }
-
-    async function fetchConfig() {
-        try {
-            const r = await fetch('/api/config');
-            const data = await r.json();
-            renderControlCenter(data.control_center);
-            renderKeyValueList('execution-profile-list', data.execution_profile);
-            renderKeyValueList('risk-limits-list', data.risk_limits);
-            renderKeyValueList('system-profile-list', data.system_profile);
-            renderStrategies(data.strategies);
-        } catch(e) {}
-    }
-
-    /* ── Control actions ─────────────────────── */
-    async function controlAction(action) {
-        const btn = document.getElementById('btn-' + (action === 'resume' ? 'start' : action));
-        if (btn) btn.disabled = true;
-        try {
-            const r = await fetch('/api/control/' + action, { method: 'POST' });
-            const data = await r.json();
-            if (r.ok) {
-                showToast(action === 'resume' ? 'Trading started' : action === 'stop' ? 'Trading stopped' : 'Emergency stop executed',
-                    action === 'kill' ? 'warning' : 'success');
-            } else {
-                showToast(data.error || 'Action failed', 'error');
-            }
-            fetchStatus();
-        } catch(e) {
-            showToast('Connection error: ' + e.message, 'error');
-        } finally {
-            if (btn) setTimeout(function() { btn.disabled = false; }, 2000);
-        }
-    }
-
-    function confirmKill() {
-        if (confirm('EMERGENCY STOP\n\nThis will immediately cancel all orders and close all positions.\n\nAre you sure?')) {
-            controlAction('kill');
-        }
-    }
-
-    /* ── Init & intervals ────────────────────── */
-    fetchStatus();
-    fetchPositions();
-    fetchTrades();
-    fetchPnlHistory();
-    setInterval(fetchStatus, 5000);
-    setInterval(fetchPositions, 8000);
-    fetchConfig();
-    setInterval(fetchTrades, 8000);
-    setInterval(fetchPnlHistory, 30000);
-    setInterval(fetchConfig, 60000);
-    </script>
-</body>
-</html>
-"""
+# Load HTML from static/index.html
+import pathlib as _pathlib
+_STATIC_DIR = _pathlib.Path(__file__).parent / "static"
+_DASHBOARD_HTML = (_STATIC_DIR / "index.html").read_text(encoding="utf-8") if (_STATIC_DIR / "index.html").exists() else "<h1>Dashboard HTML not found</h1>"
+_SETTINGS_HTML = (_STATIC_DIR / "settings.html").read_text(encoding="utf-8") if (_STATIC_DIR / "settings.html").exists() else "<h1>Settings HTML not found</h1>"

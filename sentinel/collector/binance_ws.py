@@ -3,7 +3,7 @@ Binance WebSocket collector — приём рыночных данных в ре
 
 Подписки:
   - @trade — сырые сделки
-  - @kline_1m, @kline_1h, @kline_4h, @kline_1d — свечи
+  - @kline_1m, @kline_5m, @kline_15m, @kline_1h, @kline_4h, @kline_1d — свечи
 
 Автоматический reconnect с экспоненциальной задержкой (1s → 60s).
 Heartbeat / stale-data detection встроено.
@@ -53,6 +53,12 @@ class BinanceWebSocketCollector:
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._last_data_ts: float = 0.0
         self._reconnect_idx = 0
+        # Counters
+        self._msg_count: int = 0
+        self._trade_count: int = 0
+        self._candle_count: int = 0
+        self._candle_closed_count: int = 0
+        self._last_prices: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -96,6 +102,20 @@ class BinanceWebSocketCollector:
             return float("inf")
         return time.time() - self._last_data_ts
 
+    @property
+    def stats(self) -> dict:
+        """Текущие метрики коллектора."""
+        return {
+            "connected": self._ws is not None and self._running,
+            "msg_count": self._msg_count,
+            "trade_count": self._trade_count,
+            "candle_count": self._candle_count,
+            "candle_closed": self._candle_closed_count,
+            "last_prices": dict(self._last_prices),
+            "symbols": [s.upper() for s in self._symbols],
+            "data_age_sec": round(self.last_data_age_sec, 1) if self.last_data_age_sec != float("inf") else None,
+        }
+
     # ------------------------------------------------------------------
     # Connection
     # ------------------------------------------------------------------
@@ -105,13 +125,13 @@ class BinanceWebSocketCollector:
         streams: list[str] = []
         for sym in self._symbols:
             streams.append(f"{sym}@trade")
-            for interval in ("1m", "1h", "4h", "1d"):
+            for interval in ("1m", "5m", "15m", "1h", "4h", "1d"):
                 streams.append(f"{sym}@kline_{interval}")
         return BINANCE_STREAM_BASE + "/".join(streams)
 
     async def _connect_and_listen(self) -> None:
         url = self._build_stream_url()
-        log.info("Подключаюсь к Binance WS: {} потоков", len(self._symbols) * 5)
+        log.info("Подключаюсь к Binance WS: {} потоков", len(self._symbols) * 7)
 
         async with websockets.connect(
             url,
@@ -138,6 +158,7 @@ class BinanceWebSocketCollector:
     # ------------------------------------------------------------------
 
     async def _handle_message(self, raw: str) -> None:
+        self._msg_count += 1
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
@@ -154,15 +175,21 @@ class BinanceWebSocketCollector:
             await self._handle_kline(data)
 
     async def _handle_trade(self, data: dict) -> None:
-        trade = MarketTrade(
-            timestamp=data["T"],
-            symbol=data["s"],
-            price=float(data["p"]),
-            quantity=float(data["q"]),
-            is_buyer_maker=data["m"],
-        )
+        try:
+            trade = MarketTrade(
+                timestamp=data["T"],
+                symbol=data["s"],
+                price=float(data["p"]),
+                quantity=float(data["q"]),
+                is_buyer_maker=data["m"],
+            )
+        except (KeyError, ValueError, TypeError) as e:
+            log.warning("Failed to parse trade data: {}", e)
+            return
         if not validate_trade(trade):
             return
+        self._trade_count += 1
+        self._last_prices[trade.symbol] = trade.price
 
         # Сохраняем в БД (async thread)
         await asyncio.to_thread(self._repo.insert_trade, trade)
@@ -170,20 +197,25 @@ class BinanceWebSocketCollector:
         await self._bus.emit(EVENT_NEW_TRADE, trade)
 
     async def _handle_kline(self, data: dict) -> None:
-        k = data["k"]
-        candle = Candle(
-            timestamp=k["t"],
-            symbol=k["s"],
-            interval=k["i"],
-            open=float(k["o"]),
-            high=float(k["h"]),
-            low=float(k["l"]),
-            close=float(k["c"]),
-            volume=float(k["v"]),
-            trades_count=k.get("n", 0),
-        )
+        try:
+            k = data["k"]
+            candle = Candle(
+                timestamp=k["t"],
+                symbol=k["s"],
+                interval=k["i"],
+                open=float(k["o"]),
+                high=float(k["h"]),
+                low=float(k["l"]),
+                close=float(k["c"]),
+                volume=float(k["v"]),
+                trades_count=k.get("n", 0),
+            )
+        except (KeyError, ValueError, TypeError) as e:
+            log.warning("Failed to parse kline data: {}", e)
+            return
         if not validate_candle(candle):
             return
+        self._candle_count += 1
 
         # Upsert свечу (обновляется до закрытия)
         await asyncio.to_thread(self._repo.upsert_candle, candle)
@@ -191,6 +223,7 @@ class BinanceWebSocketCollector:
         # Эмитим событие только для закрытой свечи
         is_closed = k.get("x", False)
         if is_closed:
+            self._candle_closed_count += 1
             await self._bus.emit(EVENT_NEW_CANDLE, candle)
 
     # ------------------------------------------------------------------

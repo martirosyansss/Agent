@@ -379,6 +379,15 @@ class TestDashboardAPI:
                 "pnl": 1.25,
             }],
             "pnl_history": [],
+            "market_chart": {
+                "symbol": "BTCUSDT",
+                "interval": "1m",
+                "source": "candles_1m",
+                "candles": [
+                    {"t": 1712930998000, "label": "14:29", "o": 67950.0, "h": 67990.0, "l": 67940.0, "c": 67980.0, "v": 12.5},
+                    {"t": 1712931058000, "label": "14:30", "o": 67980.0, "h": 68020.0, "l": 67970.0, "c": 68000.0, "v": 8.3},
+                ],
+            },
             "backtest_results": {"sharpe": 1.2, "win_rate": 55.0},
         })
 
@@ -425,6 +434,22 @@ class TestDashboardAPI:
     def test_pnl_history(self, client):
         r = client.get("/api/pnl-history")
         assert r.status_code == 200
+
+    def test_market_chart(self, client):
+        r = client.get("/api/market-chart")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["symbol"] == "BTCUSDT"
+        assert data["source"] == "candles_1m"
+        assert len(data["candles"]) == 2
+        assert data["candles"][0]["o"] == 67950.0
+
+    def test_market_chart_interval(self, client):
+        r = client.get("/api/market-chart?interval=1h")
+        assert r.status_code == 200
+        data = r.json()
+        # Falls back to state since no market_chart_provider set
+        assert "candles" in data
 
     def test_backtest_results(self, client):
         r = client.get("/api/backtest-results")
@@ -555,10 +580,11 @@ class TestDashboardAPI:
         assert "conn-dot" in html
 
     def test_dashboard_html_operator_panels(self, client):
-        """Dashboard shows operator-facing config panels."""
-        html = client.get("/").text
+        """Dashboard settings page shows operator-facing config panels."""
+        html = client.get("/settings").text
         assert "Control Center" in html
         assert "Execution Profile" in html
         assert "Risk Limits" in html
         assert "System Profile" in html
         assert "Strategy Stack" in html
+        assert "Reset section" in html

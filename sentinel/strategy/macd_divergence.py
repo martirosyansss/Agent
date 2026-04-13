@@ -36,6 +36,12 @@ class MACDDivConfig:
     max_position_pct: float = 15.0
     min_confidence: float = 0.72
 
+    def __post_init__(self):
+        if self.stop_loss_pct <= 0 or self.stop_loss_pct > 50:
+            raise ValueError(f"stop_loss_pct must be (0, 50], got {self.stop_loss_pct}")
+        if self.min_divergence_bars < 2:
+            raise ValueError(f"min_divergence_bars must be >= 2, got {self.min_divergence_bars}")
+
 
 class MACDDivergence(BaseStrategy):
     """Стратегия V6: MACD Divergence — торговля расходимостью."""
@@ -105,6 +111,12 @@ class MACDDivergence(BaseStrategy):
 
         # ── SELL (если есть позиция) ──
         if has_open_position and entry_price is not None:
+            if entry_price <= 0:
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=0.99, strategy_name=self.NAME,
+                    reason=f"SAFETY: invalid entry_price={entry_price}",
+                )
             pnl_pct = (features.close - entry_price) / entry_price * 100
 
             if pnl_pct >= cfg.take_profit_pct:
@@ -154,6 +166,17 @@ class MACDDivergence(BaseStrategy):
         mh = self._macd_history.get(sym, [])
         if len(mh) >= 2 and mh[-2] < 0 <= mh[-1]:
             confidence += 0.05
+
+        # News sentiment boost/penalty (±0.08)
+        if features.news_sentiment > 0.3:
+            confidence += 0.08
+        elif features.news_sentiment > 0.15:
+            confidence += 0.04
+        elif features.news_sentiment < -0.3:
+            confidence -= 0.08
+        elif features.news_sentiment < -0.15:
+            confidence -= 0.04
+
         confidence = min(confidence, 0.95)
 
         if confidence < cfg.min_confidence:
@@ -162,9 +185,13 @@ class MACDDivergence(BaseStrategy):
         sl = features.close * (1 - cfg.stop_loss_pct / 100)
         tp = features.close * (1 + cfg.take_profit_pct / 100)
 
+        reason = f"MACD bullish divergence: RSI={features.rsi_14:.0f}, vol_r={features.volume_ratio:.1f}"
+        if features.news_sentiment != 0.0:
+            reason += f", sentiment={features.news_sentiment:+.2f}"
+
         return Signal(
             timestamp=now_ms, symbol=sym, direction=Direction.BUY,
             confidence=confidence, strategy_name=self.NAME,
-            reason=f"MACD bullish divergence: RSI={features.rsi_14:.0f}, vol_r={features.volume_ratio:.1f}",
+            reason=reason,
             stop_loss_price=sl, take_profit_price=tp,
         )

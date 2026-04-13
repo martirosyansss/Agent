@@ -145,8 +145,13 @@ class RiskSentinel:
 
         # [3] Exposure (only for BUY)
         if signal.direction == Direction.BUY:
+            if balance <= 0:
+                return RiskCheckResult(
+                    approved=False,
+                    reason=f"Invalid balance: ${balance:.2f}",
+                )
             order_value = signal.suggested_quantity * current_market_price
-            new_exposure_pct = total_exposure_pct + (order_value / balance * 100 if balance > 0 else 100)
+            new_exposure_pct = total_exposure_pct + (order_value / balance * 100)
             if new_exposure_pct > self._limits.max_total_exposure_pct:
                 return RiskCheckResult(
                     approved=False,

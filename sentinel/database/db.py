@@ -7,6 +7,7 @@ SQLite подключение с WAL mode, integrity check и автоматич
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from loguru import logger
@@ -159,6 +160,24 @@ CREATE TABLE IF NOT EXISTS ml_model_registry (
 );
 CREATE INDEX IF NOT EXISTS idx_ml_model_registry_active
     ON ml_model_registry(is_active, created_at);
+
+-- signal_executions — audit trail for signal processing
+CREATE TABLE IF NOT EXISTS signal_executions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    strategy_name TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    confidence REAL,
+    outcome TEXT NOT NULL,
+    reason TEXT,
+    latency_ms INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_signal_exec_ts
+    ON signal_executions(timestamp);
+CREATE INDEX IF NOT EXISTS idx_signal_exec_strategy
+    ON signal_executions(strategy_name, outcome);
 """
 
 
@@ -169,6 +188,7 @@ class Database:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -177,19 +197,24 @@ class Database:
     def connect(self) -> None:
         """Открыть соединение, включить WAL, создать схему."""
         log.info("Подключаюсь к SQLite: {}", self._db_path)
-        self._conn = sqlite3.connect(
+        conn = sqlite3.connect(
             str(self._db_path),
             check_same_thread=False,
             timeout=30,
         )
-        self._conn.row_factory = sqlite3.Row
-        # WAL mode для параллельного чтения/записи
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._apply_schema()
-        log.info("SQLite инициализирована (WAL mode)")
+        try:
+            conn.row_factory = sqlite3.Row
+            # WAL mode для параллельного чтения/записи
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
+            self._conn = conn
+            self._apply_schema()
+            log.info("SQLite инициализирована (WAL mode)")
+        except Exception:
+            conn.close()
+            raise
 
     def close(self) -> None:
         if self._conn:
@@ -231,16 +256,21 @@ class Database:
     # ------------------------------------------------------------------
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        return self.conn.execute(sql, params)
+        with self._lock:
+            return self.conn.execute(sql, params)
 
     def executemany(self, sql: str, params_seq) -> sqlite3.Cursor:
-        return self.conn.executemany(sql, params_seq)
+        with self._lock:
+            return self.conn.executemany(sql, params_seq)
 
     def commit(self) -> None:
-        self.conn.commit()
+        with self._lock:
+            self.conn.commit()
 
     def fetchone(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
-        return self.conn.execute(sql, params).fetchone()
+        with self._lock:
+            return self.conn.execute(sql, params).fetchone()
 
     def fetchall(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
-        return self.conn.execute(sql, params).fetchall()
+        with self._lock:
+            return self.conn.execute(sql, params).fetchall()

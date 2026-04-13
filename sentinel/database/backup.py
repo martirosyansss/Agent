@@ -39,14 +39,13 @@ def _do_backup(db: Database, backup_dir: Path) -> Path:
     """Выполнить бэкап (синхронно). Возвращает путь к файлу бэкапа."""
     ts = time.strftime("%Y%m%d_%H%M%S")
     dest = backup_dir / f"sentinel_backup_{ts}.db"
+    src = Path(str(db._db_path))
     try:
-        db.conn.execute(f"VACUUM INTO '{dest}'")
-        log.info("Backup создан: {}", dest.name)
-    except Exception:
-        # Fallback: обычное копирование файла
-        src = Path(str(db._db_path))
         shutil.copy2(src, dest)
-        log.info("Backup (copy) создан: {}", dest.name)
+        log.info("Backup создан: {}", dest.name)
+    except Exception as e:
+        log.error("Backup failed (copy): {}", e)
+        raise
 
     _rotate_backups(backup_dir)
     return dest
@@ -57,8 +56,11 @@ def _rotate_backups(backup_dir: Path) -> None:
     backups = sorted(backup_dir.glob("sentinel_backup_*.db"), key=lambda p: p.stat().st_mtime)
     while len(backups) > MAX_BACKUPS:
         old = backups.pop(0)
-        old.unlink()
-        log.info("Удалён старый бэкап: {}", old.name)
+        try:
+            old.unlink()
+            log.info("Удалён старый бэкап: {}", old.name)
+        except (OSError, PermissionError) as e:
+            log.warning("Не удалось удалить бэкап {}: {}", old.name, e)
 
 
 def manual_backup(db: Database, backup_dir: str | Path) -> Path:

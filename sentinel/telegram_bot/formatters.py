@@ -12,6 +12,14 @@ from typing import Optional
 from core.models import Direction, Order, Position, RiskState, Signal
 
 
+def _esc(text: str) -> str:
+    """Escape HTML special characters for Telegram messages."""
+    return (str(text)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
+
 def fmt_price(value: float) -> str:
     """Две десятичных если < $10, иначе до доллара."""
     if value < 10:
@@ -45,13 +53,13 @@ def format_signal(signal: Signal) -> str:
     action = "BUY" if signal.direction == Direction.BUY else "SELL"
 
     lines = [
-        f"{icon} <b>СИГНАЛ {action} {signal.symbol}</b>",
+        f"{icon} <b>СИГНАЛ {action} {_esc(signal.symbol)}</b>",
         "",
         f"Цена: {fmt_price(signal.stop_loss_price if signal.direction == Direction.SELL else signal.take_profit_price) if False else fmt_price(0)}",
         f"Confidence: <b>{signal.confidence:.2f}</b>",
-        f"Стратегия: {signal.strategy_name}",
+        f"Стратегия: {_esc(signal.strategy_name)}",
         "",
-        f"Причина: {signal.reason}",
+        f"Причина: {_esc(signal.reason)}",
     ]
 
     if signal.stop_loss_price > 0:
@@ -96,14 +104,14 @@ def format_take_profit(position: Position, profit: float) -> str:
 def format_risk_state_changed(old_state: RiskState, new_state: RiskState, reason: str) -> str:
     """Уведомление о смене Risk State."""
     return (
-        f"⚠️ Risk State: <b>{old_state.value} → {new_state.value}</b>\n"
-        f"Причина: {reason}"
+        f"⚠️ Risk State: <b>{_esc(old_state.value)} → {_esc(new_state.value)}</b>\n"
+        f"Причина: {_esc(reason)}"
     )
 
 
 def format_error(message: str) -> str:
     """Уведомление об ошибке."""
-    return f"🚨 <b>ОШИБКА:</b> {message}"
+    return f"🚨 <b>ОШИБКА:</b> {_esc(message)}"
 
 
 def format_daily_report(
@@ -208,4 +216,29 @@ def format_config_summary(settings: dict) -> str:
     lines = ["⚙️ <b>Конфигурация</b>\n"]
     for key, val in settings.items():
         lines.append(f"  {key}: {val}")
+    return "\n".join(lines)
+
+
+def format_portfolio(strategy_perf: list[dict], balance: float) -> str:
+    """Ответ на /portfolio — per-strategy performance summary."""
+    if not strategy_perf:
+        return "📊 Нет данных по стратегиям (0 сделок)"
+
+    lines = [f"📊 <b>Portfolio — ${balance:,.2f}</b>\n"]
+
+    for s in strategy_perf:
+        name = _esc(s.get("strategy_name", "?"))
+        total = s.get("total_trades", 0)
+        wr = s.get("win_rate", 0.0)
+        pnl = s.get("total_pnl", 0.0)
+        icon = "🟢" if pnl >= 0 else "🔴"
+
+        lines.append(
+            f"{icon} <b>{name}</b>: {fmt_pnl(pnl)} "
+            f"| {total} trades | WR {wr:.0f}%"
+        )
+
+    total_pnl = sum(s.get("total_pnl", 0.0) for s in strategy_perf)
+    total_trades = sum(s.get("total_trades", 0) for s in strategy_perf)
+    lines.append(f"\n<b>Итого:</b> {fmt_pnl(total_pnl)} | {total_trades} trades")
     return "\n".join(lines)

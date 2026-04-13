@@ -13,6 +13,9 @@ from loguru import logger
 
 from core.models import Candle, FeatureVector
 from features import indicators as ind
+from guards.safe_math import safe_value
+
+import math
 
 log = logger.bind(module="features")
 
@@ -106,30 +109,30 @@ class FeatureBuilder:
             # Трендовые
             ema_9=ema_9,
             ema_21=ema_21,
-            ema_50=ema_50 or 0.0,
-            adx=adx_val or 0.0,
+            ema_50=safe_value(ema_50),
+            adx=safe_value(adx_val),
             macd=macd_val,
             macd_signal=macd_sig,
             macd_histogram=macd_hist,
             # Осцилляторы
             rsi_14=rsi_val,
-            stoch_rsi=stoch_rsi_val or 0.0,
+            stoch_rsi=safe_value(stoch_rsi_val),
             # Волатильность
             bb_upper=bb_upper,
             bb_middle=bb_middle,
             bb_lower=bb_lower,
             bb_bandwidth=bb_bw,
-            atr=atr_val or 0.0,
+            atr=safe_value(atr_val),
             # Объём
             volume=volumes_1h[-1] if volumes_1h else 0.0,
-            volume_sma_20=vol_sma or 0.0,
-            volume_ratio=vol_ratio or 0.0,
-            obv=obv_val or 0.0,
+            volume_sma_20=safe_value(vol_sma),
+            volume_ratio=safe_value(vol_ratio),
+            obv=safe_value(obv_val),
             # Производные
-            price_change_1m=pc_1 or 0.0,
-            price_change_5m=pc_5 or 0.0,
-            price_change_15m=pc_15 or 0.0,
-            momentum=mom or 0.0,
+            price_change_1m=safe_value(pc_1),
+            price_change_5m=safe_value(pc_5),
+            price_change_15m=safe_value(pc_15),
+            momentum=safe_value(mom),
             spread=0.0,  # Обновляется отдельно через order book
             # Текущая цена
             close=closes_1h[-1],
@@ -140,9 +143,9 @@ class FeatureBuilder:
 def _extract(candles: list[Candle]) -> dict[str, list[float]]:
     """Извлечь массивы OHLCV из списка свечей (отсортированных по времени)."""
     return {
-        "open": [c.open for c in candles],
-        "high": [c.high for c in candles],
-        "low": [c.low for c in candles],
-        "close": [c.close for c in candles],
-        "volume": [c.volume for c in candles],
+        "open": [0.0 if math.isnan(c.open) or math.isinf(c.open) else c.open for c in candles],
+        "high": [0.0 if math.isnan(c.high) or math.isinf(c.high) else c.high for c in candles],
+        "low": [0.0 if math.isnan(c.low) or math.isinf(c.low) else c.low for c in candles],
+        "close": [0.0 if math.isnan(c.close) or math.isinf(c.close) else c.close for c in candles],
+        "volume": [0.0 if math.isnan(c.volume) or math.isinf(c.volume) else c.volume for c in candles],
     }

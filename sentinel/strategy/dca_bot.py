@@ -38,6 +38,10 @@ class DCAConfig:
     def __post_init__(self):
         if self.dip_thresholds is None:
             self.dip_thresholds = [(-3.0, 1.5), (-5.0, 2.0), (-10.0, 3.0)]
+        if self.base_amount_usd <= 0:
+            raise ValueError(f"base_amount_usd must be > 0, got {self.base_amount_usd}")
+        if self.stop_drawdown_pct <= 0 or self.stop_drawdown_pct > 50:
+            raise ValueError(f"stop_drawdown_pct must be (0, 50], got {self.stop_drawdown_pct}")
 
 
 class DCABot(BaseStrategy):
@@ -53,8 +57,8 @@ class DCABot(BaseStrategy):
         self._partial_sold: dict[str, bool] = {}
 
     def _get_dip_multiplier(self, features: FeatureVector) -> float:
-        """Определить множитель на основе падения цены."""
-        pct = features.price_change_15m  # Use available short-term change
+        """Определить множитель на основе падения цены (за ~15 часовых свечей)."""
+        pct = features.price_change_15m  # 15 x 1h candles ≈ 15h lookback
         multiplier = 1.0
         for threshold, mult in sorted(self._cfg.dip_thresholds, key=lambda x: x[0], reverse=True):
             if pct <= threshold:
@@ -82,6 +86,12 @@ class DCABot(BaseStrategy):
 
         # ── SELL (если есть позиция) ──
         if has_open_position and entry_price is not None:
+            if entry_price <= 0:
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=0.99, strategy_name=self.NAME,
+                    reason=f"SAFETY: invalid entry_price={entry_price}",
+                )
             pnl_pct = (features.close - entry_price) / entry_price * 100
 
             # Full take profit
@@ -134,10 +144,27 @@ class DCABot(BaseStrategy):
         amount = cfg.base_amount_usd * multiplier
         qty = amount / features.close if features.close > 0 else 0
 
+        # DCA: sentiment-aware multiplier (fear = buy more, greed = buy less)
+        dca_confidence = 0.80
+        if features.news_sentiment < -0.3 or features.fear_greed_index <= 20:
+            multiplier *= 1.3  # увеличить DCA при страхе
+            amount = cfg.base_amount_usd * multiplier
+            qty = amount / features.close if features.close > 0 else 0
+            dca_confidence = 0.85
+        elif features.news_sentiment > 0.3 or features.fear_greed_index >= 80:
+            multiplier *= 0.7  # уменьшить DCA при жадности
+            amount = cfg.base_amount_usd * multiplier
+            qty = amount / features.close if features.close > 0 else 0
+            dca_confidence = 0.70
+
+        reason = f"DCA buy: ${amount:.2f} (mult={multiplier:.1f}x)"
+        if features.news_sentiment != 0.0:
+            reason += f", sentiment={features.news_sentiment:+.2f}"
+
         return Signal(
             timestamp=now_ms, symbol=sym, direction=Direction.BUY,
-            confidence=0.80, strategy_name=self.NAME,
-            reason=f"DCA buy: ${amount:.2f} (mult={multiplier:.1f}x)",
+            confidence=dca_confidence, strategy_name=self.NAME,
+            reason=reason,
             suggested_quantity=qty,
             stop_loss_price=features.close * (1 - cfg.stop_drawdown_pct / 100),
             take_profit_price=features.close * (1 + cfg.take_profit_pct / 100),

@@ -32,6 +32,12 @@ class BBBreakoutConfig:
     min_confidence: float = 0.70
     max_position_pct: float = 15.0
 
+    def __post_init__(self):
+        if self.stop_loss_pct <= 0 or self.stop_loss_pct > 50:
+            raise ValueError(f"stop_loss_pct must be (0, 50], got {self.stop_loss_pct}")
+        if self.take_profit_pct <= 0:
+            raise ValueError(f"take_profit_pct must be > 0, got {self.take_profit_pct}")
+
 
 class BollingerBreakout(BaseStrategy):
     """Стратегия V4: Bollinger Band Breakout."""
@@ -54,6 +60,13 @@ class BollingerBreakout(BaseStrategy):
 
         # ── SELL ──
         if has_open_position and entry_price is not None:
+            if entry_price <= 0:
+                self._max_price.pop(sym, None)
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=0.99, strategy_name=self.NAME,
+                    reason=f"SAFETY: invalid entry_price={entry_price}",
+                )
             pnl_pct = (features.close - entry_price) / entry_price * 100
 
             # Update max price for trailing stop
@@ -126,6 +139,17 @@ class BollingerBreakout(BaseStrategy):
             confidence += 0.05
         if features.ema_9 > features.ema_21:
             confidence += 0.05
+
+        # News sentiment boost/penalty (±0.10)
+        if features.news_sentiment > 0.3:
+            confidence += 0.10
+        elif features.news_sentiment > 0.15:
+            confidence += 0.05
+        elif features.news_sentiment < -0.3:
+            confidence -= 0.10
+        elif features.news_sentiment < -0.15:
+            confidence -= 0.05
+
         confidence = min(confidence, 0.95)
 
         if confidence < cfg.min_confidence:
@@ -134,9 +158,13 @@ class BollingerBreakout(BaseStrategy):
         sl = features.close * (1 - cfg.stop_loss_pct / 100)
         tp = features.close * (1 + cfg.take_profit_pct / 100)
 
+        reason = f"BB Breakout: close={features.close:.2f}>upperBB={features.bb_upper:.2f}, ADX={features.adx:.0f}, squeeze={is_squeeze}"
+        if features.news_sentiment != 0.0:
+            reason += f", sentiment={features.news_sentiment:+.2f}"
+
         return Signal(
             timestamp=now_ms, symbol=sym, direction=Direction.BUY,
             confidence=confidence, strategy_name=self.NAME,
-            reason=f"BB Breakout: close={features.close:.2f}>upperBB={features.bb_upper:.2f}, ADX={features.adx:.0f}, squeeze={is_squeeze}",
+            reason=reason,
             stop_loss_price=sl, take_profit_price=tp,
         )

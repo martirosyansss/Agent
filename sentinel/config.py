@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -19,6 +21,70 @@ from core.absolute_limits import (
     ABSOLUTE_MAX_POSITION_PCT,
     ABSOLUTE_MAX_TRADES_PER_DAY,
     ABSOLUTE_MAX_TRADES_PER_HOUR,
+)
+
+
+ENV_FILE_PATH = Path(__file__).resolve().parent / ".env"
+
+EDITABLE_SETTINGS_FIELDS: tuple[str, ...] = (
+    "trading_mode",
+    "trading_symbols",
+    "signal_timeframe",
+    "trend_timeframe",
+    "min_confidence",
+    "auto_strategy_selection",
+    "max_daily_loss_usd",
+    "max_daily_loss_pct",
+    "max_position_pct",
+    "max_total_exposure_pct",
+    "max_open_positions",
+    "max_order_usd",
+    "max_trades_per_hour",
+    "max_trades_per_day",
+    "resume_cooldown_min",
+    "paper_initial_balance",
+    "paper_commission_pct",
+    "paper_slippage_pct",
+    "grid_enabled",
+    "grid_num_levels",
+    "grid_capital_pct",
+    "grid_auto_range",
+    "grid_min_profit_pct",
+    "grid_max_loss_pct",
+    "meanrev_enabled",
+    "meanrev_rsi_oversold",
+    "meanrev_rsi_overbought",
+    "meanrev_capital_pct",
+    "meanrev_stop_loss_pct",
+    "meanrev_take_profit_pct",
+    "bb_breakout_enabled",
+    "bb_period",
+    "bb_std_dev",
+    "bb_volume_confirm_mult",
+    "bb_stop_loss_pct",
+    "bb_take_profit_pct",
+    "bb_trailing_stop_pct",
+    "dca_enabled",
+    "dca_base_amount_usd",
+    "dca_interval_hours",
+    "dca_max_daily_buys",
+    "dca_max_invested_pct",
+    "dca_take_profit_pct",
+    "macd_div_enabled",
+    "macd_fast",
+    "macd_slow",
+    "macd_signal_period",
+    "macd_lookback_candles",
+    "macd_require_rsi_confirm",
+    "macd_require_vol_confirm",
+    "max_data_age_sec",
+    "price_cross_validation_interval",
+    "watchdog_heartbeat_interval",
+    "watchdog_timeout",
+    "db_backup_interval_hours",
+    "max_ram_mb",
+    "analyzer_stats_enabled",
+    "analyzer_ml_shadow_mode",
 )
 
 
@@ -163,8 +229,11 @@ class Settings(BaseSettings):
     resume_cooldown_min: int = 30
     live_first_day_max_order: float = 20.0
 
+    # === News / LLM ===
+    groq_api_key: str = ""
+
     model_config = {
-        "env_file": str(Path(__file__).resolve().parent / ".env"),
+        "env_file": str(ENV_FILE_PATH),
         "env_file_encoding": "utf-8",
     }
 
@@ -194,3 +263,74 @@ class Settings(BaseSettings):
 def load_settings() -> Settings:
     """Создаёт и возвращает провалидированные настройки."""
     return Settings()
+
+
+def get_editable_settings_payload(settings: Any) -> dict[str, Any]:
+    """Вернуть подмножество настроек, разрешённых к редактированию в UI."""
+    return {
+        field_name: getattr(settings, field_name)
+        for field_name in EDITABLE_SETTINGS_FIELDS
+        if hasattr(settings, field_name)
+    }
+
+
+def _serialize_env_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
+
+
+def _write_env_updates(updates: dict[str, Any]) -> None:
+    serialized = {
+        field_name.upper(): _serialize_env_value(value)
+        for field_name, value in updates.items()
+    }
+
+    if ENV_FILE_PATH.exists():
+        lines = ENV_FILE_PATH.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = []
+
+    updated_lines: list[str] = []
+    seen: set[str] = set()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            updated_lines.append(line)
+            continue
+
+        raw_key, _, _raw_value = line.partition("=")
+        env_key = raw_key.strip().upper()
+        if env_key in serialized:
+            updated_lines.append(f"{env_key}={serialized[env_key]}")
+            seen.add(env_key)
+        else:
+            updated_lines.append(line)
+
+    missing_keys = [key for key in serialized if key not in seen]
+    if missing_keys and updated_lines and updated_lines[-1].strip():
+        updated_lines.append("")
+    for key in missing_keys:
+        updated_lines.append(f"{key}={serialized[key]}")
+
+    ENV_FILE_PATH.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+
+
+def save_settings_updates(current_settings: Settings, updates: dict[str, Any]) -> Settings:
+    """Сохранить изменения UI в .env и вернуть провалидированный Settings."""
+    allowed_updates = {
+        field_name: value
+        for field_name, value in updates.items()
+        if field_name in EDITABLE_SETTINGS_FIELDS
+    }
+    if not allowed_updates:
+        return current_settings
+
+    merged = current_settings.model_dump()
+    merged.update(allowed_updates)
+    validated = Settings(**merged)
+    _write_env_updates(allowed_updates)
+    return validated

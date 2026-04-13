@@ -8,9 +8,11 @@ SENTINEL Watchdog — независимый сторожевой процесс
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
+from urllib import error, parse, request
 
 from loguru import logger
 
@@ -21,6 +23,9 @@ if str(BASE_DIR) not in sys.path:
 
 from config import load_settings  # noqa: E402
 from core.constants import HEARTBEAT_FILE, VERSION  # noqa: E402
+
+
+WATCHDOG_ALERT_FILE = BASE_DIR / "data" / "watchdog_alert.json"
 
 
 def setup_watchdog_logging() -> None:
@@ -54,6 +59,48 @@ def read_heartbeat() -> int | None:
         return None
 
 
+def write_alert_report(consecutive_misses: int, last_heartbeat: int | None, now: int) -> Path:
+    """Сохраняет локальный аварийный отчёт watchdog."""
+    WATCHDOG_ALERT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WATCHDOG_ALERT_FILE.write_text(
+        json.dumps(
+            {
+                "generated_at": now,
+                "consecutive_misses": consecutive_misses,
+                "last_heartbeat": last_heartbeat,
+                "age_sec": None if last_heartbeat is None else max(now - last_heartbeat, 0),
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return WATCHDOG_ALERT_FILE
+
+
+def send_watchdog_alert(settings, message: str) -> bool:
+    """Отправляет Telegram alert, если токен и chat_id заданы."""
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        return False
+
+    body = parse.urlencode(
+        {
+            "chat_id": settings.telegram_chat_id,
+            "text": message,
+        }
+    ).encode("utf-8")
+    req = request.Request(
+        url=f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
+        data=body,
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=10) as response:
+            return response.status == 200
+    except (error.URLError, TimeoutError):
+        return False
+
+
 def main() -> None:
     setup_watchdog_logging()
     settings = load_settings()
@@ -64,6 +111,7 @@ def main() -> None:
                 VERSION, timeout, interval)
 
     consecutive_misses = 0
+    alert_sent = False
 
     while True:
         time.sleep(interval)
@@ -86,15 +134,26 @@ def main() -> None:
                 if consecutive_misses > 0:
                     logger.info("✅ Heartbeat восстановлен (возраст {}с)", age)
                 consecutive_misses = 0
+                alert_sent = False
 
         # Emergency: если N пропусков подряд
-        if consecutive_misses >= 3:
+        if consecutive_misses >= 3 and not alert_sent:
+            report_path = write_alert_report(consecutive_misses, last_hb, now)
+            message = (
+                f"SENTINEL watchdog alert: нет heartbeat {consecutive_misses} проверок подряд. "
+                f"Локальный отчёт: {report_path.name}"
+            )
             logger.critical(
                 "🚨 SENTINEL не отвечает {} раз подряд! "
-                "Требуется ручное вмешательство.",
+                "Требуется ручное вмешательство. Отчёт: {}",
                 consecutive_misses,
+                report_path,
             )
-            # TODO: Telegram alert, emergency close (Phase 8)
+            if send_watchdog_alert(settings, message):
+                logger.info("Telegram alert отправлен")
+            else:
+                logger.warning("Telegram alert не отправлен")
+            alert_sent = True
 
 
 if __name__ == "__main__":

@@ -38,6 +38,12 @@ class EMAConfig:
     min_confidence: float = 0.75
     max_position_pct: float = 20.0
 
+    def __post_init__(self):
+        if self.stop_loss_pct <= 0 or self.stop_loss_pct > 50:
+            raise ValueError(f"stop_loss_pct must be (0, 50], got {self.stop_loss_pct}")
+        if self.take_profit_pct <= 0:
+            raise ValueError(f"take_profit_pct must be > 0, got {self.take_profit_pct}")
+
 
 class EMACrossoverRSI(BaseStrategy):
     """Стратегия V1: EMA Crossover + RSI Filter."""
@@ -87,11 +93,11 @@ class EMACrossoverRSI(BaseStrategy):
         current_diff = f.ema_9 - f.ema_21
         prev_diff = self._prev_ema_diff.get(f.symbol)
 
-        # Обновляем prev_diff
-        self._prev_ema_diff[f.symbol] = current_diff
-
         if prev_diff is None:
+            self._prev_ema_diff[f.symbol] = current_diff
             return None  # Первый тик — нет данных для crossover
+
+        self._prev_ema_diff[f.symbol] = current_diff
 
         is_crossover = prev_diff <= 0 and current_diff > 0
 
@@ -140,6 +146,22 @@ class EMACrossoverRSI(BaseStrategy):
         if f.adx > 25:
             confidence += 0.05
 
+        # News sentiment boost/penalty (±0.10)
+        if f.news_sentiment > 0.3:
+            confidence += 0.10
+        elif f.news_sentiment > 0.15:
+            confidence += 0.05
+        elif f.news_sentiment < -0.3:
+            confidence -= 0.10
+        elif f.news_sentiment < -0.15:
+            confidence -= 0.05
+
+        # Fear & Greed: extreme fear = contrarian buy boost, extreme greed = caution
+        if f.fear_greed_index <= 20:
+            confidence += 0.05  # extreme fear = потенциальный разворот
+        elif f.fear_greed_index >= 80:
+            confidence -= 0.05  # extreme greed = осторожность
+
         confidence = min(confidence, 0.95)
 
         if confidence < cfg.min_confidence:
@@ -156,6 +178,8 @@ class EMACrossoverRSI(BaseStrategy):
         reasons.append(f"vol_ratio={f.volume_ratio:.2f}x")
         if f.macd_histogram > 0:
             reasons.append("MACD+")
+        if f.news_sentiment != 0.0:
+            reasons.append(f"sentiment={f.news_sentiment:+.2f}")
 
         return Signal(
             timestamp=now_ms,
@@ -176,6 +200,10 @@ class EMACrossoverRSI(BaseStrategy):
     def _check_sell(self, f: FeatureVector, entry_price: float, now_ms: int) -> Optional[Signal]:
         cfg = self._cfg
         reasons: list[str] = []
+
+        # Guard: invalid entry price → force exit
+        if entry_price <= 0:
+            return self._make_sell_signal(f, now_ms, 0.99, ["SAFETY: invalid entry_price"])
 
         # Stop-loss
         pnl_pct = (f.close - entry_price) / entry_price * 100

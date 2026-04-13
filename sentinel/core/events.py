@@ -24,6 +24,20 @@ class EventBus:
 
     def __init__(self) -> None:
         self._subscribers: dict[str, list[Handler]] = defaultdict(list)
+        self._event_counts: dict[str, int] = defaultdict(int)
+        self._event_last_ts: dict[str, float] = {}
+
+    def get_event_stats(self) -> dict[str, dict]:
+        """Статистика по всем событиям."""
+        import time
+        now = time.time()
+        return {
+            event: {
+                "count": self._event_counts.get(event, 0),
+                "last_ago_sec": round(now - self._event_last_ts[event], 1) if event in self._event_last_ts else None,
+            }
+            for event in set(list(self._event_counts.keys()) + list(self._subscribers.keys()))
+        }
 
     def subscribe(self, event: str, handler: Handler) -> None:
         """Подписать обработчик на событие."""
@@ -34,10 +48,14 @@ class EventBus:
         try:
             self._subscribers[event].remove(handler)
         except ValueError:
-            pass
+            logger.debug("Handler %s was not subscribed to '%s'", handler.__qualname__, event)
 
     async def emit(self, event: str, *args: Any, **kwargs: Any) -> None:
         """Отправить событие всем подписчикам (параллельно)."""
+        import time
+        self._event_counts[event] += 1
+        self._event_last_ts[event] = time.time()
+
         handlers = self._subscribers.get(event, [])
         if not handlers:
             return

@@ -14,6 +14,7 @@ Live Executor — реальное исполнение ордеров на Bina
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Optional
 
@@ -113,6 +114,10 @@ class LiveExecutor(BaseExecutor):
             logger.warning("Invalid order params: qty=%s price=%s", quantity, current_price)
             return None
 
+        if math.isnan(quantity) or math.isinf(quantity) or math.isnan(current_price) or math.isinf(current_price):
+            logger.error("NaN/Inf detected in order params: qty=%s price=%s", quantity, current_price)
+            return None
+
         if not self._init_client():
             return None
 
@@ -145,8 +150,15 @@ class LiveExecutor(BaseExecutor):
             return None
 
         # Parse fill
-        fill_price = float(result.get("fills", [{}])[0].get("price", current_price))
-        fill_qty = float(result.get("executedQty", quantity))
+        fills = result.get("fills", [])
+        fill_qty = float(result.get("executedQty", 0))
+        if not fills or fill_qty <= 0:
+            logger.error("Order returned no fills or zero qty: oid=%s, fills=%s, execQty=%s",
+                         result.get("orderId"), len(fills), fill_qty)
+            return None
+        fill_price = float(fills[0].get("price", current_price))
+        if fill_qty < quantity:
+            logger.warning("Partial fill: requested %.8f, got %.8f", quantity, fill_qty)
         exchange_id = str(result.get("orderId", ""))
 
         order = Order(

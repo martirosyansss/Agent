@@ -92,7 +92,7 @@ class CircuitBreakers:
 
     def is_trading_allowed(self) -> bool:
         """Можно ли торговать?"""
-        return not self.any_tripped
+        return not self.any_tripped and not self.any_permanent
 
     # ──────────────────────────────────────────────
     # CB-1: Price Anomaly

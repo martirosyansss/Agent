@@ -133,6 +133,12 @@ class FeatureVector:
     # Текущая цена (удобный доступ)
     close: float = 0.0
 
+    # News sentiment (от NewsCollector)
+    news_sentiment: float = 0.0       # -1.0 .. +1.0 (overall weighted score)
+    fear_greed_index: int = 50         # 0-100 (Fear & Greed Index)
+    news_impact_pct: float = 0.0      # средний impact_pct новостей
+    high_impact_news: int = 0          # количество новостей с |impact| >= 1.5%
+
 
 # ──────────────────────────────────────────────
 # Strategy / Signals

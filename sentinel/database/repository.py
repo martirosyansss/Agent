@@ -356,6 +356,86 @@ class Repository:
             row = self._db.fetchone("SELECT COUNT(*) as cnt FROM strategy_trades")
         return row["cnt"] if row else 0
 
+    def get_strategy_performance(self) -> list[dict]:
+        """Aggregate per-strategy PnL statistics."""
+        rows = self._db.fetchall(
+            "SELECT strategy_name, "
+            "  COUNT(*) as total_trades, "
+            "  SUM(CASE WHEN is_win = 1 THEN 1 ELSE 0 END) as wins, "
+            "  SUM(CASE WHEN is_win = 0 THEN 1 ELSE 0 END) as losses, "
+            "  ROUND(SUM(pnl_usd), 2) as total_pnl, "
+            "  ROUND(AVG(pnl_usd), 2) as avg_pnl, "
+            "  ROUND(AVG(CASE WHEN is_win = 1 THEN pnl_usd END), 2) as avg_win, "
+            "  ROUND(AVG(CASE WHEN is_win = 0 THEN pnl_usd END), 2) as avg_loss, "
+            "  ROUND(AVG(pnl_pct), 2) as avg_pnl_pct, "
+            "  ROUND(MAX(pnl_usd), 2) as best_trade, "
+            "  ROUND(MIN(pnl_usd), 2) as worst_trade, "
+            "  ROUND(SUM(commission_usd), 2) as total_commission "
+            "FROM strategy_trades GROUP BY strategy_name ORDER BY total_pnl DESC"
+        )
+        result = []
+        for r in rows:
+            d = dict(r)
+            total = d.get("total_trades", 0)
+            w = d.get("wins", 0)
+            d["win_rate"] = round(w / total * 100, 1) if total > 0 else 0.0
+            result.append(d)
+        return result
+
+    def get_all_trades_for_export(self, limit: int = 10000) -> list[dict]:
+        """Get all trades for CSV export (strategy_trades + orders)."""
+        rows = self._db.fetchall(
+            "SELECT trade_id, strategy_name, symbol, market_regime, "
+            "  timestamp_open, timestamp_close, entry_price, exit_price, "
+            "  quantity, pnl_usd, pnl_pct, is_win, confidence, "
+            "  exit_reason, hold_duration_hours, commission_usd "
+            "FROM strategy_trades ORDER BY timestamp_close DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in rows]
+
+    # ==================================================================
+    # SIGNAL EXECUTIONS (audit trail)
+    # ==================================================================
+
+    def insert_signal_execution(
+        self,
+        timestamp: int,
+        symbol: str,
+        strategy_name: str,
+        direction: str,
+        confidence: float,
+        outcome: str,
+        reason: str = "",
+        latency_ms: int = 0,
+    ) -> int:
+        """Record signal processing outcome for audit trail."""
+        cur = self._db.execute(
+            "INSERT INTO signal_executions "
+            "(timestamp, symbol, strategy_name, direction, confidence, outcome, reason, latency_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (timestamp, symbol, strategy_name, direction, confidence, outcome, reason, latency_ms),
+        )
+        self._db.commit()
+        return cur.lastrowid
+
+    def get_signal_execution_stats(self, hours: int = 24) -> dict:
+        """Get signal execution statistics for the last N hours."""
+        cutoff = int(time.time() * 1000) - hours * 3600_000
+        row = self._db.fetchone(
+            "SELECT "
+            "  COUNT(*) as total, "
+            "  SUM(CASE WHEN outcome = 'filled' THEN 1 ELSE 0 END) as filled, "
+            "  SUM(CASE WHEN outcome = 'rejected' THEN 1 ELSE 0 END) as rejected, "
+            "  SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END) as errors, "
+            "  ROUND(AVG(latency_ms), 0) as avg_latency_ms "
+            "FROM signal_executions WHERE timestamp >= ?",
+            (cutoff,),
+        )
+        if not row:
+            return {"total": 0, "filled": 0, "rejected": 0, "errors": 0, "avg_latency_ms": 0}
+        return dict(row)
+
     # ==================================================================
     # ML MODEL REGISTRY
     # ==================================================================

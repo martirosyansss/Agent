@@ -117,7 +117,7 @@ class BacktestEngine:
             price = candle.close
 
             # Собрать features из окна
-            window_1h = candles_1h[max(0, i - min_history):i + 1]
+            window_1h = candles_1h[max(0, i - min_history):i]
 
             # Найти 4h свечи до текущего времени
             window_4h = [c for c in candles_4h if c.timestamp <= candle.timestamp]
@@ -150,7 +150,7 @@ class BacktestEngine:
                         pnl_pct=(exit_price - entry_price) / entry_price * 100,
                         commission=comm, reason="Stop-loss",
                     ))
-                    daily_returns.append(pnl / (balance - pnl) * 100 if balance != pnl else 0)
+                    daily_returns.append(pnl / balance * 100 if balance != 0 else 0)
                     in_position = False
                     continue
 
@@ -166,7 +166,7 @@ class BacktestEngine:
                         pnl_pct=(exit_price - entry_price) / entry_price * 100,
                         commission=comm, reason="Take-profit",
                     ))
-                    daily_returns.append(pnl / (balance - pnl) * 100 if balance != pnl else 0)
+                    daily_returns.append(pnl / balance * 100 if balance != 0 else 0)
                     in_position = False
                     continue
 
@@ -198,7 +198,7 @@ class BacktestEngine:
                     pnl_pct=(exit_price - entry_price) / entry_price * 100,
                     commission=comm, reason=signal.reason,
                 ))
-                daily_returns.append(pnl / (balance - pnl) * 100 if balance != pnl else 0)
+                daily_returns.append(pnl / balance * 100 if balance != 0 else 0)
                 in_position = False
 
             # Обновить drawdown
@@ -207,6 +207,23 @@ class BacktestEngine:
             dd = (peak_balance - balance) / peak_balance * 100 if peak_balance > 0 else 0
             if dd > max_drawdown:
                 max_drawdown = dd
+
+        # Close any open position at end of data
+        if in_position and candles_1h:
+            last_price = candles_1h[-1].close
+            exit_price = last_price * (1 - cfg.slippage_pct / 100)
+            comm = quantity * exit_price * cfg.commission_pct / 100
+            pnl = (exit_price - entry_price) * quantity - comm
+            balance += pnl
+            trades.append(BacktestTrade(
+                symbol=symbol, entry_time=entry_time, exit_time=candles_1h[-1].timestamp,
+                entry_price=entry_price, exit_price=exit_price,
+                quantity=quantity, pnl=pnl,
+                pnl_pct=(exit_price - entry_price) / entry_price * 100,
+                commission=comm, reason="End-of-data close",
+            ))
+            daily_returns.append(pnl / balance * 100 if balance != 0 else 0)
+            in_position = False
 
         # Расчёт метрик
         wins = [t for t in trades if t.pnl > 0]
@@ -224,7 +241,7 @@ class BacktestEngine:
 
         gross_profit = sum(t.pnl for t in wins)
         gross_loss = abs(sum(t.pnl for t in losses_list))
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 99.99
 
         # Sharpe Ratio
         if daily_returns and len(daily_returns) > 1:
@@ -290,3 +307,81 @@ class BacktestEngine:
             f" Ожидаемый реальный PnL: ~${result.expected_real_pnl:.2f}\n"
             f"{'═' * 45}"
         )
+
+    def run_walk_forward(
+        self,
+        strategy: BaseStrategy,
+        candles_1h: list[Candle],
+        candles_4h: list[Candle],
+        symbol: str = "BTCUSDT",
+        n_splits: int = 5,
+        train_ratio: float = 0.7,
+    ) -> dict:
+        """Walk-forward validation: split data into N folds, train on first part, test on rest.
+
+        Returns dict with per-fold results and aggregate stats.
+        """
+        total = len(candles_1h)
+        if total < 100 or n_splits < 2:
+            return {"folds": [], "error": "Not enough data or splits"}
+
+        fold_size = total // n_splits
+        folds = []
+
+        for i in range(n_splits):
+            fold_start = i * fold_size
+            fold_end = min(fold_start + fold_size, total)
+            if i == n_splits - 1:
+                fold_end = total
+
+            split_point = fold_start + int((fold_end - fold_start) * train_ratio)
+            test_candles_1h = candles_1h[split_point:fold_end]
+
+            # Find 4h candles matching the test window
+            if test_candles_1h:
+                t_start = test_candles_1h[0].timestamp
+                t_end = test_candles_1h[-1].timestamp
+                test_candles_4h = [c for c in candles_4h if t_start <= c.timestamp <= t_end]
+                # Also include history for feature building
+                history_4h = [c for c in candles_4h if c.timestamp <= t_end]
+                if len(history_4h) > 60:
+                    history_4h = history_4h[-60:]
+            else:
+                continue
+
+            if len(test_candles_1h) < 60:
+                continue
+
+            # Run backtest on the test fold (strategy doesn't retrain — walk-forward test)
+            result = self.run(strategy, test_candles_1h, history_4h, symbol)
+            folds.append({
+                "fold": i + 1,
+                "test_start": test_candles_1h[0].timestamp if test_candles_1h else 0,
+                "test_end": test_candles_1h[-1].timestamp if test_candles_1h else 0,
+                "test_candles": len(test_candles_1h),
+                "total_pnl": round(result.total_pnl, 2),
+                "total_pnl_pct": round(result.total_pnl_pct, 2),
+                "total_trades": result.total_trades,
+                "win_rate": round(result.win_rate, 1),
+                "max_drawdown_pct": round(result.max_drawdown_pct, 1),
+                "sharpe_ratio": round(result.sharpe_ratio, 2),
+            })
+
+        if not folds:
+            return {"folds": [], "error": "No valid folds generated"}
+
+        # Aggregate
+        profitable_folds = sum(1 for f in folds if f["total_pnl"] > 0)
+        avg_pnl = sum(f["total_pnl"] for f in folds) / len(folds)
+        avg_wr = sum(f["win_rate"] for f in folds) / len(folds)
+        worst_dd = max(f["max_drawdown_pct"] for f in folds)
+
+        return {
+            "folds": folds,
+            "n_splits": n_splits,
+            "profitable_folds": profitable_folds,
+            "avg_pnl": round(avg_pnl, 2),
+            "avg_win_rate": round(avg_wr, 1),
+            "worst_drawdown": round(worst_dd, 1),
+            "consistency_score": round(profitable_folds / len(folds) * 100, 1),
+        }

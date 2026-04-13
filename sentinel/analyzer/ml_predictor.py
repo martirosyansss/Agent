@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Optional
 
 from core.models import StrategyTrade
@@ -113,12 +114,90 @@ class MLPredictor:
     def metrics(self) -> Optional[MLMetrics]:
         return self._metrics
 
-    def extract_features(self, trade: StrategyTrade) -> list[float]:
-        """Извлечь 15 features из StrategyTrade."""
-        ema_diff = 0.0  # Placeholder — in production comes from FeatureVector
-        atr_ratio = 0.0
-        bb_bw = 0.0
-        macd_hist = 0.0
+    @staticmethod
+    def _parse_trade_timestamp(value: str) -> Optional[datetime]:
+        if not value:
+            return None
+        normalized = value.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _regime_bias(regime: str, pnl_pct: float) -> float:
+        lowered = regime.lower()
+        if lowered == "trending_up":
+            return 1.0
+        if lowered == "trending_down":
+            return -1.0
+        if pnl_pct > 0:
+            return 1.0
+        if pnl_pct < 0:
+            return -1.0
+        return 0.0
+
+    def _history_context(
+        self,
+        trade: StrategyTrade,
+        previous_trades: list[StrategyTrade],
+    ) -> tuple[float, float, float, float]:
+        if not previous_trades:
+            return 0.5, 0.0, 0.0, 0.0
+
+        recent_trades = previous_trades[-10:]
+        recent_win_rate = sum(1 for item in recent_trades if item.is_win) / len(recent_trades)
+
+        current_open_dt = self._parse_trade_timestamp(trade.timestamp_open)
+        last_close_dt = self._parse_trade_timestamp(previous_trades[-1].timestamp_close)
+        hours_since_last_trade = 0.0
+        if current_open_dt and last_close_dt:
+            hours_since_last_trade = max(
+                (current_open_dt - last_close_dt).total_seconds() / 3600.0,
+                0.0,
+            )
+
+        daily_pnl_so_far = 0.0
+        if current_open_dt:
+            current_day = current_open_dt.date()
+            for item in previous_trades:
+                item_dt = self._parse_trade_timestamp(item.timestamp_close) or self._parse_trade_timestamp(item.timestamp_open)
+                if item_dt and item_dt.date() == current_day:
+                    daily_pnl_so_far += item.pnl_usd
+
+        consecutive_losses = 0.0
+        for item in reversed(previous_trades):
+            if item.is_win:
+                break
+            consecutive_losses += 1.0
+
+        return recent_win_rate, hours_since_last_trade, daily_pnl_so_far, consecutive_losses
+
+    def extract_features(
+        self,
+        trade: StrategyTrade,
+        previous_trades: Optional[list[StrategyTrade]] = None,
+    ) -> list[float]:
+        """Извлечь 15 features из StrategyTrade и доступной истории."""
+        previous_trades = previous_trades or []
+
+        entry_price = max(abs(trade.entry_price), 1e-9)
+        price_delta = trade.exit_price - trade.entry_price
+        price_delta_pct = price_delta / entry_price
+        regime_bias = self._regime_bias(trade.market_regime, trade.pnl_pct)
+
+        ema_diff = regime_bias * max(abs(price_delta_pct), trade.confidence / 10.0)
+        atr_ratio = max(
+            abs(trade.max_drawdown_during_trade),
+            abs(trade.max_profit_during_trade),
+        ) / entry_price
+        bb_bw = (
+            abs(trade.max_drawdown_during_trade) + abs(trade.max_profit_during_trade)
+        ) / entry_price
+        macd_hist = regime_bias * max(abs(trade.pnl_pct) / 100.0, abs(price_delta_pct))
+        recent_win_rate, hours_since_last_trade, daily_pnl_so_far, consecutive_losses = (
+            self._history_context(trade, previous_trades)
+        )
 
         return [
             trade.rsi_at_entry,
@@ -132,10 +211,10 @@ class MLPredictor:
             float(trade.day_of_week),
             float(REGIME_ENCODING.get(trade.market_regime, 4)),
             float(STRATEGY_ENCODING.get(trade.strategy_name, 0)),
-            0.0,  # recent_win_rate_10
-            0.0,  # hours_since_last_trade
-            0.0,  # daily_pnl_so_far
-            0.0,  # consecutive_losses
+            recent_win_rate,
+            hours_since_last_trade,
+            daily_pnl_so_far,
+            consecutive_losses,
         ]
 
     def train(self, trades: list[StrategyTrade]) -> Optional[MLMetrics]:
@@ -156,7 +235,10 @@ class MLPredictor:
             return None
 
         # Prepare data
-        X = [self.extract_features(t) for t in trades]
+        X = [
+            self.extract_features(trade, previous_trades=trades[:idx])
+            for idx, trade in enumerate(trades)
+        ]
         y = [1 if t.is_win else 0 for t in trades]
 
         # Walk-forward split: 60% train, 20% val, 20% test

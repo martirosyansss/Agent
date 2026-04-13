@@ -33,4 +33,6 @@ def safe_pct(part: float, total: float, default: float = 0.0) -> float:
 
 def clamp(value: float, min_val: float, max_val: float) -> float:
     """Ограничить значение в диапазоне [min_val, max_val]."""
+    if min_val > max_val:
+        min_val, max_val = max_val, min_val
     return max(min_val, min(safe_value(value, min_val), max_val))
