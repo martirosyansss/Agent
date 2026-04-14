@@ -30,7 +30,7 @@ from strategy.bollinger_breakout import BollingerBreakout, BBBreakoutConfig
 from strategy.mean_reversion import MeanReversion, MeanRevConfig
 from strategy.macd_divergence import MACDDivergence, MACDDivConfig
 from strategy.market_regime import detect_regime, reset_hysteresis as reset_regime
-from analyzer.ml_predictor import MLPredictor, MLConfig, REGIME_ENCODING, STRATEGY_ENCODING
+from analyzer.ml_predictor import MLPredictor, MLConfig, REGIME_ENCODING, STRATEGY_REGIME_FIT
 from analyzer.strategy_tuner import StrategyTuner, TunerConfig
 from risk.dynamic_sltp import calculate_dynamic_sltp
 

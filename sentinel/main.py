@@ -849,8 +849,9 @@ async def run() -> None:
             else:
                 active_names = get_active_strategies(_current_regime)
         else:
-            # По умолчанию — только EMA crossover
-            active_names = ["ema_crossover_rsi"]
+            # Запускаем все стратегии, у которых есть инициализированный объект
+            # (стратегии фильтруются через .env флаги при инициализации)
+            active_names = list(strategies.keys())
 
         # 5. Проверить позицию
         has_position = position_manager.has_position(symbol)

@@ -9,7 +9,7 @@ import time
 from unittest.mock import MagicMock, patch
 from analyzer.ml_predictor import (
     MLPredictor, MLConfig, MLMetrics, MLPrediction,
-    FEATURE_NAMES, N_FEATURES, REGIME_ENCODING, STRATEGY_ENCODING,
+    FEATURE_NAMES, N_FEATURES, REGIME_ENCODING, STRATEGY_REGIME_FIT,
 )
 from core.models import StrategyTrade
 
@@ -75,13 +75,16 @@ class TestExtractFeatures:
         features = predictor.extract_features(sample_trade)
         assert features[9] == float(REGIME_ENCODING["trending_up"])
 
-    def test_strategy_encoding(self, predictor, sample_trade):
+    def test_strategy_regime_fit(self, predictor, sample_trade):
+        # ema_crossover_rsi + trending_up should give fit=1.0
         features = predictor.extract_features(sample_trade)
-        assert features[10] == float(STRATEGY_ENCODING["ema_crossover_rsi"])
+        expected = STRATEGY_REGIME_FIT.get(("ema_crossover_rsi", "trending_up"), 0.0)
+        assert features[10] == expected
 
     def test_fear_greed_normalized(self, predictor, sample_trade):
         features = predictor.extract_features(sample_trade)
-        assert features[16] == 0.65  # 65 / 100
+        # v4: strategy_specific_wr_10 added at pos 15, so fear_greed shifted to 17
+        assert features[17] == 0.65  # 65 / 100
 
     def test_no_forward_looking_bias(self, predictor):
         """N-3: extract_features now delegates to extract_features_batch.

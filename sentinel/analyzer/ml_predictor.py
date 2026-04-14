@@ -8,13 +8,14 @@ Rollout modes: off → shadow → block
 - shadow: logs predictions, never blocks
 - block: actively blocks signals with low probability
 
-30 features (all pre-trade, no forward-looking bias):
+31 features (all pre-trade, no forward-looking bias):
   Technical:  rsi_14, adx, ema_9_vs_21, bb_bandwidth, volume_ratio,
               macd_histogram, atr_ratio, adx_normalized
   Temporal:   hour_of_day, day_of_week
-  Encoding:   market_regime_encoded, strategy_encoded
+  Encoding:   market_regime_encoded, strategy_regime_fit (v4)
   Historical: recent_win_rate_10, hours_since_last_trade,
-              rolling_avg_pnl_pct_20, consecutive_losses
+              rolling_avg_pnl_pct_20, consecutive_losses,
+              strategy_specific_wr_10 (v4)
   Sentiment:  news_sentiment, fear_greed_normalized, trend_alignment,
               regime_bias
   Enhanced:   cci, roc, cmf, bb_pct_b, hist_volatility, dmi_spread,
@@ -26,6 +27,11 @@ Upgrade v3:
   - AdaptiveFeatureSelector: auto-drops features with importance < 1%
   - IsotonicCalibration: P(win|score=x) == x empirically
   - NumPy batch feature extraction: 8-15x speedup vs per-trade loop
+
+Upgrade v4:
+  - strategy_encoded → strategy_regime_fit: continuous score [-1,1] (how well
+    strategy fits current regime) — removes categorical lookup bias
+  - strategy_specific_wr_10: per-strategy rolling win rate (last 10 same-strategy trades)
 
 Skill score = 0.20*precision + 0.20*recall + 0.35*roc_auc + 0.25*profit_factor
 """
@@ -51,16 +57,49 @@ logger = logging.getLogger(__name__)
 # 0.003 ≈ recent 200 trades weighted ~2x more than oldest
 _TEMPORAL_DECAY: float = 0.003
 
-N_FEATURES = 30  # Expected feature vector length (v2: expanded from 20)
+N_FEATURES = 31  # v4: +1 (strategy_encoded → strategy_regime_fit + strategy_specific_wr_10)
 
 # Encoding maps
 REGIME_ENCODING = {
     "trending_up": 0, "trending_down": 1, "sideways": 2,
     "volatile": 3, "unknown": 4,
 }
-STRATEGY_ENCODING = {
-    "ema_crossover_rsi": 0, "grid_trading": 1, "mean_reversion": 2,
-    "bollinger_breakout": 3, "dca_bot": 4, "macd_divergence": 5,
+
+# strategy_regime_fit: how well each strategy fits each market regime (-1..1).
+# Replaces raw strategy_encoded categorical to give the model interpretable signal:
+# "EMA crossover works when trending" instead of "strategy 0 is historically better".
+# This generalises across regime changes rather than memorising per-strategy win rates.
+STRATEGY_REGIME_FIT: dict[tuple[str, str], float] = {
+    # EMA crossover — momentum strategy, needs a trend
+    ("ema_crossover_rsi", "trending_up"):    1.0,
+    ("ema_crossover_rsi", "trending_down"):  0.6,
+    ("ema_crossover_rsi", "sideways"):      -0.5,
+    ("ema_crossover_rsi", "volatile"):      -0.3,
+    # Bollinger breakout — volatility expansion, loves squeezes + breakouts
+    ("bollinger_breakout", "trending_up"):   0.5,
+    ("bollinger_breakout", "trending_down"): 0.5,
+    ("bollinger_breakout", "sideways"):      0.3,
+    ("bollinger_breakout", "volatile"):      1.0,
+    # Mean reversion — range-bound, hostile to trends
+    ("mean_reversion", "trending_up"):      -0.7,
+    ("mean_reversion", "trending_down"):    -0.7,
+    ("mean_reversion", "sideways"):          1.0,
+    ("mean_reversion", "volatile"):         -0.3,
+    # MACD divergence — trend-following with momentum confirmation
+    ("macd_divergence", "trending_up"):      1.0,
+    ("macd_divergence", "trending_down"):    0.8,
+    ("macd_divergence", "sideways"):        -0.4,
+    ("macd_divergence", "volatile"):         0.2,
+    # Grid trading — range-bound, symmetric
+    ("grid_trading", "trending_up"):        -0.5,
+    ("grid_trading", "trending_down"):      -0.5,
+    ("grid_trading", "sideways"):            1.0,
+    ("grid_trading", "volatile"):            0.0,
+    # DCA — long-biased accumulation
+    ("dca_bot", "trending_up"):              0.8,
+    ("dca_bot", "trending_down"):           -0.3,
+    ("dca_bot", "sideways"):                 0.3,
+    ("dca_bot", "volatile"):                -0.2,
 }
 
 FEATURE_NAMES = [
@@ -70,14 +109,16 @@ FEATURE_NAMES = [
     # Temporal (7-8)
     "hour_of_day", "day_of_week",
     # Encoding (9-10)
-    "market_regime_encoded", "strategy_encoded",
-    # Historical (11-14)
+    "market_regime_encoded",
+    "strategy_regime_fit",       # v4: replaces strategy_encoded (categorical)
+    # Historical (11-15)
     "recent_win_rate_10", "hours_since_last_trade",
     "rolling_avg_pnl_pct_20", "consecutive_losses",
-    # Sentiment (15-19)
+    "strategy_specific_wr_10",   # v4: win rate of last 10 trades by THIS strategy
+    # Sentiment (16-20)
     "news_sentiment", "fear_greed_normalized", "trend_alignment",
     "regime_bias", "adx_normalized",
-    # Phase 2: Enhanced indicators (20-29)
+    # Phase 2: Enhanced indicators (21-30)
     "cci", "roc", "cmf", "bb_pct_b", "hist_volatility",
     "dmi_spread", "stoch_rsi", "price_change_5h",
     "momentum", "rsi_daily",
@@ -295,21 +336,30 @@ class MLPredictor:
             return -1.0
         return 0.0
 
+    @staticmethod
+    def _strategy_regime_fit(strategy_name: str, regime: str) -> float:
+        """How well the strategy fits the current market regime (-1..1).
+
+        Uses STRATEGY_REGIME_FIT lookup. Unknown combinations default to 0.0
+        (neutral — no edge, no disadvantage).
+        """
+        return STRATEGY_REGIME_FIT.get((strategy_name, regime.lower()), 0.0)
+
     def extract_features(
         self,
         trade: StrategyTrade,
         previous_trades: Optional[list[StrategyTrade]] = None,
     ) -> list[float]:
-        """Extract 30 features using ONLY pre-trade data (no forward-looking bias).
+        """Extract 31 features using ONLY pre-trade data (no forward-looking bias).
 
         N-3 fix: Delegates to extract_features_batch() to guarantee identical
         feature computation between training and inference paths.
 
         All features are known BEFORE entering the trade:
         - Technical indicators at entry (rsi, adx, volume_ratio)
-        - Strategy metadata (confidence, regime, strategy_name)
+        - Strategy metadata (regime fit score, strategy-specific win rate)
         - Time features (hour, day)
-        - Historical performance (win_rate, consecutive_losses, daily_pnl)
+        - Historical performance (win_rate, consecutive_losses, rolling pnl)
         - Sentiment data (news, fear_greed)
         """
         previous_trades = previous_trades or []
@@ -480,6 +530,12 @@ class MLPredictor:
         for i in range(1, n):
             consec_losses[i] = 0.0 if is_win[i - 1] == 1 else consec_losses[i - 1] + 1.0
 
+        # v4: Pre-build per-strategy win index for strategy_specific_wr_10.
+        # Avoids O(N²) filtering inside the loop — each strategy gets its own
+        # sorted list of (trade_idx, is_win) pairs.
+        from collections import defaultdict
+        strategy_win_history: dict[str, list[tuple[int, int]]] = defaultdict(list)
+
         for idx, trade in enumerate(trades):
             entry_price = max(abs(trade.entry_price), 1e-9)
             regime_bias = self._regime_bias(trade.market_regime)
@@ -487,7 +543,21 @@ class MLPredictor:
             atr_ratio = trade.atr_at_entry / entry_price
             adx_normalized = min(trade.adx_at_entry / 50.0, 1.0)
 
-            # Vectorized recent_win_rate (last 10 prior trades)
+            # v4: strategy_regime_fit — continuous signal replacing raw strategy_encoded.
+            # Captures WHY the strategy fits current conditions, not just which strategy it is.
+            strat_fit = self._strategy_regime_fit(trade.strategy_name, trade.market_regime)
+
+            # v4: strategy_specific_wr_10 — win rate of last 10 trades by THIS strategy only.
+            # Complements strat_fit: measures how this strategy has been performing recently,
+            # independent of other strategies in the portfolio.
+            prev_same = strategy_win_history[trade.strategy_name]  # trades so far (before current)
+            if prev_same:
+                last10 = prev_same[-10:]
+                strategy_specific_wr = sum(w for _, w in last10) / len(last10)
+            else:
+                strategy_specific_wr = 0.5  # neutral prior when no history
+
+            # Vectorized recent_win_rate (last 10 prior trades, all strategies)
             if idx >= 1:
                 start = max(0, idx - 10)
                 recent_win_rate = is_win[start:idx].mean()
@@ -497,7 +567,6 @@ class MLPredictor:
             # rolling_avg_pnl_pct_20: mean pnl_pct of last 20 closed trades.
             # Replaces daily_pnl_so_far (which had day-boundary reset issues in live
             # trading and created circular "win on good days" clustering bias).
-            # This version captures recent strategy momentum without day dependency.
             if idx >= 1:
                 _start20 = max(0, idx - 20)
                 _recent_pnl = np.array([t.pnl_pct for t in trades[_start20:idx]], dtype=np.float64)
@@ -522,11 +591,12 @@ class MLPredictor:
                 float(trade.hour_of_day),
                 float(trade.day_of_week),
                 float(REGIME_ENCODING.get(trade.market_regime, 4)),
-                float(STRATEGY_ENCODING.get(trade.strategy_name, 0)),
+                strat_fit,                   # v4: was strategy_encoded (categorical int)
                 recent_win_rate,
                 hours_since,
                 rolling_avg_pnl_pct_20,
-                consec_losses[idx],  # W-2 fix: pre-computed O(1)
+                consec_losses[idx],          # W-2 fix: pre-computed O(1)
+                strategy_specific_wr,        # v4: new feature (pos 15)
                 trade.news_sentiment,
                 trade.fear_greed_index / 100.0,
                 trade.trend_alignment,
@@ -544,6 +614,9 @@ class MLPredictor:
                 trade.momentum_at_entry / 100.0,
                 trade.rsi_daily_at_entry / 100.0,
             ]
+
+            # Record AFTER building features (no look-ahead: next trade uses this trade's outcome)
+            strategy_win_history[trade.strategy_name].append((idx, int(trade.is_win)))
 
 
         return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
