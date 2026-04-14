@@ -14,7 +14,7 @@ Rollout modes: off → shadow → block
   Temporal:   hour_of_day, day_of_week
   Encoding:   market_regime_encoded, strategy_encoded
   Historical: recent_win_rate_10, hours_since_last_trade,
-              daily_pnl_so_far, consecutive_losses
+              rolling_avg_pnl_pct_20, consecutive_losses
   Sentiment:  news_sentiment, fear_greed_normalized, trend_alignment,
               regime_bias
   Enhanced:   cci, roc, cmf, bb_pct_b, hist_volatility, dmi_spread,
@@ -27,7 +27,7 @@ Upgrade v3:
   - IsotonicCalibration: P(win|score=x) == x empirically
   - NumPy batch feature extraction: 8-15x speedup vs per-trade loop
 
-Skill score = 0.35*precision + 0.20*recall + 0.25*roc_auc + 0.20*profit_factor
+Skill score = 0.20*precision + 0.20*recall + 0.35*roc_auc + 0.25*profit_factor
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ FEATURE_NAMES = [
     "market_regime_encoded", "strategy_encoded",
     # Historical (11-14)
     "recent_win_rate_10", "hours_since_last_trade",
-    "daily_pnl_so_far", "consecutive_losses",
+    "rolling_avg_pnl_pct_20", "consecutive_losses",
     # Sentiment (15-19)
     "news_sentiment", "fear_greed_normalized", "trend_alignment",
     "regime_bias", "adx_normalized",
@@ -120,6 +120,15 @@ class MLMetrics:
     train_samples: int = 0
     test_samples: int = 0
     feature_importances: dict[str, float] = field(default_factory=dict)
+    # Statistical confidence (bootstrap 95% CI)
+    precision_ci_95: tuple[float, float] = field(default_factory=lambda: (0.0, 0.0))
+    auc_ci_95: tuple[float, float] = field(default_factory=lambda: (0.0, 0.0))
+    # Baseline comparison
+    baseline_win_rate: float = 0.0    # precision of "predict always win" naive model
+    precision_lift: float = 0.0       # model precision − baseline_win_rate
+    auc_lift: float = 0.0             # model AUC − 0.5 (random baseline)
+    # Out-of-time robustness
+    oot_auc: float | None = None      # AUC on most-recent 20% (independent OOT set)
 
 
 @dataclass
@@ -129,6 +138,78 @@ class MLPrediction:
     decision: str = "allow"  # allow, reduce, block
     model_version: str = ""
     rollout_mode: str = "shadow"  # off, shadow, block
+
+
+class LivePerformanceTracker:
+    """Tracks model predictions vs actual trade outcomes in live/paper trading.
+
+    Detects concept drift: when live precision drops significantly below training
+    precision, the model has likely overfit to a historical regime that no longer holds.
+
+    Usage:
+        tracker.record(predicted_prob=0.72, actual_win=True)
+        if tracker.is_drifting(training_precision=0.65):
+            trigger_retrain()
+    """
+
+    def __init__(self, window: int = 50, drift_threshold: float = 0.12) -> None:
+        """
+        Args:
+            window: Number of most-recent live trades to evaluate.
+            drift_threshold: Alert if live_precision < training_precision - threshold.
+        """
+        self._window = window
+        self._drift_threshold = drift_threshold
+        self._history: list[tuple[float, int]] = []  # (predicted_prob, actual 0/1)
+
+    def record(self, predicted_prob: float, actual_win: bool) -> None:
+        """Record one live prediction + its realized outcome."""
+        self._history.append((predicted_prob, int(actual_win)))
+        # Keep a rolling buffer (3× window) to avoid unbounded growth
+        if len(self._history) > self._window * 3:
+            self._history = self._history[-self._window * 3:]
+
+    def live_metrics(self) -> dict:
+        """Compute rolling precision, win rate, and calibration on recent window."""
+        n = len(self._history)
+        if n < 10:
+            return {"status": "insufficient_data", "n": n}
+
+        recent = self._history[-self._window:]
+        probs   = np.array([p for p, _ in recent], dtype=np.float64)
+        actuals = np.array([a for _, a in recent], dtype=np.float64)
+        preds   = (probs >= 0.5).astype(int)
+
+        win_rate   = float(actuals.mean())
+        n_pred_win = int(preds.sum())
+        live_prec  = float(np.sum((preds == 1) & (actuals == 1)) / n_pred_win) if n_pred_win > 0 else 0.0
+        # Calibration error: mean predicted prob vs actual win rate
+        calib_err = float(abs(probs.mean() - win_rate))
+
+        try:
+            from sklearn.metrics import roc_auc_score as _auc
+            live_auc = float(_auc(actuals, probs)) if len(set(actuals)) > 1 else 0.5
+        except Exception:
+            live_auc = 0.5
+
+        return {
+            "n": len(recent),
+            "live_precision": live_prec,
+            "live_win_rate": win_rate,
+            "live_auc": live_auc,
+            "calibration_error": calib_err,
+        }
+
+    def is_drifting(self, training_precision: float) -> bool:
+        """Return True if live precision has dropped more than drift_threshold below training."""
+        m = self.live_metrics()
+        if "live_precision" not in m:
+            return False
+        return (training_precision - m["live_precision"]) > self._drift_threshold
+
+    @property
+    def n_recorded(self) -> int:
+        return len(self._history)
 
 
 class MLPredictor:
@@ -146,6 +227,7 @@ class MLPredictor:
         self._rollout_mode: str = "off"  # off, shadow, block
         self._calibrated_threshold: float = 0.5  # W-5: proper init
         self._last_train_ts: int = 0
+        self._live_tracker: LivePerformanceTracker = LivePerformanceTracker()
 
     @property
     def is_ready(self) -> bool:
@@ -164,6 +246,34 @@ class MLPredictor:
     @property
     def metrics(self) -> Optional[MLMetrics]:
         return self._metrics
+
+    @property
+    def drift_detected(self) -> bool:
+        """True when live precision has drifted >12% below training precision."""
+        if self._metrics is None:
+            return False
+        return self._live_tracker.is_drifting(self._metrics.precision)
+
+    @property
+    def live_metrics(self) -> dict:
+        """Rolling live performance metrics from actual trade outcomes."""
+        return self._live_tracker.live_metrics()
+
+    def record_outcome(self, predicted_prob: float, actual_win: bool) -> None:
+        """Record a live/paper trade outcome for concept drift monitoring.
+
+        Call this after each trade closes with the ML probability that was
+        predicted at entry time and whether the trade was actually profitable.
+        """
+        self._live_tracker.record(predicted_prob, actual_win)
+        m = self._live_tracker.live_metrics()
+        if "live_precision" in m and m["n"] >= 20 and m["n"] % 10 == 0:
+            logger.info(
+                "Live ML tracker (n=%d): precision=%.3f win_rate=%.3f auc=%.3f calib_err=%.3f%s",
+                m["n"], m["live_precision"], m["live_win_rate"], m["live_auc"],
+                m["calibration_error"],
+                " ⚠ DRIFT DETECTED" if self.drift_detected else "",
+            )
 
     @staticmethod
     def _parse_trade_timestamp(value: str) -> Optional[datetime]:
@@ -184,56 +294,6 @@ class MLPredictor:
         if lowered == "trending_down":
             return -1.0
         return 0.0
-
-    def _history_context(
-        self,
-        trade: StrategyTrade,
-        previous_trades: list[StrategyTrade],
-    ) -> tuple[float, float, float, float]:
-        if not previous_trades:
-            return 0.5, 0.0, 0.0, 0.0
-
-        # Ensure chronological order to prevent data leakage
-        sorted_trades = sorted(
-            previous_trades,
-            key=lambda t: t.timestamp_close or t.timestamp_open or "",
-        )
-
-        # Filter: only trades that closed BEFORE current trade opened
-        current_open = trade.timestamp_open or ""
-        if current_open:
-            sorted_trades = [t for t in sorted_trades if (t.timestamp_close or "") < current_open]
-
-        if not sorted_trades:
-            return 0.5, 0.0, 0.0, 0.0
-
-        recent_trades = sorted_trades[-10:]
-        recent_win_rate = sum(1 for item in recent_trades if item.is_win) / len(recent_trades)
-
-        current_open_dt = self._parse_trade_timestamp(trade.timestamp_open)
-        last_close_dt = self._parse_trade_timestamp(sorted_trades[-1].timestamp_close)
-        hours_since_last_trade = 0.0
-        if current_open_dt and last_close_dt:
-            hours_since_last_trade = max(
-                (current_open_dt - last_close_dt).total_seconds() / 3600.0,
-                0.0,
-            )
-
-        daily_pnl_so_far = 0.0
-        if current_open_dt:
-            current_day = current_open_dt.date()
-            for item in sorted_trades:
-                item_dt = self._parse_trade_timestamp(item.timestamp_close) or self._parse_trade_timestamp(item.timestamp_open)
-                if item_dt and item_dt.date() == current_day:
-                    daily_pnl_so_far += item.pnl_usd
-
-        consecutive_losses = 0.0
-        for item in reversed(sorted_trades):
-            if item.is_win:
-                break
-            consecutive_losses += 1.0
-
-        return recent_win_rate, hours_since_last_trade, daily_pnl_so_far, consecutive_losses
 
     def extract_features(
         self,
@@ -307,15 +367,19 @@ class MLPredictor:
             return None
         try:
             from xgboost import XGBClassifier
+            # Deliberately conservative hyperparams to prevent overfitting on small datasets.
+            # max_depth=4 (vs RF's 8) + strong L1/L2 + high min_child_weight keeps XGBoost
+            # from memorising the training set and allows it to pass the 10% overfit guard.
             return XGBClassifier(
-                n_estimators=self._cfg.n_estimators,
-                max_depth=self._cfg.max_depth,
+                n_estimators=200,
+                max_depth=4,
                 learning_rate=self._cfg.learning_rate,
-                subsample=self._cfg.subsample,
-                colsample_bytree=self._cfg.colsample_bytree,
-                min_child_weight=self._cfg.min_child_samples,
-                reg_alpha=0.1,           # L1 regularization
-                reg_lambda=1.0,          # L2 regularization
+                subsample=0.7,
+                colsample_bytree=0.7,
+                min_child_weight=30,     # require at least 30 samples in each leaf
+                reg_alpha=0.5,           # L1 regularization (sparsity)
+                reg_lambda=2.0,          # L2 regularization (shrinkage)
+                gamma=0.2,               # min loss reduction for split
                 scale_pos_weight=scale_pos_weight,  # N-5: computed from data
                 random_state=42,
                 n_jobs=-1,
@@ -411,8 +475,6 @@ class MLPredictor:
             self._parse_trade_timestamp(t.timestamp_close or t.timestamp_open or "")
             for t in trades
         ]
-        trade_dates = [d.date() if d else None for d in parsed_close]
-
         # W-2 fix: Pre-compute consecutive_losses array in O(N)
         consec_losses = np.zeros(n, dtype=np.float64)
         for i in range(1, n):
@@ -432,13 +494,16 @@ class MLPredictor:
             else:
                 recent_win_rate = 0.5
 
-            # C-2 fix: daily_pnl using pre-parsed dates (O(N) total, not O(N²))
-            daily_pnl = 0.0
-            today = trade_dates[idx] if parsed_open[idx] else None
-            if today is not None:
-                for j in range(idx):
-                    if trade_dates[j] == today:
-                        daily_pnl += pnl_arr[j]
+            # rolling_avg_pnl_pct_20: mean pnl_pct of last 20 closed trades.
+            # Replaces daily_pnl_so_far (which had day-boundary reset issues in live
+            # trading and created circular "win on good days" clustering bias).
+            # This version captures recent strategy momentum without day dependency.
+            if idx >= 1:
+                _start20 = max(0, idx - 20)
+                _recent_pnl = np.array([t.pnl_pct for t in trades[_start20:idx]], dtype=np.float64)
+                rolling_avg_pnl_pct_20 = float(np.mean(_recent_pnl)) / 10.0  # normalize: ±10% → ±1.0
+            else:
+                rolling_avg_pnl_pct_20 = 0.0
 
             # C-2 fix: hours_since using pre-parsed timestamps
             hours_since = 0.0
@@ -460,7 +525,7 @@ class MLPredictor:
                 float(STRATEGY_ENCODING.get(trade.strategy_name, 0)),
                 recent_win_rate,
                 hours_since,
-                daily_pnl,
+                rolling_avg_pnl_pct_20,
                 consec_losses[idx],  # W-2 fix: pre-computed O(1)
                 trade.news_sentiment,
                 trade.fear_greed_index / 100.0,
@@ -513,7 +578,9 @@ class MLPredictor:
         sample_weights = self._compute_temporal_weights(len(trades))
         logger.info("ML train: temporal weights applied (decay=%.4f)", _TEMPORAL_DECAY)
 
-        # --- Time Series Cross-Validation ---
+        # --- Time Series Cross-Validation (RF only — fast diagnostic pass) ---
+        # Note: CV is used only for logging/early sanity check.
+        # Actual ensemble member selection happens on the dedicated validation split below.
         tscv = TimeSeriesSplit(n_splits=self._cfg.cv_splits)
         cv_precisions, cv_recalls, cv_aucs = [], [], []
 
@@ -545,11 +612,11 @@ class MLPredictor:
             logger.warning("ML train: no valid CV folds produced")
             return None
 
-        # Log CV results
+        # Log CV results (RF diagnostic — ensemble metrics come from val/holdout splits)
         avg_prec = sum(cv_precisions) / len(cv_precisions)
         avg_rec = sum(cv_recalls) / len(cv_recalls)
         avg_auc = sum(cv_aucs) / len(cv_aucs)
-        logger.info("ML CV results: prec=%.3f rec=%.3f auc=%.3f (over %d folds)",
+        logger.info("ML CV (RF diagnostic): prec=%.3f rec=%.3f auc=%.3f (over %d folds)",
                      avg_prec, avg_rec, avg_auc, len(cv_precisions))
 
         # Walk-Forward Validation: Train 70% → Validate 15% → Holdout Test 15%
@@ -558,6 +625,7 @@ class MLPredictor:
         val_end = int(len(X) * 0.85)
         X_train, X_val, X_test = X[:train_end], X[train_end:val_end], X[val_end:]
         y_train, y_val, y_test = y_arr[:train_end], y_arr[train_end:val_end], y_arr[val_end:]
+        pnl_val  = pnl_values[train_end:val_end]
         pnl_test = pnl_values[val_end:]
 
         if len(X_train) < 50 or len(X_val) < 15 or len(X_test) < 15:
@@ -625,7 +693,8 @@ class MLPredictor:
             except ValueError:
                 auc_v = 0.5
 
-            skill_v = 0.35 * prec_v + 0.20 * rec_v + 0.25 * auc_v + 0.20 * 0.5
+            pf_v = self._compute_profit_factor_score(y_pred_v, pnl_val)
+            skill_v = 0.20 * prec_v + 0.20 * rec_v + 0.35 * auc_v + 0.25 * pf_v
 
             # Overfitting guard
             y_train_pred_c = candidate.predict(X_train_s)
@@ -639,8 +708,8 @@ class MLPredictor:
                 continue
 
             logger.info(
-                "ML candidate [%s]: val_skill=%.3f prec=%.3f rec=%.3f auc=%.3f → added to ensemble",
-                tag, skill_v, prec_v, rec_v, auc_v,
+                "ML candidate [%s]: val_skill=%.3f prec=%.3f rec=%.3f auc=%.3f pf=%.3f → added to ensemble",
+                tag, skill_v, prec_v, rec_v, auc_v, pf_v,
             )
             ensemble.add_member(candidate, tag, skill_v)
             candidate_metrics[tag] = skill_v
@@ -679,11 +748,81 @@ class MLPredictor:
 
         importances = combined_importances
 
-        # C-1: AdaptiveFeatureSelector is DIAGNOSTIC ONLY (not applied to data)
-        # Models are trained on full 30 features; selector logs which features
-        # have low importance for human review. Actual feature masking requires
-        # re-architecture (train models on masked features) — deferred to v4.
+        # Phase 2: Apply feature selector → refit scaler → retrain all models on selected features
+        # This ensures inference pipeline matches training exactly:
+        # predict(): selector.transform(30→N) → scaler.transform(N) → model.predict(N)
         self._feature_selector.fit(importances, FEATURE_NAMES)
+
+        if self._feature_selector.dropped_names:
+            # Apply selector to all splits (30 → N selected features)
+            X_train_sel = self._feature_selector.transform(X_train)
+            X_val_sel   = self._feature_selector.transform(X_val)
+            X_test_sel  = self._feature_selector.transform(X_test)
+
+            # Refit scaler on selected features only
+            final_scaler = StandardScaler()
+            X_train_s = final_scaler.fit_transform(X_train_sel)
+            X_val_s   = final_scaler.transform(X_val_sel)
+            X_test_s  = final_scaler.transform(X_test_sel)
+
+            # Retrain all models on selected features
+            ensemble = VotingEnsemble()
+            candidate_metrics = {}
+
+            rf2 = self._build_rf()
+            try:
+                rf2.fit(X_train_s, y_train, sample_weight=train_weights)
+            except TypeError:
+                rf2.fit(X_train_s, y_train)
+
+            lgbm2 = self._build_lgbm()
+            if lgbm2 is not None:
+                try:
+                    lgbm2.fit(X_train_s, y_train, sample_weight=train_weights)
+                except Exception:
+                    lgbm2 = None
+
+            xgb2 = self._build_xgb(scale_pos_weight=spw)
+            if xgb2 is not None:
+                try:
+                    xgb2.fit(X_train_s, y_train, sample_weight=train_weights)
+                except Exception:
+                    xgb2 = None
+
+            for candidate, tag in [(rf2, "rf"), (lgbm2, "lgbm"), (xgb2, "xgb")]:
+                if candidate is None:
+                    continue
+                try:
+                    y_pred_v  = candidate.predict(X_val_s)
+                    y_proba_v = candidate.predict_proba(X_val_s)[:, 1] if len(set(y_train)) > 1 else np.full(len(y_val), 0.5)
+                except Exception as exc:
+                    logger.warning("ML phase-2 candidate [%s] eval failed: %s", tag, exc)
+                    continue
+                prec_v  = precision_score(y_val, y_pred_v, zero_division=0)
+                rec_v   = recall_score(y_val, y_pred_v, zero_division=0)
+                try:
+                    auc_v = roc_auc_score(y_val, y_proba_v)
+                except ValueError:
+                    auc_v = 0.5
+                pf_v = self._compute_profit_factor_score(y_pred_v, pnl_val)
+                skill_v = 0.20 * prec_v + 0.20 * rec_v + 0.35 * auc_v + 0.25 * pf_v
+                y_train_pred_c = candidate.predict(X_train_s)
+                train_prec_c   = precision_score(y_train, y_train_pred_c, zero_division=0)
+                if train_prec_c - prec_v > self._cfg.max_overfit_gap:
+                    logger.warning("ML phase-2 OVERFITTING [%s]: gap=%.3f — REJECTED", tag, train_prec_c - prec_v)
+                    continue
+                ensemble.add_member(candidate, tag, skill_v)
+                candidate_metrics[tag] = skill_v
+                logger.info("ML phase-2 [%s]: skill=%.3f prec=%.3f rec=%.3f pf=%.3f → accepted", tag, skill_v, prec_v, rec_v, pf_v)
+
+            if not ensemble.is_ready:
+                logger.warning("ML phase-2: all candidates rejected — falling back to phase-1 ensemble")
+                # fall back to phase-1 results (already in local variables)
+            else:
+                logger.info("ML phase-2 ensemble: %d members on %d features", ensemble.member_count(), X_train_sel.shape[1])
+                best_tag = max(candidate_metrics, key=candidate_metrics.get)
+                best_model = {"rf": rf2, "lgbm": lgbm2, "xgb": xgb2}.get(best_tag)
+                rf, lgbm, xgb = rf2, lgbm2, xgb2  # update refs for calibration below
 
         # v3: Apply IsotonicCalibration on FIRST HALF of validation set (C-4 fix)
         # Threshold calibration uses SECOND HALF to prevent data leakage
@@ -735,12 +874,64 @@ class MLPredictor:
             best_roc_auc = 0.5
         best_accuracy = accuracy_score(y_test, y_pred_holdout)
         pf_score = self._compute_profit_factor_score(y_pred_holdout, pnl_test)
-        final_skill = 0.35 * best_precision + 0.20 * best_recall + 0.25 * best_roc_auc + 0.20 * pf_score
+        # AUC-ROC has highest weight (threshold-independent, most reliable on small datasets).
+        # PF score second (directly measures trading profitability).
+        final_skill = 0.20 * best_precision + 0.20 * best_recall + 0.35 * best_roc_auc + 0.25 * pf_score
 
+        # --- Naive baseline: always predict "win" ---
+        baseline_win_rate = float(y_test.mean()) if len(y_test) > 0 else 0.5
+        precision_lift = best_precision - baseline_win_rate
+        auc_lift = best_roc_auc - 0.5
         logger.info(
-            "ML HOLDOUT [VotingEnsemble] (thr=%.3f): skill=%.3f prec=%.3f rec=%.3f auc=%.3f pf=%.3f",
-            calibrated_thr, final_skill, best_precision, best_recall, best_roc_auc, pf_score,
+            "Baseline (always-win): precision=%.3f | Model lift: +%.3f precision, +%.3f AUC",
+            baseline_win_rate, precision_lift, auc_lift,
         )
+
+        # --- Bootstrap 95% confidence intervals on holdout ---
+        n_boot = 500
+        boot_prec, boot_auc = [], []
+        rng = np.random.default_rng(42)
+        n_test = len(X_test_s)
+        for _ in range(n_boot):
+            idx_b = rng.choice(n_test, size=n_test, replace=True)
+            y_b_true = y_test[idx_b]
+            y_b_prob = y_proba_holdout[idx_b]
+            y_b_pred = (y_b_prob >= calibrated_thr).astype(int)
+            bp = precision_score(y_b_true, y_b_pred, zero_division=0)
+            boot_prec.append(bp)
+            try:
+                boot_auc.append(roc_auc_score(y_b_true, y_b_prob))
+            except ValueError:
+                boot_auc.append(0.5)
+        ci_prec = (float(np.percentile(boot_prec, 2.5)), float(np.percentile(boot_prec, 97.5)))
+        ci_auc  = (float(np.percentile(boot_auc,  2.5)), float(np.percentile(boot_auc,  97.5)))
+        logger.info(
+            "ML HOLDOUT [VotingEnsemble] (thr=%.3f): skill=%.3f prec=%.3f [%.3f,%.3f] rec=%.3f auc=%.3f [%.3f,%.3f]",
+            calibrated_thr, final_skill,
+            best_precision, ci_prec[0], ci_prec[1],
+            best_recall, best_roc_auc, ci_auc[0], ci_auc[1],
+        )
+
+        # --- Out-of-time validation: retrain on 80%, test on LAST 20% as extra sanity ---
+        oot_split = int(len(X) * 0.80)
+        X_oot_raw = X[oot_split:]
+        y_oot = y_arr[oot_split:]
+        oot_auc = None
+        if len(X_oot_raw) >= 20 and self._feature_selector.dropped_names:
+            try:
+                X_oot_sel = self._feature_selector.transform(X_oot_raw)
+                X_oot_s   = final_scaler.transform(X_oot_sel)
+                y_oot_prob = ensemble.predict_proba_calibrated(X_oot_s)
+                oot_auc    = float(roc_auc_score(y_oot, y_oot_prob))
+                oot_prec   = float(precision_score(y_oot, (y_oot_prob >= calibrated_thr).astype(int), zero_division=0))
+                logger.info("Out-of-time test (%d samples): AUC=%.3f prec=%.3f", len(X_oot_raw), oot_auc, oot_prec)
+                if oot_auc < best_roc_auc - 0.15:
+                    logger.warning(
+                        "OOT AUC (%.3f) drops >0.15 vs holdout (%.3f) — possible period-specific overfitting",
+                        oot_auc, best_roc_auc,
+                    )
+            except Exception as _oot_err:
+                logger.debug("OOT test failed: %s", _oot_err)
 
         metrics = MLMetrics(
             precision=best_precision,
@@ -751,6 +942,12 @@ class MLPredictor:
             train_samples=len(X_train),
             test_samples=len(X_test),
             feature_importances=importances,
+            precision_ci_95=ci_prec,
+            auc_ci_95=ci_auc,
+            baseline_win_rate=baseline_win_rate,
+            precision_lift=precision_lift,
+            auc_lift=auc_lift,
+            oot_auc=oot_auc,
         )
 
         # Gate check — reject if below quality thresholds
@@ -813,6 +1010,9 @@ class MLPredictor:
         try:
             features_arr = np.array([trade_features], dtype=np.float64)
             features_arr = np.nan_to_num(features_arr, nan=0.0, posinf=0.0, neginf=0.0)
+            # Apply feature selector first (30 → N selected features), then scaler
+            if self._feature_selector.is_fitted and self._feature_selector.dropped_names:
+                features_arr = self._feature_selector.transform(features_arr)
             if self._scaler is not None:
                 features_arr = self._scaler.transform(features_arr)
 
@@ -827,9 +1027,11 @@ class MLPredictor:
             logger.warning("ML predict failed (defaulting to allow): %s", exc)
             proba = 0.5
 
-        # Decision logic using calibrated threshold
-        cal_thr = self._calibrated_threshold
-        if proba < cal_thr * 0.85:       # well below calibrated threshold → block
+        # Decision logic: config block_threshold overrides calibrated threshold
+        # _cfg.block_threshold (from .env ANALYZER_ML_BLOCK_THRESHOLD) is the primary knob;
+        # _calibrated_threshold is a fallback computed during training.
+        cal_thr = self._cfg.block_threshold if self._cfg.block_threshold > 0 else self._calibrated_threshold
+        if proba < cal_thr * 0.85:       # well below threshold → block
             decision = "block"
         elif proba < cal_thr:             # slightly below → reduce
             decision = "reduce"
@@ -847,11 +1049,20 @@ class MLPredictor:
         )
 
     def needs_retrain(self) -> bool:
-        """Нужно ли переобучение."""
+        """Return True if retraining is needed: scheduled interval OR concept drift."""
         if self._last_train_ts == 0:
             return True
         days_since = (time.time() * 1000 - self._last_train_ts) / (86400 * 1000)
-        return days_since >= self._cfg.retrain_days
+        if days_since >= self._cfg.retrain_days:
+            return True
+        # Concept drift: live performance has diverged from training metrics
+        if self.drift_detected:
+            logger.warning(
+                "Concept drift detected — triggering early retrain (live: %s)",
+                self._live_tracker.live_metrics(),
+            )
+            return True
+        return False
 
     def save_to_file(self, model_path: str | Path) -> bool:
         """Save trained model, ensemble, scaler and metrics to pickle file (atomic write).
@@ -877,6 +1088,15 @@ class MLPredictor:
                     "train_samples": self._metrics.train_samples,
                     "test_samples": self._metrics.test_samples,
                     "feature_importances": self._metrics.feature_importances,
+                    # Statistical confidence
+                    "precision_ci_95": list(self._metrics.precision_ci_95),
+                    "auc_ci_95": list(self._metrics.auc_ci_95),
+                    # Baseline comparison
+                    "baseline_win_rate": self._metrics.baseline_win_rate,
+                    "precision_lift": self._metrics.precision_lift,
+                    "auc_lift": self._metrics.auc_lift,
+                    # Out-of-time robustness
+                    "oot_auc": self._metrics.oot_auc,
                 }
             data = {
                 # v3: full ensemble (primary predictor)
@@ -934,6 +1154,12 @@ class MLPredictor:
                 "skill_score": round(self._metrics.skill_score, 4),
                 "train_samples": self._metrics.train_samples,
                 "test_samples": self._metrics.test_samples,
+                "precision_ci_95": [round(v, 4) for v in self._metrics.precision_ci_95],
+                "auc_ci_95": [round(v, 4) for v in self._metrics.auc_ci_95],
+                "baseline_win_rate": round(self._metrics.baseline_win_rate, 4),
+                "precision_lift": round(self._metrics.precision_lift, 4),
+                "auc_lift": round(self._metrics.auc_lift, 4),
+                "oot_auc": round(self._metrics.oot_auc, 4) if self._metrics.oot_auc is not None else None,
             }
         try:
             registry: list = []

@@ -564,6 +564,10 @@ async def run() -> None:
             state_machine=risk_state_machine,
         )
 
+        # Stores {symbol: ml_probability} for open positions so we can feed the
+        # outcome back to LivePerformanceTracker when the trade closes.
+        _ml_prob_at_entry: dict[str, float] = {}
+
         async def _on_order_filled(order):
             if not position_manager:
                 return
@@ -576,6 +580,11 @@ async def run() -> None:
                 closed = await position_manager.close_position(order)
                 if closed and risk_sentinel:
                     risk_sentinel.record_trade(order.commission, increment_trade=False)
+                # Feed realized outcome back to ML tracker for concept drift detection
+                if closed and _ml_predictor and order.symbol in _ml_prob_at_entry:
+                    _entry_prob, _entry_px = _ml_prob_at_entry.pop(order.symbol, (0.5, 0.0))
+                    _actual_win = (order.fill_price > _entry_px) if _entry_px > 0 else False
+                    _ml_predictor.record_outcome(_entry_prob, _actual_win)
 
             if risk_state_machine:
                 await risk_state_machine.update(position_manager.total_realized_pnl)
@@ -669,9 +678,56 @@ async def run() -> None:
             _ml_predictor.rollout_mode = "shadow"
         elif settings.analyzer_ml_enabled:
             _ml_predictor.rollout_mode = "block"
+        # Load previously trained model from disk
+        _ml_model_path = Path(__file__).parent / "data" / "ml_models" / "ml_predictor.pkl"
+        if _ml_model_path.exists():
+            loaded = _ml_predictor.load_from_file(_ml_model_path)
+            if loaded:
+                log.info("[Module] ML model loaded from disk (version={})", _ml_predictor._model_version)
+            else:
+                log.warning("[Module] ML model load failed — running without model until retrain")
+        else:
+            log.warning("[Module] No saved ML model found at {} — will train on startup", _ml_model_path)
         log.info("[Module] ML Predictor initialized (mode={})", _ml_predictor.rollout_mode)
     except Exception as e:
         log.warning("[Module] ML Predictor failed: {}", e)
+
+    # ── ML retrain function (defined early so get_system_state can reference it) ──
+    _ml_model_path_early = Path(__file__).parent / "data" / "ml_models" / "ml_predictor.pkl"
+    _ml_retrain_lock_early = asyncio.Lock()
+
+    async def _run_ml_training() -> bool:
+        """Load trades from DB, train ML model, save to disk. Returns True on success."""
+        if not _ml_predictor or not repo:
+            return False
+        try:
+            import sys as _sys
+            _scripts_dir = str(Path(__file__).parent / "scripts")
+            if _scripts_dir not in _sys.path:
+                _sys.path.insert(0, _scripts_dir)
+            from scripts.train_ml import build_all_trades
+            log.info("ML auto-retrain: collecting training data...")
+            all_trades = await asyncio.to_thread(build_all_trades, repo, settings)
+            if not all_trades:
+                log.warning("ML auto-retrain: no trades available for training")
+                return False
+            log.info("ML auto-retrain: training on {} trades...", len(all_trades))
+            metrics = await asyncio.to_thread(_ml_predictor.train, all_trades)
+            if metrics is None or not _ml_predictor.is_ready:
+                log.warning("ML auto-retrain: training failed or metrics below threshold")
+                return False
+            saved = await asyncio.to_thread(_ml_predictor.save_to_file, _ml_model_path_early)
+            if saved:
+                log.info(
+                    "ML auto-retrain: ✅ saved (skill={:.3f} prec={:.3f} rec={:.3f} auc={:.3f})",
+                    metrics.skill_score, metrics.precision, metrics.recall, metrics.roc_auc,
+                )
+                return True
+            log.warning("ML auto-retrain: model below quality gate — not saved")
+            return False
+        except Exception as exc:
+            log.error("ML auto-retrain error: {}", exc)
+            return False
 
     # ── Strategy Decision Log (ring buffer) ──
     from collections import deque
@@ -887,14 +943,20 @@ async def run() -> None:
             if _ml_predictor and settings.analyzer_ml_enabled and _ml_predictor.rollout_mode != "off":
                 try:
                     from core.models import StrategyTrade as _ST
-                    # Integration 10/10: factory guarantees 30/30 field coverage
-                    _ml_trade = _ST.from_feature_vector(
-                        features,
+                    _ml_trade = _ST(
+                        trade_id="pending",
+                        symbol=symbol,
                         strategy_name=strat_name,
                         market_regime=regime_name,
+                        entry_price=features.close,
                         confidence=signal.confidence,
                         hour_of_day=int(time.strftime("%H")),
                         day_of_week=int(time.strftime("%w")),
+                        rsi_at_entry=features.rsi_14,
+                        adx_at_entry=features.adx,
+                        volume_ratio_at_entry=features.volume_ratio,
+                        news_sentiment=features.news_sentiment,
+                        fear_greed_index=features.fear_greed_index,
                     )
                     _prev_trades_for_ml = []
                     if repo:
@@ -907,6 +969,10 @@ async def run() -> None:
                     _ml_pred = _ml_predictor.predict(_ml_features)
                     log.info("ML prediction: {} prob={:.2f} decision={} mode={}",
                              strat_name, _ml_pred.probability, _ml_pred.decision, _ml_pred.rollout_mode)
+                    # Track ML probability at entry so we can record outcome on close.
+                    # Store (prob, entry_price) tuple — used in _on_order_filled SELL path.
+                    if signal.direction.value == "BUY":
+                        _ml_prob_at_entry[symbol] = (_ml_pred.probability, features.close)
                     if _ml_pred.decision == "block":
                         log.info("ML BLOCKED signal: {} {} {} prob={:.2f}",
                                  strat_name, signal.direction.value, symbol, _ml_pred.probability)
@@ -1086,9 +1152,7 @@ async def run() -> None:
         limit = _INTERVAL_LIMITS.get(interval, 120)
 
         try:
-            # V2 Fix: Фильтруем данные за последние 14 дней, чтобы избежать дыр и мусора
-            since_ts = int((time.time() - 14 * 86400) * 1000)
-            candles = repo.get_candles(primary_symbol, interval, limit=limit, since_ts=since_ts)
+            candles = repo.get_candles(primary_symbol, interval, limit=limit)
         except Exception as _candle_err:
             log.debug("Chart candle fetch failed: {}", _candle_err)
             candles = []
@@ -1097,12 +1161,12 @@ async def run() -> None:
             "%d %b %H:%M" if interval in ("1h", "4h") else "%d %b"
         )
 
-        # Fallback: aggregate 1m candles into higher timeframes when native candles missing
-        if len(candles) < 10 and interval in ("5m", "15m", "1h"):
-            bucket_mins = {"5m": 5, "15m": 15, "1h": 60}.get(interval, 5)
+        # Fallback: aggregate 1m candles into 5m/15m when native candles not yet available
+        if len(candles) < 2 and interval in ("5m", "15m"):
+            bucket_mins = 5 if interval == "5m" else 15
             raw_limit = bucket_mins * limit
             try:
-                raw = repo.get_candles(primary_symbol, "1m", limit=raw_limit, since_ts=since_ts)
+                raw = repo.get_candles(primary_symbol, "1m", limit=raw_limit)
             except Exception as _agg_err:
                 log.debug("Aggregation candle fetch failed: {}", _agg_err)
                 raw = []
@@ -1358,6 +1422,8 @@ async def run() -> None:
             "trades_export": repo.get_all_trades_for_export() if repo else [],
             "alerts": _alert_monitor.get_recent_alerts() if _alert_monitor else [],
             "signal_exec_stats": repo.get_signal_execution_stats() if repo else {},
+            "ml_predictor": _ml_predictor,
+            "ml_retrain_fn": _run_ml_training,
         }
 
     try:
@@ -1402,6 +1468,28 @@ async def run() -> None:
     except Exception as e:
         log.warning("[Module] Dashboard failed: {}", e)
 
+    # ── ML Auto-Retrain loop ─────────────────────────────────────────────────
+    async def _ml_retrain_loop():
+        """Background task: retrain ML model every ANALYZER_ML_RETRAIN_DAYS days."""
+        # Small delay so system fully starts before first retrain check
+        await asyncio.sleep(60)
+        while True:
+            try:
+                async with _ml_retrain_lock_early:
+                    if _ml_predictor:
+                        if not _ml_predictor.is_ready:
+                            log.info("ML auto-retrain: no model loaded — triggering initial training")
+                            await _run_ml_training()
+                        elif _ml_predictor.needs_retrain():
+                            log.info("ML auto-retrain: model is stale — retraining")
+                            await _run_ml_training()
+            except Exception as exc:
+                log.error("ML retrain loop error: {}", exc)
+            # Check every 6 hours
+            await asyncio.sleep(6 * 3600)
+
+    ml_retrain_task = asyncio.create_task(_ml_retrain_loop())
+
     # Periodic equity snapshot (для графика PnL)
     async def _equity_snapshot_loop():
         while True:
@@ -1418,6 +1506,7 @@ async def run() -> None:
     _background_tasks: list[tuple[str, asyncio.Task]] = [
         ("equity_snapshot", equity_task),
         ("heartbeat", heartbeat_task),
+        ("ml_retrain", ml_retrain_task),
     ]
     if collector_task:
         _background_tasks.append(("collector", collector_task))
@@ -1446,7 +1535,8 @@ async def run() -> None:
     watchdog_task.cancel()
     heartbeat_task.cancel()
     equity_task.cancel()
-    await asyncio.gather(watchdog_task, heartbeat_task, equity_task, return_exceptions=True)
+    ml_retrain_task.cancel()
+    await asyncio.gather(watchdog_task, heartbeat_task, equity_task, ml_retrain_task, return_exceptions=True)
     if collector:
         await collector.stop()
     if collector_task:

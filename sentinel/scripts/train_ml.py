@@ -277,6 +277,78 @@ def run_backtest_with_features(
 # Main
 # ──────────────────────────────────────────────
 
+def build_all_trades(repo: Repository, settings) -> list:
+    """Build StrategyTrade list from backtests — called by both main() and auto-retrain loop."""
+    symbols = settings.trading_symbols
+
+    # Load tuned params if available
+    tuned_params = {}
+    params_path = BASE_DIR / "data" / "ml_models" / "tuned_params.json"
+    if params_path.exists():
+        try:
+            import json
+            with open(params_path) as f:
+                saved = json.load(f)
+            tuned_params = {item["strategy"]: item["best_params"] for item in saved if "strategy" in item and "best_params" in item}
+        except Exception:
+            pass
+
+    strategies_map = {
+        "ema_crossover_rsi_default": EMACrossoverRSI(),
+        "bollinger_breakout_default": BollingerBreakout(),
+        "mean_reversion_default": MeanReversion(),
+        "macd_divergence_default": MACDDivergence()
+    }
+
+    if "ema_crossover_rsi" in tuned_params:
+        p = tuned_params["ema_crossover_rsi"]
+        ema_cfg = EMAConfig(**{k: v for k, v in p.items() if hasattr(EMAConfig(), k)})
+        strategies_map["ema_crossover_rsi"] = EMACrossoverRSI(config=ema_cfg)
+    else:
+        strategies_map["ema_crossover_rsi"] = strategies_map["ema_crossover_rsi_default"]
+
+    if "bollinger_breakout" in tuned_params:
+        p = tuned_params["bollinger_breakout"]
+        bb_cfg = BBBreakoutConfig(**{k: v for k, v in p.items() if hasattr(BBBreakoutConfig(), k)})
+        strategies_map["bollinger_breakout"] = BollingerBreakout(config=bb_cfg)
+    else:
+        strategies_map["bollinger_breakout"] = strategies_map["bollinger_breakout_default"]
+
+    if "mean_reversion" in tuned_params:
+        p = tuned_params["mean_reversion"]
+        mr_cfg = MeanRevConfig(**{k: v for k, v in p.items() if hasattr(MeanRevConfig(), k)})
+        strategies_map["mean_reversion"] = MeanReversion(config=mr_cfg)
+    else:
+        strategies_map["mean_reversion"] = strategies_map["mean_reversion_default"]
+
+    if "macd_divergence" in tuned_params:
+        p = tuned_params["macd_divergence"]
+        md_cfg = MACDDivConfig(**{k: v for k, v in p.items() if hasattr(MACDDivConfig(), k)})
+        strategies_map["macd_divergence"] = MACDDivergence(config=md_cfg)
+    else:
+        strategies_map["macd_divergence"] = strategies_map["macd_divergence_default"]
+
+    all_trades: list[StrategyTrade] = []
+    for symbol in symbols:
+        logger.info("build_all_trades: loading candles for {}...", symbol)
+        candles_1h = load_candles(repo, symbol, "1h")
+        candles_4h = load_candles(repo, symbol, "4h")
+        candles_1d = load_candles(repo, symbol, "1d")
+        logger.info("  1h={} 4h={} 1d={}", len(candles_1h), len(candles_4h), len(candles_1d))
+        for strat_name, strategy in strategies_map.items():
+            reset_regime()
+            try:
+                trades = run_backtest_with_features(strategy, strat_name, candles_1h, candles_4h, candles_1d, symbol)
+                all_trades.extend(trades)
+                logger.info("  {} / {}: {} trades", symbol, strat_name, len(trades))
+            except Exception as e:
+                logger.error("  Backtest failed {} {}: {}", symbol, strat_name, e)
+
+    all_trades.sort(key=lambda t: t.timestamp_open)
+    logger.info("build_all_trades: total {} trades", len(all_trades))
+    return all_trades
+
+
 def main():
     logger.remove()
     logger.add(sys.stderr, format="<green>{time:HH:mm:ss}</green> | <level>{level:<8}</level> | {message}", level="INFO")

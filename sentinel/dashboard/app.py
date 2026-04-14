@@ -367,6 +367,41 @@ class Dashboard:
                 "signal": self.news_collector.get_news_signal(),
             })
 
+        @app.get("/api/ml/status")
+        async def ml_status():
+            """ML model status, metrics, and mode."""
+            ml = self._state_provider() if self._state_provider else {}
+            predictor = ml.get("ml_predictor") if ml else None
+            if predictor is None:
+                return JSONResponse(content={"enabled": False, "reason": "not initialized"})
+            m = predictor.metrics
+            return JSONResponse(content={
+                "enabled": True,
+                "ready": predictor.is_ready,
+                "mode": predictor.rollout_mode,
+                "version": predictor._model_version or "none",
+                "needs_retrain": predictor.needs_retrain(),
+                "metrics": {
+                    "precision": round(m.precision, 4) if m else None,
+                    "recall": round(m.recall, 4) if m else None,
+                    "roc_auc": round(m.roc_auc, 4) if m else None,
+                    "skill_score": round(m.skill_score, 4) if m else None,
+                    "train_samples": m.train_samples if m else 0,
+                    "test_samples": m.test_samples if m else 0,
+                } if m else None,
+                "threshold": predictor._cfg.block_threshold,
+            })
+
+        @app.post("/api/ml/retrain")
+        async def ml_retrain():
+            """Trigger manual ML retraining (runs in background)."""
+            ml = self._state_provider() if self._state_provider else {}
+            retrain_fn = ml.get("ml_retrain_fn") if ml else None
+            if retrain_fn is None:
+                return JSONResponse(content={"status": "error", "message": "retrain function not wired"}, status_code=503)
+            asyncio.create_task(retrain_fn())
+            return JSONResponse(content={"status": "started", "message": "ML retraining triggered in background"})
+
         @app.get("/api/config")
         async def config_snapshot():
             return JSONResponse(content=self._build_config_payload())
@@ -478,18 +513,10 @@ class Dashboard:
 
         @app.get("/", response_class=HTMLResponse)
         async def dashboard_page():
-            # Read dynamically so UI changes apply without restart
-            index_path = static_dir / "index.html"
-            if index_path.exists():
-                return index_path.read_text(encoding="utf-8")
             return _DASHBOARD_HTML
 
         @app.get("/settings", response_class=HTMLResponse)
         async def settings_page():
-            # Read dynamically so UI changes apply without restart
-            settings_path = static_dir / "settings.html"
-            if settings_path.exists():
-                return settings_path.read_text(encoding="utf-8")
             return _SETTINGS_HTML
 
         self._app = app
