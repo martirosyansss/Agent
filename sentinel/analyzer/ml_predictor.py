@@ -422,14 +422,14 @@ class MLPredictor:
             # from memorising the training set and allows it to pass the 10% overfit guard.
             return XGBClassifier(
                 n_estimators=200,
-                max_depth=4,
+                max_depth=5,             # raised from 4: allows more expressiveness
                 learning_rate=self._cfg.learning_rate,
-                subsample=0.7,
-                colsample_bytree=0.7,
-                min_child_weight=30,     # require at least 30 samples in each leaf
-                reg_alpha=0.5,           # L1 regularization (sparsity)
-                reg_lambda=2.0,          # L2 regularization (shrinkage)
-                gamma=0.2,               # min loss reduction for split
+                subsample=0.75,
+                colsample_bytree=0.75,
+                min_child_weight=20,     # relaxed from 30: less conservative
+                reg_alpha=0.3,           # L1: relaxed from 0.5
+                reg_lambda=1.5,          # L2: relaxed from 2.0
+                gamma=0.1,               # relaxed from 0.2
                 scale_pos_weight=scale_pos_weight,  # N-5: computed from data
                 random_state=42,
                 n_jobs=-1,
@@ -580,6 +580,14 @@ class MLPredictor:
                 delta = (parsed_open[idx] - parsed_close[idx - 1]).total_seconds()
                 hours_since = max(delta / 3600.0, 0.0)
 
+            # Clamp hours_since to 72h max: values above this are OOD (bot restart,
+            # weekend gap, etc.) and would push the model outside its training distribution.
+            hours_since_clamped = min(hours_since, 72.0)
+
+            # CCI can exceed ±200 in extreme markets (flash crash, strong trend).
+            # Clamp to [-3, 3] after /200 normalization to keep model in-distribution.
+            cci_norm = max(-3.0, min(trade.cci_at_entry / 200.0, 3.0))
+
             X[idx] = [
                 trade.rsi_at_entry,
                 trade.adx_at_entry,
@@ -593,7 +601,7 @@ class MLPredictor:
                 float(REGIME_ENCODING.get(trade.market_regime, 4)),
                 strat_fit,                   # v4: was strategy_encoded (categorical int)
                 recent_win_rate,
-                hours_since,
+                hours_since_clamped,         # clamped to 72h max (OOD guard)
                 rolling_avg_pnl_pct_20,
                 consec_losses[idx],          # W-2 fix: pre-computed O(1)
                 strategy_specific_wr,        # v4: new feature (pos 15)
@@ -603,7 +611,7 @@ class MLPredictor:
                 regime_bias,
                 adx_normalized,
                 # Phase 2: Enhanced indicators
-                trade.cci_at_entry / 200.0,
+                cci_norm,                    # clamped to [-3, 3] (OOD guard)
                 trade.roc_at_entry / 10.0,
                 trade.cmf_at_entry,
                 trade.bb_pct_b_at_entry,
@@ -989,10 +997,15 @@ class MLPredictor:
         oot_split = int(len(X) * 0.80)
         X_oot_raw = X[oot_split:]
         y_oot = y_arr[oot_split:]
+        # OOT test always runs (regardless of feature selection).
+        # Bug fix: previously skipped when no features were dropped — now unconditional.
         oot_auc = None
-        if len(X_oot_raw) >= 20 and self._feature_selector.dropped_names:
+        if len(X_oot_raw) >= 20:
             try:
-                X_oot_sel = self._feature_selector.transform(X_oot_raw)
+                if self._feature_selector.is_fitted:
+                    X_oot_sel = self._feature_selector.transform(X_oot_raw)
+                else:
+                    X_oot_sel = X_oot_raw
                 X_oot_s   = final_scaler.transform(X_oot_sel)
                 y_oot_prob = ensemble.predict_proba_calibrated(X_oot_s)
                 oot_auc    = float(roc_auc_score(y_oot, y_oot_prob))
