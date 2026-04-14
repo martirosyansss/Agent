@@ -241,7 +241,7 @@ class NewsCollector:
     ]
 
     MAX_NEWS = 200          # макс новостей в памяти
-    MAX_AGE_DAYS = 1        # хранить за последние N дней
+    MAX_AGE_DAYS = 3        # хранить за последние N дней
     ITEMS_PER_FEED = 20     # статей с каждого RSS
 
     # Промпт для batch-анализа новостей (professional-grade)

@@ -4,7 +4,7 @@
 Логика:
   BUY:  EMA9 пересекает EMA21 снизу вверх (1h) + RSI < 70 + Volume > avg + цена > EMA50 (4h)
   SELL: EMA9 пересекает EMA21 сверху вниз (1h) + RSI > 30 + Volume > 0.8× avg
-        ИЛИ stop-loss -3% / take-profit +5%
+        ИЛИ stop-loss / take-profit / trailing stop / time exit
 
 Confidence = нормализованная сумма факторов (0.0 – 1.0).
 Сигналы с confidence < min_confidence (0.75) игнорируются.
@@ -32,10 +32,13 @@ class EMAConfig:
     ema_trend: int = 50
     rsi_overbought: float = 70.0
     rsi_oversold: float = 30.0
-    min_volume_ratio: float = 1.3
-    stop_loss_pct: float = 3.0
+    min_volume_ratio: float = 1.0
+    stop_loss_pct: float = 2.5
     take_profit_pct: float = 5.0
-    min_confidence: float = 0.75
+    trailing_stop_pct: float = 1.5
+    trailing_activate_pct: float = 2.5
+    max_hold_hours: int = 72
+    min_confidence: float = 0.60
     max_position_pct: float = 20.0
 
     def __post_init__(self):
@@ -55,6 +58,10 @@ class EMACrossoverRSI(BaseStrategy):
         self._cfg = config or EMAConfig()
         # Для детекции crossover храним предыдущее значение EMA-разницы
         self._prev_ema_diff: dict[str, float | None] = {}
+        # Trailing stop: track max price per symbol
+        self._max_price: dict[str, float] = {}
+        # Time exit: track entry timestamp per symbol
+        self._entry_ts: dict[str, int] = {}
 
     def generate_signal(
         self,
@@ -70,12 +77,18 @@ class EMACrossoverRSI(BaseStrategy):
         if has_open_position and entry_price is not None:
             sell_signal = self._check_sell(features, entry_price, now_ms)
             if sell_signal:
+                # Clean up tracking state
+                self._max_price.pop(sym, None)
+                self._entry_ts.pop(sym, None)
                 return sell_signal
 
         # ── BUY логика (если нет позиции) ──
         if not has_open_position:
             buy_signal = self._check_buy(features, now_ms)
             if buy_signal:
+                # Record entry for trailing stop & time exit
+                self._max_price[sym] = features.close
+                self._entry_ts[sym] = now_ms
                 return buy_signal
 
         # Обновить prev diff для crossover detection
@@ -105,8 +118,8 @@ class EMACrossoverRSI(BaseStrategy):
         if not is_crossover:
             return None
 
-        # ATR-based crossover threshold — prevent whipsaw in sideways markets
-        min_cross_threshold = f.atr * 0.3 if f.atr > 0 else f.close * 0.001
+        # ATR-based crossover threshold — prevent whipsaw in sideways (softened)
+        min_cross_threshold = f.atr * 0.1 if f.atr > 0 else f.close * 0.0003
         if current_diff < min_cross_threshold:
             log.debug("{} BUY skip: crossover too weak {:.4f} < {:.4f}", f.symbol, current_diff, min_cross_threshold)
             return None
@@ -153,6 +166,15 @@ class EMACrossoverRSI(BaseStrategy):
         if f.adx > 25:
             confidence += 0.05
 
+        # Trend alignment (multi-TF) boost (+0.10 / +0.05 / -0.10)
+        if hasattr(f, 'trend_alignment'):
+            if f.trend_alignment >= 0.8:
+                confidence += 0.10
+            elif f.trend_alignment >= 0.6:
+                confidence += 0.05
+            elif f.trend_alignment <= 0.2:
+                confidence -= 0.10
+
         # News sentiment boost/penalty (±0.10)
         if f.news_sentiment > 0.3:
             confidence += 0.10
@@ -185,6 +207,8 @@ class EMACrossoverRSI(BaseStrategy):
         reasons.append(f"vol_ratio={f.volume_ratio:.2f}x")
         if f.macd_histogram > 0:
             reasons.append("MACD+")
+        if hasattr(f, 'trend_alignment') and f.trend_alignment >= 0.8:
+            reasons.append(f"trend_align={f.trend_alignment:.2f}")
         if f.news_sentiment != 0.0:
             reasons.append(f"sentiment={f.news_sentiment:+.2f}")
 
@@ -212,8 +236,9 @@ class EMACrossoverRSI(BaseStrategy):
         if entry_price <= 0:
             return self._make_sell_signal(f, now_ms, 0.99, ["SAFETY: invalid entry_price"])
 
-        # Stop-loss
         pnl_pct = (f.close - entry_price) / entry_price * 100
+
+        # Stop-loss
         if pnl_pct <= -cfg.stop_loss_pct:
             reasons.append(f"Stop-loss: {pnl_pct:.2f}% <= -{cfg.stop_loss_pct}%")
             return self._make_sell_signal(f, now_ms, 0.90, reasons)
@@ -222,6 +247,25 @@ class EMACrossoverRSI(BaseStrategy):
         if pnl_pct >= cfg.take_profit_pct:
             reasons.append(f"Take-profit: {pnl_pct:.2f}% >= +{cfg.take_profit_pct}%")
             return self._make_sell_signal(f, now_ms, 0.90, reasons)
+
+        # Trailing stop: activate after +trailing_activate_pct%, trail at trailing_stop_pct%
+        sym = f.symbol
+        self._max_price[sym] = max(self._max_price.get(sym, entry_price), f.close)
+        if pnl_pct >= cfg.trailing_activate_pct:
+            max_p = self._max_price.get(sym, f.close)
+            drawdown_from_max = (max_p - f.close) / max_p * 100 if max_p > 0 else 0
+            if drawdown_from_max >= cfg.trailing_stop_pct:
+                reasons.append(f"Trailing stop: {drawdown_from_max:.1f}% from max (pnl={pnl_pct:+.1f}%)")
+                return self._make_sell_signal(f, now_ms, 0.85, reasons)
+
+        # Time-based exit: close stale positions after max_hold_hours
+        entry_ts = self._entry_ts.get(sym, 0)
+        if entry_ts > 0 and cfg.max_hold_hours > 0:
+            hold_ms = now_ms - entry_ts
+            hold_hours = hold_ms / (3600 * 1000)
+            if hold_hours >= cfg.max_hold_hours and abs(pnl_pct) < cfg.take_profit_pct * 0.5:
+                reasons.append(f"Time exit: held {hold_hours:.0f}h > {cfg.max_hold_hours}h (pnl={pnl_pct:+.1f}%)")
+                return self._make_sell_signal(f, now_ms, 0.70, reasons)
 
         # EMA death cross
         current_diff = f.ema_9 - f.ema_21

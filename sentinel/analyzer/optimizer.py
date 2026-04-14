@@ -45,8 +45,8 @@ class OptimizationProposal:
 
 @dataclass
 class OptimizerConfig:
-    max_changes_per_week: int = 1
-    paper_test_days: int = 14
+    max_changes_per_week: int = 2
+    paper_test_days: int = 7
     min_trades: int = 100
     min_improvement_pct: float = 5.0
     walk_forward_train_pct: float = 0.70
@@ -96,10 +96,18 @@ class Optimizer:
         strategy_name: str,
         parameter: str,
         test_values: list[float],
+        current_value: float = 0.0,
     ) -> Optional[OptimizationProposal]:
         """Проанализировать и предложить оптимизацию.
 
         Использует walk-forward split: 70% train, 30% validation.
+
+        Args:
+            trades: Historical trades to analyze
+            strategy_name: Name of strategy to optimize
+            parameter: Parameter name to optimize (must be in TUNABLE_PARAMS)
+            test_values: List of candidate values to test
+            current_value: Current value of the parameter (for up_only guard)
         """
         if parameter in FROZEN_PARAMS:
             return None
@@ -132,9 +140,9 @@ class Optimizer:
         best_improvement = 0.0
 
         for val in test_values:
-            # Enforce constraints
-            if constraint["direction"] == "up_only" and val < 0:
-                continue
+            # W-7 fix: Enforce direction constraint against CURRENT value, not zero
+            if constraint["direction"] == "up_only" and val < current_value:
+                continue  # only allow increases
             if not (constraint["min"] <= val <= constraint["max"]):
                 continue
 
@@ -158,7 +166,7 @@ class Optimizer:
                 best_proposal = OptimizationProposal(
                     proposal_id=f"opt_{int(time.time())}_{parameter}",
                     parameter=parameter,
-                    current_value=0.0,  # Caller fills in
+                    current_value=current_value,
                     proposed_value=val,
                     expected_improvement_pct=improvement,
                     train_stats=self._stat.compute_stats(train_trades),

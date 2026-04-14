@@ -23,10 +23,10 @@ from strategy.base_strategy import BaseStrategy
 class MeanRevConfig:
     rsi_oversold: float = 30.0
     rsi_overbought: float = 75.0
-    stop_loss_pct: float = 4.0
-    take_profit_pct: float = 6.0
-    min_volume_ratio: float = 1.5
-    min_confidence: float = 0.72
+    stop_loss_pct: float = 3.0
+    take_profit_pct: float = 8.0
+    min_volume_ratio: float = 1.2
+    min_confidence: float = 0.65
     max_position_pct: float = 15.0
 
     def __post_init__(self):
@@ -86,12 +86,12 @@ class MeanReversion(BaseStrategy):
                     confidence=0.80, strategy_name=self.NAME,
                     reason=f"MeanRev exit: RSI {features.rsi_14:.1f} > {cfg.rsi_overbought}",
                 )
-            # Price reverted to EMA21
-            if features.close >= features.ema_21 > 0:
+            # Price reverted to EMA21 AND RSI normalized — take partial confirmation
+            if features.close >= features.ema_21 > 0 and features.rsi_14 > 60:
                 return Signal(
                     timestamp=now_ms, symbol=sym, direction=Direction.SELL,
                     confidence=0.75, strategy_name=self.NAME,
-                    reason=f"MeanRev revert to EMA21: {features.close:.2f} >= {features.ema_21:.2f}",
+                    reason=f"MeanRev revert: price={features.close:.2f} >= EMA21={features.ema_21:.2f}, RSI={features.rsi_14:.0f}",
                 )
             return None
 

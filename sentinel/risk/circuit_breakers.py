@@ -71,7 +71,8 @@ class CircuitBreakers:
             "CB-7": CircuitBreakerState(name="CB-7: Balance Mismatch", cooldown_sec=0),  # manual only
             "CB-8": CircuitBreakerState(name="CB-8: Commission Spike", cooldown_sec=600),
         }
-        self._consecutive_losses: int = 0
+        self._consecutive_losses: dict[str, int] = {}
+        self._blocked_strategies: dict[str, float] = {}  # strategy -> blocked_until_ts
         self._api_errors: list[float] = []
         self._latency_violations: int = 0
 
@@ -91,8 +92,20 @@ class CircuitBreakers:
         return [name for name, cb in self._breakers.items() if cb.check_cooldown()]
 
     def is_trading_allowed(self) -> bool:
-        """Можно ли торговать?"""
+        """Можно ли торговать (глобально)?"""
         return not self.any_tripped and not self.any_permanent
+
+    def is_strategy_allowed(self, strategy_name: str) -> bool:
+        """Можно ли торговать этой конкретной стратегии?"""
+        if not self.is_trading_allowed():
+            return False
+        
+        # Check per-strategy block
+        blocked_until = self._blocked_strategies.get(strategy_name, 0)
+        if blocked_until > time.time():
+            return False
+            
+        return True
 
     # ──────────────────────────────────────────────
     # CB-1: Price Anomaly
@@ -109,17 +122,30 @@ class CircuitBreakers:
     # CB-2: Consecutive Losses
     # ──────────────────────────────────────────────
 
-    def record_trade_result(self, is_win: bool) -> Optional[str]:
-        """CB-2: 5 убыточных сделок подряд."""
+    def record_trade_result(self, is_win: bool, strategy_name: str = "") -> Optional[str]:
+        """CB-2: 5 убыточных сделок подряд для одной стратегии."""
         if is_win:
-            self._consecutive_losses = 0
+            if strategy_name:
+                self._consecutive_losses[strategy_name] = 0
+            else:
+                self._consecutive_losses.clear()
             return None
 
-        self._consecutive_losses += 1
-        if self._consecutive_losses >= 5:
-            self._breakers["CB-2"].trip()
-            self._consecutive_losses = 0
-            return f"5 consecutive losses"
+        key = strategy_name or "__global__"
+        self._consecutive_losses[key] = self._consecutive_losses.get(key, 0) + 1
+        count = self._consecutive_losses[key]
+        
+        if count >= 5:
+            self._consecutive_losses[key] = 0
+            if strategy_name:
+                # Per-strategy trip: block for cooldown but DON'T trip global CB-2 unless global
+                cooldown = self._breakers["CB-2"].cooldown_sec
+                self._blocked_strategies[strategy_name] = time.time() + cooldown
+                logger.warning("Strategy BLOCKED: %s for %ds due to 5 consecutive losses", strategy_name, cooldown)
+                return f"5 consecutive losses ({strategy_name}) — strategy isolated"
+            else:
+                self._breakers["CB-2"].trip()
+                return "5 consecutive losses (global)"
         return None
 
     # ──────────────────────────────────────────────
@@ -214,7 +240,8 @@ class CircuitBreakers:
         """Ежедневный сброс всех CB."""
         for cb in self._breakers.values():
             cb.reset_daily()
-        self._consecutive_losses = 0
+        self._consecutive_losses.clear()
+        self._blocked_strategies.clear()
         self._api_errors.clear()
         self._latency_violations = 0
         logger.info("Circuit Breakers daily reset")

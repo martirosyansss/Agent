@@ -4,37 +4,60 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SENTINEL — Settings</title>
+    <meta name="description" content="SENTINEL Trading System Configuration Panel">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        /* ═══════════════════════════════════════════
+           RESET & DESIGN TOKENS
+           ═══════════════════════════════════════════ */
         *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
         :root {
-            --bg-page: #06080d;
-            --bg-card: #0c1018;
-            --bg-elevated: #131a27;
-            --bg-hover: #1a2236;
-            --bg-input: #0f1520;
-            --border: rgba(56, 68, 91, 0.45);
-            --border-light: rgba(75, 90, 120, 0.5);
-            --text-primary: #edf0f7;
-            --text-secondary: #8c95a8;
-            --text-muted: #505b6e;
-            --accent: #6366f1;
-            --accent-light: #818cf8;
-            --accent-dim: rgba(99, 102, 241, 0.12);
-            --green: #22c55e;
-            --green-dim: rgba(34, 197, 94, 0.10);
+            --bg-deep: #030712;
+            --bg-sidebar: #070b16;
+            --bg-surface: #0c1220;
+            --bg-card: rgba(14, 20, 35, 0.75);
+            --bg-elevated: rgba(22, 30, 50, 0.85);
+            --bg-input: #0a0f1c;
+            --bg-hover: rgba(99, 102, 241, 0.06);
+
+            --border-subtle: rgba(99, 102, 241, 0.06);
+            --border-default: rgba(99, 102, 241, 0.12);
+            --border-hover: rgba(99, 102, 241, 0.22);
+            --border-focus: rgba(124, 58, 237, 0.5);
+
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #475569;
+            --text-inverse: #030712;
+
+            --accent: #7c3aed;
+            --accent-light: #a78bfa;
+            --accent-dim: rgba(124, 58, 237, 0.12);
+            --accent-glow: rgba(124, 58, 237, 0.25);
+
+            --green: #10b981;
+            --green-dim: rgba(16, 185, 129, 0.10);
             --red: #ef4444;
             --red-dim: rgba(239, 68, 68, 0.10);
-            --amber: #eab308;
-            --amber-dim: rgba(234, 179, 8, 0.10);
-            --radius-sm: 8px;
-            --radius-md: 12px;
-            --radius-lg: 16px;
-            --z-sticky: 20;
+            --amber: #f59e0b;
+            --amber-dim: rgba(245, 158, 11, 0.10);
+            --cyan: #06b6d4;
+            --rose: #f43f5e;
+            --violet: #8b5cf6;
+
+            --radius-sm: 10px;
+            --radius-md: 14px;
+            --radius-lg: 20px;
+            --radius-xl: 24px;
+            --radius-full: 999px;
+
+            --sidebar-w: 280px;
             --ease: cubic-bezier(0.4, 0, 0.2, 1);
+            --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+            --smooth: cubic-bezier(0.16, 1, 0.3, 1);
         }
 
         html {
@@ -45,571 +68,1022 @@
 
         body {
             font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            background: var(--bg-page);
+            background: var(--bg-deep);
             color: var(--text-primary);
             min-height: 100vh;
             line-height: 1.6;
+            display: grid;
+            grid-template-columns: var(--sidebar-w) 1fr;
+            overflow-x: hidden;
         }
 
-        @media (prefers-reduced-motion: no-preference) {
-            .fade-in { animation: fadeIn 0.35s var(--ease) both; }
-            .fade-in-delay-1 { animation-delay: 0.05s; }
-            .fade-in-delay-2 { animation-delay: 0.1s; }
-            .fade-in-delay-3 { animation-delay: 0.15s; }
+        code { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: var(--accent-light); }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+
+        /* ═══════════════════════════════════════════
+           AMBIENT BACKGROUND
+           ═══════════════════════════════════════════ */
+        .bg-mesh {
+            position: fixed; inset: 0;
+            z-index: 0; pointer-events: none;
+            overflow: hidden;
+        }
+        .bg-orb {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(100px);
+            opacity: 0.35;
+            will-change: transform;
+        }
+        .bg-orb--violet {
+            width: 600px; height: 600px;
+            background: radial-gradient(circle, rgba(124,58,237,0.3), transparent 70%);
+            top: -10%; left: 20%;
+            animation: orbDrift1 25s ease-in-out infinite;
+        }
+        .bg-orb--blue {
+            width: 500px; height: 500px;
+            background: radial-gradient(circle, rgba(59,130,246,0.2), transparent 70%);
+            top: 40%; right: -5%;
+            animation: orbDrift2 30s ease-in-out infinite;
+        }
+        .bg-orb--cyan {
+            width: 450px; height: 450px;
+            background: radial-gradient(circle, rgba(6,182,212,0.15), transparent 70%);
+            bottom: -5%; left: 40%;
+            animation: orbDrift3 22s ease-in-out infinite;
         }
 
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(6px); }
-            to { opacity: 1; transform: translateY(0); }
+        @keyframes orbDrift1 {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            33% { transform: translate(80px, 60px) scale(1.1); }
+            66% { transform: translate(-40px, 30px) scale(0.95); }
+        }
+        @keyframes orbDrift2 {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            50% { transform: translate(-60px, -40px) scale(1.05); }
+        }
+        @keyframes orbDrift3 {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            40% { transform: translate(50px, -50px) scale(1.08); }
+            80% { transform: translate(-30px, 20px) scale(0.96); }
         }
 
-        @keyframes gradientShift {
-            0%, 100% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-        }
-
-        .accent-bar {
-            height: 3px;
-            background: linear-gradient(90deg, #6366f1, #8b5cf6, #a855f7, #6366f1);
-            background-size: 300% 100%;
-            animation: gradientShift 8s ease-in-out infinite;
-        }
-
-        .header {
-            background: rgba(12, 16, 24, 0.85);
-            backdrop-filter: blur(16px) saturate(180%);
-            -webkit-backdrop-filter: blur(16px) saturate(180%);
-            border-bottom: 1px solid var(--border);
-            padding: 0 28px;
-            height: 56px;
+        /* ═══════════════════════════════════════════
+           SIDEBAR
+           ═══════════════════════════════════════════ */
+        .sidebar {
+            position: fixed;
+            top: 0; left: 0; bottom: 0;
+            width: var(--sidebar-w);
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border-default);
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            position: sticky;
-            top: 0;
-            z-index: var(--z-sticky);
+            flex-direction: column;
+            z-index: 100;
+            overflow-y: auto;
+            transition: transform 0.35s var(--smooth);
         }
 
-        .header-logo {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 16px;
-            font-weight: 800;
-            color: var(--text-primary);
-            text-decoration: none;
-            letter-spacing: -0.03em;
+        .sidebar__brand {
+            padding: 20px 20px 16px;
+            border-bottom: 1px solid var(--border-subtle);
         }
 
-        .header-logo:hover { color: var(--accent-light); }
-
-        .header-logo-icon {
-            width: 30px;
-            height: 30px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: linear-gradient(135deg, var(--accent), #8b5cf6);
-            border-radius: 8px;
+        .brand {
+            display: flex; align-items: center; gap: 12px;
+            text-decoration: none; color: inherit;
+        }
+        .brand__icon {
+            width: 38px; height: 38px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, var(--accent), #6d28d9);
+            display: flex; align-items: center; justify-content: center;
             color: #fff;
-            flex-shrink: 0;
+            box-shadow: 0 4px 20px rgba(124, 58, 237, 0.3);
+            transition: transform 0.3s var(--spring), box-shadow 0.3s var(--ease);
+        }
+        .brand:hover .brand__icon {
+            transform: scale(1.08) rotate(-5deg);
+            box-shadow: 0 6px 28px rgba(124, 58, 237, 0.45);
+        }
+        .brand__icon svg { width: 18px; height: 18px; }
+        .brand__name {
+            font-size: 15px; font-weight: 800;
+            letter-spacing: -0.03em;
+            background: linear-gradient(135deg, #f1f5f9, var(--accent-light));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .brand__label {
+            display: block;
+            font-size: 10px; font-weight: 600;
+            color: var(--text-muted);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-top: 1px;
         }
 
-        .header-logo-icon svg { width: 16px; height: 16px; }
+        .sidebar__nav {
+            flex: 1;
+            padding: 12px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
 
-        .header-right {
+        .nav-btn {
+            display: flex; align-items: center; gap: 12px;
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid transparent;
+            border-radius: var(--radius-md);
+            background: transparent;
+            color: var(--text-secondary);
+            font: inherit;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.25s var(--ease);
+            position: relative;
+            text-align: left;
+        }
+        .nav-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            border-color: var(--border-subtle);
+        }
+        .nav-btn.active {
+            background: var(--accent-dim);
+            color: var(--accent-light);
+            border-color: rgba(124, 58, 237, 0.2);
+            box-shadow: 0 0 20px rgba(124, 58, 237, 0.08);
+        }
+        .nav-btn.active .nav-btn__icon {
+            background: linear-gradient(135deg, var(--accent), #6d28d9);
+            color: #fff;
+            box-shadow: 0 2px 10px rgba(124, 58, 237, 0.35);
+        }
+
+        .nav-btn__icon {
+            width: 36px; height: 36px;
+            border-radius: 10px;
+            background: rgba(99, 102, 241, 0.06);
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+            transition: all 0.3s var(--ease);
+        }
+        .nav-btn__icon svg { width: 16px; height: 16px; }
+
+        .nav-btn__text { flex: 1; min-width: 0; }
+        .nav-btn__title {
+            display: block;
+            font-weight: 600;
+            font-size: 13px;
+            line-height: 1.3;
+        }
+        .nav-btn__hint {
+            display: block;
+            font-size: 11px;
+            color: var(--text-muted);
+            line-height: 1.3;
+            margin-top: 1px;
+        }
+        .nav-btn.active .nav-btn__hint { color: rgba(167, 139, 250, 0.6); }
+
+        .nav-btn__badge {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--amber);
+            box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+            flex-shrink: 0;
+            animation: pulseDot 2s ease-in-out infinite;
+        }
+
+        @keyframes pulseDot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.8); }
+        }
+
+        .sidebar__footer {
+            padding: 16px 14px;
+            border-top: 1px solid var(--border-subtle);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .back-link {
+            display: flex; align-items: center; gap: 8px;
+            padding: 10px 14px;
+            border-radius: var(--radius-md);
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 12px; font-weight: 600;
+            transition: all 0.25s var(--ease);
+        }
+        .back-link:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+        .back-link svg { width: 14px; height: 14px; }
+
+        .sidebar__version {
+            text-align: center;
+            font-size: 10px;
+            color: var(--text-muted);
+            letter-spacing: 0.06em;
+        }
+
+        /* ═══════════════════════════════════════════
+           MAIN CONTENT
+           ═══════════════════════════════════════════ */
+        .main {
+            position: relative;
+            z-index: 1;
+            grid-column: 2;
+            padding: 28px 36px 100px;
+            max-width: 1100px;
+            width: 100%;
+        }
+
+        .main__header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 28px;
+            animation: slideIn 0.5s var(--smooth) both;
+        }
+
+        .main__title {
+            font-size: 26px;
+            font-weight: 800;
+            letter-spacing: -0.04em;
             display: flex;
             align-items: center;
             gap: 12px;
+            line-height: 1.2;
         }
-
-        .header-sep {
-            width: 1px;
-            height: 20px;
-            background: var(--border);
-        }
-
-        .header-nav-link {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 34px;
-            height: 34px;
-            border-radius: var(--radius-sm);
-            color: var(--text-muted);
-            transition: all 0.2s var(--ease);
-            text-decoration: none;
-        }
-
-        .header-nav-link:hover,
-        .header-nav-link.active {
+        .main__title svg {
+            width: 26px; height: 26px;
             color: var(--accent-light);
-            background: var(--accent-dim);
+        }
+        .main__subtitle {
+            margin-top: 8px;
+            font-size: 13px;
+            color: var(--text-muted);
+            max-width: 600px;
+            line-height: 1.6;
         }
 
+        /* ═══════════════════════════════════════════
+           BADGES
+           ═══════════════════════════════════════════ */
         .badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 3px 10px;
-            border-radius: 6px;
-            font-size: 11px;
-            font-weight: 700;
-            letter-spacing: 0.05em;
+            display: inline-flex; align-items: center; gap: 7px;
+            padding: 4px 12px;
+            border-radius: var(--radius-full);
+            font-size: 11px; font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .badge__dot {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .badge--paper { background: var(--accent-dim); color: var(--accent-light); }
+        .badge--paper .badge__dot { background: var(--accent-light); }
+        .badge--live { background: var(--green-dim); color: var(--green); }
+        .badge--live .badge__dot { background: var(--green); box-shadow: 0 0 8px rgba(16,185,129,0.6); }
+
+        /* ═══════════════════════════════════════════
+           SETTINGS GRID & SECTIONS
+           ═══════════════════════════════════════════ */
+        .settings-grid { display: grid; gap: 0; }
+
+        .section {
+            display: none;
+            animation: sectionEnter 0.4s var(--smooth) both;
+        }
+        .section.active { display: block; }
+
+        @keyframes sectionEnter {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .section__header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 24px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        .section__icon {
+            width: 44px; height: 44px;
+            border-radius: 14px;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+            background: var(--accent-dim);
+            color: var(--accent-light);
+            border: 1px solid rgba(124, 58, 237, 0.15);
+        }
+        .section__icon svg { width: 20px; height: 20px; }
+
+        .section__info { flex: 1; }
+        .section__title {
+            font-size: 18px; font-weight: 700;
+            letter-spacing: -0.02em;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .section__desc {
+            margin-top: 4px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .section__badge {
+            padding: 5px 12px;
+            border-radius: var(--radius-full);
+            background: rgba(71, 85, 105, 0.12);
+            color: var(--text-muted);
+            font-size: 10px; font-weight: 700;
+            letter-spacing: 0.06em;
             text-transform: uppercase;
             white-space: nowrap;
         }
 
-        .badge-dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }
-
-        .badge-paper { background: var(--accent-dim); color: var(--accent-light); }
-        .badge-paper .badge-dot { background: var(--accent-light); }
-        .badge-live { background: var(--green-dim); color: var(--green); }
-        .badge-live .badge-dot { background: var(--green); }
-
-        .container {
-            max-width: 1360px;
-            margin: 0 auto;
-            padding: 24px 28px 40px;
-        }
-
-        .page-header {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 16px;
-            margin-bottom: 22px;
-        }
-
-        .page-title {
-            font-size: 22px;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .page-title svg { width: 22px; height: 22px; color: var(--accent-light); }
-
-        .page-subtitle {
-            margin-top: 6px;
-            font-size: 13px;
-            color: var(--text-muted);
-            max-width: 760px;
-        }
-
-        .back-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            min-height: 44px;
-            padding: 0 16px;
-            border-radius: var(--radius-sm);
-            border: 1px solid var(--border);
-            color: var(--text-secondary);
-            text-decoration: none;
-            font-size: 13px;
-            font-weight: 600;
-            transition: all 0.2s var(--ease);
-        }
-
-        .back-link:hover {
-            background: var(--bg-elevated);
-            color: var(--text-primary);
-            border-color: var(--border-light);
-        }
-
-        .save-bar {
-            position: sticky;
-            top: 72px;
-            z-index: 10;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 16px;
-            background: rgba(12, 16, 24, 0.92);
-            backdrop-filter: blur(14px);
-            -webkit-backdrop-filter: blur(14px);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-lg);
-            padding: 14px 16px;
-            margin-bottom: 20px;
-        }
-
-        .save-bar-copy { display: grid; gap: 2px; }
-        .save-bar-title { font-size: 13px; font-weight: 700; }
-        .save-bar-subtitle { font-size: 12px; color: var(--text-muted); }
-
-        .save-bar-actions {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-
-        .status-note {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            font-weight: 700;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            background: rgba(80, 91, 110, 0.12);
-            color: var(--text-muted);
-        }
-
-        .status-note.saved { background: var(--green-dim); color: var(--green); }
-        .status-note.error { background: var(--red-dim); color: var(--red); }
-        .status-note.warning { background: var(--amber-dim); color: var(--amber); }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            min-height: 44px;
-            padding: 0 20px;
-            border: none;
-            border-radius: var(--radius-sm);
-            font-family: 'Inter', sans-serif;
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s var(--ease);
-        }
-
-        .btn:focus-visible,
-        .form-control:focus-visible,
-        .toggle-input:focus-visible + .toggle-track {
-            outline: 2px solid var(--accent);
-            outline-offset: 2px;
-        }
-
-        .btn:disabled { opacity: 0.45; cursor: not-allowed; }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #6366f1, #4f46e5);
-            color: #fff;
-            box-shadow: 0 6px 16px rgba(99, 102, 241, 0.2);
-        }
-
-        .btn-primary:hover { background: linear-gradient(135deg, #585af0, #4338ca); }
-
-        .btn-secondary {
-            background: var(--bg-elevated);
-            border: 1px solid var(--border);
-            color: var(--text-primary);
-        }
-
-        .btn-secondary:hover { background: var(--bg-hover); border-color: var(--border-light); }
-
-        .tabs-shell {
-            margin-bottom: 16px;
-        }
-
-        .tab-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-
-        .tab-button {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            min-height: 40px;
-            padding: 0 14px;
-            border-radius: 999px;
-            border: 1px solid var(--border);
-            background: var(--bg-elevated);
-            color: var(--text-secondary);
-            font: inherit;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.03em;
-            cursor: pointer;
-            transition: all 0.2s var(--ease);
-        }
-
-        .tab-button:hover {
-            color: var(--text-primary);
-            border-color: var(--border-light);
-            background: var(--bg-hover);
-        }
-
-        .tab-button.active {
-            color: var(--accent-light);
-            background: var(--accent-dim);
-            border-color: rgba(99, 102, 241, 0.45);
-        }
-
-        .tab-button svg {
-            width: 14px;
-            height: 14px;
-            flex-shrink: 0;
-        }
-
-        .tab-dirty-dot {
-            width: 7px;
-            height: 7px;
-            border-radius: 50%;
-            background: var(--amber);
-            box-shadow: 0 0 8px rgba(234, 179, 8, 0.35);
-            display: inline-block;
-        }
-
-        .settings-grid { display: grid; gap: 20px; }
-
-        .panel {
+        /* ═══════════════════════════════════════════
+           SUB-GROUPS
+           ═══════════════════════════════════════════ */
+        .sub-group {
             background: var(--bg-card);
-            border: 1px solid var(--border);
+            border: 1px solid var(--border-default);
             border-radius: var(--radius-lg);
-            padding: 22px 24px;
-            transition: border-color 0.25s var(--ease);
+            padding: 20px;
+            margin-bottom: 16px;
+            backdrop-filter: blur(12px);
+            transition: border-color 0.3s var(--ease), box-shadow 0.3s var(--ease);
+        }
+        .sub-group:hover {
+            border-color: var(--border-hover);
+            box-shadow: 0 4px 30px rgba(0,0,0,0.15);
         }
 
-        .panel:hover { border-color: var(--border-light); }
-
-    .panel.hidden { display: none; }
-
-        .panel-title {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 18px;
+        .sub-group__header {
+            display: flex; align-items: center; gap: 10px;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-subtle);
         }
-
-        .panel-title h3 {
-            font-size: 13px;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 8px;
+        .sub-group__icon {
+            width: 30px; height: 30px;
+            border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+        }
+        .sub-group__icon svg { width: 14px; height: 14px; }
+        .sub-group__name {
+            font-size: 13px; font-weight: 700;
             letter-spacing: -0.01em;
         }
+        .sub-group__hint {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-left: auto;
+        }
 
-        .panel-title h3 svg { width: 16px; height: 16px; color: var(--text-muted); }
-        .panel-subtitle { margin-top: 4px; font-size: 12px; color: var(--text-muted); }
-
+        /* ═══════════════════════════════════════════
+           FIELD CARDS (BENTO)
+           ═══════════════════════════════════════════ */
         .field-grid {
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 14px;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
         }
 
         .field-card {
             background: var(--bg-elevated);
-            border: 1px solid rgba(56, 68, 91, 0.25);
+            border: 1px solid var(--border-subtle);
             border-radius: var(--radius-md);
-            padding: 14px;
+            padding: 14px 16px;
             display: grid;
             gap: 8px;
+            transition: border-color 0.25s var(--ease), transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
+        }
+        .field-card:hover {
+            border-color: var(--border-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+        }
+        .field-card.span-full { grid-column: 1 / -1; }
+
+        .field-label {
+            font-size: 11px; font-weight: 700;
+            color: var(--text-secondary);
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+        }
+        .field-hint {
+            font-size: 11px;
+            color: var(--text-muted);
+            line-height: 1.4;
         }
 
-        .field-card.span-2 { grid-column: span 2; }
-        .field-label { font-size: 12px; font-weight: 700; color: var(--text-primary); }
-        .field-hint { font-size: 11px; color: var(--text-muted); line-height: 1.45; }
-
+        /* ═══════════════════════════════════════════
+           FORM CONTROLS
+           ═══════════════════════════════════════════ */
         .form-control {
             width: 100%;
             min-height: 42px;
-            padding: 10px 12px;
-            border: 1px solid var(--border);
+            padding: 10px 14px;
+            border: 1px solid var(--border-default);
             border-radius: var(--radius-sm);
             background: var(--bg-input);
             color: var(--text-primary);
             font: inherit;
-            transition: border-color 0.2s var(--ease), background 0.2s var(--ease);
+            font-size: 13px;
+            transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), background 0.2s var(--ease);
         }
-
-        .form-control:hover { border-color: var(--border-light); }
+        .form-control:hover { border-color: var(--border-hover); }
+        .form-control:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow), 0 0 20px rgba(124, 58, 237, 0.08);
+            background: rgba(12, 16, 30, 0.95);
+        }
         .form-control::placeholder { color: var(--text-muted); }
-        textarea.form-control { min-height: 92px; resize: vertical; }
-        .mono { font-family: 'JetBrains Mono', monospace; }
+        textarea.form-control { min-height: 80px; resize: vertical; }
 
         select.form-control {
             appearance: none;
-            background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
-            background-position: calc(100% - 18px) 18px, calc(100% - 12px) 18px;
-            background-size: 6px 6px, 6px 6px;
+            background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+            background-position: right 14px center;
             background-repeat: no-repeat;
             padding-right: 36px;
-        }
-
-        .toggle-wrap { display: inline-flex; align-items: center; gap: 10px; }
-        .toggle-input { position: absolute; opacity: 0; pointer-events: none; }
-
-        .toggle-track {
-            width: 46px;
-            height: 26px;
-            border-radius: 999px;
-            background: rgba(80, 91, 110, 0.4);
-            border: 1px solid rgba(80, 91, 110, 0.35);
-            position: relative;
             cursor: pointer;
-            transition: all 0.2s var(--ease);
         }
 
-        .toggle-track::after {
+        /* Toggle Switch */
+        .toggle { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+        .toggle__input { position: absolute; opacity: 0; pointer-events: none; }
+
+        .toggle__track {
+            width: 48px; height: 26px;
+            border-radius: var(--radius-full);
+            background: rgba(71, 85, 105, 0.35);
+            border: 1px solid rgba(71, 85, 105, 0.3);
+            position: relative;
+            transition: all 0.3s var(--ease);
+            flex-shrink: 0;
+        }
+        .toggle__track::after {
             content: '';
             position: absolute;
-            top: 3px;
-            left: 3px;
-            width: 18px;
-            height: 18px;
+            top: 3px; left: 3px;
+            width: 18px; height: 18px;
             border-radius: 50%;
             background: #fff;
-            transition: transform 0.2s var(--ease);
+            box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+            transition: transform 0.3s var(--spring);
         }
-
-        .toggle-input:checked + .toggle-track {
+        .toggle__input:checked + .toggle__track {
             background: var(--accent);
-            border-color: rgba(99, 102, 241, 0.7);
+            border-color: rgba(124, 58, 237, 0.7);
+            box-shadow: 0 0 16px rgba(124, 58, 237, 0.25);
+        }
+        .toggle__input:checked + .toggle__track::after {
+            transform: translateX(22px);
+        }
+        .toggle__input:focus-visible + .toggle__track {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+        .toggle__label {
+            font-size: 12px; font-weight: 600;
+            color: var(--text-secondary);
+            min-width: 60px;
         }
 
-        .toggle-input:checked + .toggle-track::after {
-            transform: translateX(20px);
+        /* ═══════════════════════════════════════════
+           STRATEGY CARDS
+           ═══════════════════════════════════════════ */
+        .strategy-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            margin-bottom: 14px;
+            backdrop-filter: blur(12px);
+            transition: border-color 0.3s var(--ease), box-shadow 0.3s var(--ease);
+            border-top: 3px solid var(--strategy-color, var(--accent));
+        }
+        .strategy-card:hover {
+            border-color: var(--border-hover);
+            box-shadow: 0 4px 30px rgba(0,0,0,0.15);
+        }
+        .strategy-card.is-enabled {
+            border-top-color: var(--strategy-color, var(--green));
+            box-shadow: 0 0 30px color-mix(in srgb, var(--strategy-color) 10%, transparent);
         }
 
-        .toggle-text { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+        .strategy-card__header {
+            display: flex; align-items: center; gap: 14px;
+            padding: 16px 20px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.2s var(--ease);
+        }
+        .strategy-card__header:hover { background: var(--bg-hover); }
 
-        .panel-meta {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px 10px;
-            border-radius: 999px;
-            background: rgba(80, 91, 110, 0.12);
+        .strategy-card__glyph {
+            width: 40px; height: 40px;
+            border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+            background: color-mix(in srgb, var(--strategy-color) 12%, transparent);
+            color: var(--strategy-color);
+            border: 1px solid color-mix(in srgb, var(--strategy-color) 15%, transparent);
+            transition: all 0.3s var(--ease);
+        }
+        .strategy-card.is-enabled .strategy-card__glyph {
+            box-shadow: 0 0 16px color-mix(in srgb, var(--strategy-color) 25%, transparent);
+        }
+        .strategy-card__glyph svg { width: 18px; height: 18px; }
+
+        .strategy-card__info { flex: 1; min-width: 0; }
+        .strategy-card__name {
+            font-size: 14px; font-weight: 700;
+            letter-spacing: -0.01em;
+        }
+        .strategy-card__desc {
+            font-size: 11px;
             color: var(--text-muted);
-            font-size: 10px;
-            font-weight: 700;
+            margin-top: 2px;
+        }
+        .strategy-card__status {
+            font-size: 10px; font-weight: 700;
+            padding: 3px 10px;
+            border-radius: var(--radius-full);
             letter-spacing: 0.05em;
             text-transform: uppercase;
-            white-space: nowrap;
+            margin-right: 8px;
+        }
+        .strategy-card__status--on { background: var(--green-dim); color: var(--green); }
+        .strategy-card__status--off { background: rgba(71,85,105,0.12); color: var(--text-muted); }
+
+        .strategy-card__expand {
+            width: 32px; height: 32px;
+            border: none; border-radius: 8px;
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: all 0.25s var(--ease);
+        }
+        .strategy-card__expand:hover { background: rgba(99,102,241,0.08); color: var(--text-primary); }
+        .strategy-card__expand svg { width: 16px; height: 16px; transition: transform 0.3s var(--ease); }
+        .strategy-card.is-open .strategy-card__expand svg { transform: rotate(180deg); }
+
+        .strategy-card__body {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.4s var(--smooth), padding 0.3s var(--ease);
+            padding: 0 20px;
+        }
+        .strategy-card.is-open .strategy-card__body {
+            max-height: 800px;
+            padding: 0 20px 20px;
         }
 
-        .footer {
-            border-top: 1px solid var(--border);
-            padding: 14px 28px;
+        /* ═══════════════════════════════════════════
+           FLOATING SAVE DOCK
+           ═══════════════════════════════════════════ */
+        .save-dock {
+            position: fixed;
+            bottom: 20px;
+            left: calc(var(--sidebar-w) + 36px);
+            right: 36px;
+            max-width: 1028px;
+            z-index: 50;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            font-size: 11px;
-            color: var(--text-muted);
-            background: var(--bg-card);
+            gap: 16px;
+            padding: 14px 20px;
+            background: rgba(10, 14, 26, 0.92);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-xl);
+            box-shadow: 0 12px 40px rgba(0,0,0,0.35), 0 0 0 1px rgba(124,58,237,0.05);
+            transform: translateY(0);
+            transition: transform 0.4s var(--smooth), opacity 0.4s var(--ease);
+        }
+        .save-dock.hidden {
+            transform: translateY(calc(100% + 40px));
+            opacity: 0;
+            pointer-events: none;
         }
 
-        .loading-state {
-            padding: 40px 16px;
-            text-align: center;
-            color: var(--text-muted);
-            font-size: 13px;
+        .save-dock__info {
+            display: flex; align-items: center; gap: 12px;
+        }
+        .save-dock__icon {
+            width: 36px; height: 36px;
+            border-radius: 10px;
+            background: var(--accent-dim);
+            display: flex; align-items: center; justify-content: center;
+            color: var(--accent-light);
+        }
+        .save-dock__icon svg { width: 16px; height: 16px; }
+        .save-dock__title {
+            font-size: 13px; font-weight: 700;
+        }
+        .save-dock__hint {
+            font-size: 11px; color: var(--text-muted);
         }
 
+        .save-dock__actions {
+            display: flex; align-items: center; gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .save-dock__status {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 5px 12px;
+            border-radius: var(--radius-full);
+            font-size: 11px; font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            background: rgba(71,85,105,0.12);
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+        .save-dock__status.saved { background: var(--green-dim); color: var(--green); }
+        .save-dock__status.error { background: var(--red-dim); color: var(--red); }
+        .save-dock__status.warning { background: var(--amber-dim); color: var(--amber); }
+
+        /* ═══════════════════════════════════════════
+           BUTTONS
+           ═══════════════════════════════════════════ */
+        .btn {
+            display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+            min-height: 40px;
+            padding: 0 18px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font: inherit;
+            font-size: 12px; font-weight: 700;
+            cursor: pointer;
+            transition: all 0.25s var(--ease);
+            white-space: nowrap;
+        }
+        .btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .btn--primary {
+            background: linear-gradient(135deg, var(--accent), #6d28d9);
+            color: #fff;
+            box-shadow: 0 4px 16px rgba(124, 58, 237, 0.25);
+        }
+        .btn--primary:hover:not(:disabled) {
+            box-shadow: 0 6px 24px rgba(124, 58, 237, 0.4);
+            transform: translateY(-1px);
+        }
+
+        .btn--outline {
+            background: transparent;
+            border: 1px solid var(--border-default);
+            color: var(--text-secondary);
+        }
+        .btn--outline:hover:not(:disabled) {
+            border-color: var(--border-hover);
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        .btn--ghost {
+            background: transparent;
+            color: var(--text-muted);
+        }
+        .btn--ghost:hover:not(:disabled) {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        /* ═══════════════════════════════════════════
+           TOAST NOTIFICATIONS
+           ═══════════════════════════════════════════ */
+        .toast-stack {
+            position: fixed;
+            top: 20px; right: 20px;
+            z-index: 200;
+            display: flex; flex-direction: column; gap: 8px;
+            pointer-events: none;
+        }
+        .toast {
+            display: flex; align-items: center; gap: 10px;
+            padding: 12px 18px;
+            border-radius: var(--radius-md);
+            background: rgba(14, 20, 35, 0.95);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--border-default);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+            font-size: 13px; font-weight: 600;
+            pointer-events: auto;
+            animation: toastIn 0.35s var(--smooth) both;
+            min-width: 260px;
+        }
+        .toast.out { animation: toastOut 0.3s var(--ease) both; }
+        .toast--success { border-color: rgba(16,185,129,0.3); }
+        .toast--success .toast__icon { color: var(--green); }
+        .toast--error { border-color: rgba(239,68,68,0.3); }
+        .toast--error .toast__icon { color: var(--red); }
+        .toast--info { border-color: rgba(124,58,237,0.3); }
+        .toast--info .toast__icon { color: var(--accent-light); }
+
+        .toast__icon { flex-shrink: 0; }
+        .toast__icon svg { width: 16px; height: 16px; }
+
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateX(30px) scale(0.95); }
+            to { opacity: 1; transform: translateX(0) scale(1); }
+        }
+        @keyframes toastOut {
+            to { opacity: 0; transform: translateX(30px) scale(0.95); }
+        }
+
+        /* ═══════════════════════════════════════════
+           LOADING SKELETON
+           ═══════════════════════════════════════════ */
+        .loading-skeleton {
+            display: grid; gap: 16px;
+        }
+        .skeleton-card {
+            height: 120px;
+            border-radius: var(--radius-lg);
+            background: linear-gradient(90deg, var(--bg-card) 25%, rgba(99,102,241,0.04) 50%, var(--bg-card) 75%);
+            background-size: 400% 100%;
+            animation: shimmer 1.5s ease-in-out infinite;
+        }
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        /* ═══════════════════════════════════════════
+           ENTRANCE ANIMATIONS
+           ═══════════════════════════════════════════ */
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .stagger-in {
+            animation: slideIn 0.4s var(--smooth) both;
+        }
+
+        /* ═══════════════════════════════════════════
+           MOBILE HEADER
+           ═══════════════════════════════════════════ */
+        .mobile-header {
+            display: none;
+            position: fixed; top: 0; left: 0; right: 0;
+            height: 56px; z-index: 90;
+            background: rgba(7, 11, 22, 0.92);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border-default);
+            align-items: center;
+            padding: 0 16px;
+            gap: 12px;
+        }
+        .mobile-menu-btn {
+            width: 40px; height: 40px;
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-sm);
+            background: transparent;
+            color: var(--text-secondary);
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer;
+        }
+        .mobile-menu-btn svg { width: 18px; height: 18px; }
+        .mobile-title {
+            flex: 1;
+            font-size: 15px; font-weight: 700;
+        }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 99;
+        }
+        .sidebar-overlay.visible { display: block; }
+
+        /* ═══════════════════════════════════════════
+           RESPONSIVE
+           ═══════════════════════════════════════════ */
         @media (max-width: 1100px) {
             .field-grid { grid-template-columns: 1fr; }
-            .field-card.span-2 { grid-column: span 1; }
+            .field-card.span-full { grid-column: span 1; }
         }
 
-        @media (max-width: 768px) {
-            /* max-width: 768px */
-            .header { padding: 0 16px; }
-            .container { padding: 16px 16px 32px; }
-            .page-header { flex-direction: column; }
-            .save-bar { top: 68px; flex-direction: column; align-items: flex-start; }
-            .save-bar-actions { width: 100%; }
-            .save-bar-actions .btn { flex: 1; }
-            .footer { flex-direction: column; gap: 6px; text-align: center; }
+        @media (max-width: 900px) {
+            body { grid-template-columns: 1fr; }
+            .main { grid-column: 1; padding: 72px 20px 120px; }
+
+            .sidebar {
+                transform: translateX(-100%);
+                box-shadow: 4px 0 30px rgba(0,0,0,0.4);
+            }
+            .sidebar.open { transform: translateX(0); }
+
+            .mobile-header { display: flex; }
+
+            .save-dock {
+                left: 16px; right: 16px;
+                bottom: 12px;
+                flex-direction: column;
+                align-items: stretch;
+                padding: 12px 14px;
+            }
+            .save-dock__actions { width: 100%; }
+            .save-dock__actions .btn { flex: 1; }
+
+            .main__header { flex-direction: column; }
+        }
+
+        @media (max-width: 480px) {
+            .main { padding: 68px 12px 130px; }
+            .save-dock { left: 8px; right: 8px; bottom: 8px; }
         }
     </style>
 </head>
 <body>
-    <div class="accent-bar" aria-hidden="true"></div>
+    <!-- Ambient Background -->
+    <div class="bg-mesh" aria-hidden="true">
+        <div class="bg-orb bg-orb--violet"></div>
+        <div class="bg-orb bg-orb--blue"></div>
+        <div class="bg-orb bg-orb--cyan"></div>
+    </div>
 
-    <header class="header" role="banner">
-        <a href="/" class="header-logo">
-            <div class="header-logo-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                </svg>
-            </div>
-            SENTINEL
-        </a>
-        <div class="header-right">
-            <a href="/" class="header-nav-link" aria-label="Dashboard">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar__brand">
+            <a href="/" class="brand">
+                <div class="brand__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <div>
+                    <span class="brand__name">SENTINEL</span>
+                    <span class="brand__label">Configuration</span>
+                </div>
             </a>
-            <a href="/settings" class="header-nav-link active" aria-label="Settings">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            </a>
-            <div class="header-sep"></div>
-            <span id="mode-badge" class="badge badge-paper"><span class="badge-dot"></span>PAPER</span>
         </div>
+
+        <nav class="sidebar__nav" id="sidebar-nav">
+            <button class="nav-btn active" data-section="control" type="button">
+                <div class="nav-btn__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/></svg>
+                </div>
+                <div class="nav-btn__text">
+                    <span class="nav-btn__title">Control Center</span>
+                    <span class="nav-btn__hint">Mode, symbols, routing</span>
+                </div>
+                <span class="nav-btn__badge" style="display:none"></span>
+            </button>
+            <button class="nav-btn" data-section="execution" type="button">
+                <div class="nav-btn__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10"/><path d="M7 12h6"/></svg>
+                </div>
+                <div class="nav-btn__text">
+                    <span class="nav-btn__title">Execution</span>
+                    <span class="nav-btn__hint">Paper economics & slippage</span>
+                </div>
+                <span class="nav-btn__badge" style="display:none"></span>
+            </button>
+            <button class="nav-btn" data-section="risk" type="button">
+                <div class="nav-btn__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
+                </div>
+                <div class="nav-btn__text">
+                    <span class="nav-btn__title">Risk Limits</span>
+                    <span class="nav-btn__hint">Loss caps & guardrails</span>
+                </div>
+                <span class="nav-btn__badge" style="display:none"></span>
+            </button>
+            <button class="nav-btn" data-section="system" type="button">
+                <div class="nav-btn__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
+                </div>
+                <div class="nav-btn__text">
+                    <span class="nav-btn__title">System</span>
+                    <span class="nav-btn__hint">Timing & resources</span>
+                </div>
+                <span class="nav-btn__badge" style="display:none"></span>
+            </button>
+            <button class="nav-btn" data-section="strategies" type="button">
+                <div class="nav-btn__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                </div>
+                <div class="nav-btn__text">
+                    <span class="nav-btn__title">Strategies</span>
+                    <span class="nav-btn__hint">Trading algorithms</span>
+                </div>
+                <span class="nav-btn__badge" style="display:none"></span>
+            </button>
+        </nav>
+
+        <div class="sidebar__footer">
+            <a href="/" class="back-link">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                Dashboard
+            </a>
+            <div class="sidebar__version" id="footer-version">v1.5.0</div>
+        </div>
+    </aside>
+
+    <!-- Mobile Header -->
+    <header class="mobile-header" id="mobile-header">
+        <button class="mobile-menu-btn" id="menu-toggle" type="button" aria-label="Menu">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <span class="mobile-title">Settings</span>
+        <span id="mode-badge-mobile" class="badge badge--paper"><span class="badge__dot"></span>PAPER</span>
     </header>
 
-    <main class="container" role="main">
-        <div class="page-header fade-in">
+    <!-- Sidebar Overlay (mobile) -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <!-- Main Content -->
+    <main class="main" id="main-content">
+        <div class="main__header">
             <div>
-                <div class="page-title">
+                <h1 class="main__title">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                     Settings
-                </div>
-                <div class="page-subtitle">Редактирование конфигурации прямо из UI. Изменения сохраняются в <span class="mono">.env</span>. Для модулей исполнения и риска потребуется restart процесса.</div>
+                </h1>
+                <p class="main__subtitle">Edit configuration in real-time. Changes save to <code>.env</code>. Engine modules require restart.</p>
             </div>
-            <a href="/" class="back-link">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-                Back to Dashboard
-            </a>
+            <span id="mode-badge" class="badge badge--paper"><span class="badge__dot"></span>PAPER</span>
         </div>
 
-        <div class="save-bar fade-in fade-in-delay-1">
-            <div class="save-bar-copy">
-                <div class="save-bar-title">Editable Configuration</div>
-                <div class="save-bar-subtitle">Сохранение обновляет <span class="mono">sentinel/.env</span>. Дашборд обновится сразу, engine-level модули после restart.</div>
+        <form id="settings-form" class="settings-grid">
+            <div id="settings-loading" class="loading-skeleton">
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card" style="height:80px"></div>
             </div>
-            <div class="save-bar-actions">
-                <span id="save-status" class="status-note">Not saved yet</span>
-                <button id="reload-btn" class="btn btn-secondary" type="button">Reload</button>
-                <button id="reset-section-btn" class="btn btn-secondary" type="button">Reset section</button>
-                <button id="save-btn" class="btn btn-primary" type="button">Save to .env</button>
-            </div>
-        </div>
-
-        <div class="tabs-shell fade-in fade-in-delay-2">
-            <div id="settings-tabs" class="tab-list" role="tablist" aria-label="Settings sections"></div>
-        </div>
-
-        <form id="settings-form" class="settings-grid fade-in fade-in-delay-3">
-            <div id="settings-loading" class="panel loading-state">Loading editable settings…</div>
         </form>
     </main>
 
-    <footer class="footer" role="contentinfo">
-        <span>SENTINEL Trading System</span>
-        <span id="footer-version">v1.5.0</span>
-    </footer>
+    <!-- Floating Save Dock -->
+    <div class="save-dock" id="save-dock">
+        <div class="save-dock__info">
+            <div class="save-dock__icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            </div>
+            <div>
+                <div class="save-dock__title">Configuration</div>
+                <div class="save-dock__hint">Save changes to <code>.env</code></div>
+            </div>
+        </div>
+        <div class="save-dock__actions">
+            <span id="save-status" class="save-dock__status">Loaded</span>
+            <button class="btn btn--ghost" id="reload-btn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Reload
+            </button>
+            <button class="btn btn--outline" id="reset-section-btn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                Reset
+            </button>
+            <button class="btn btn--primary" id="save-btn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                Save to .env
+            </button>
+        </div>
+    </div>
+
+    <!-- Toast Stack -->
+    <div class="toast-stack" id="toast-stack"></div>
 
     <script>
     'use strict';
 
+    /* ═══════════════════════════════════════════
+       SETTINGS SCHEMA
+       ═══════════════════════════════════════════ */
     const SETTINGS_SCHEMA = [
         {
             id: 'control',
             title: 'Control Center',
             subtitle: 'Trading mode, symbols and signal routing.',
-            icon: '<circle cx="12" cy="12" r="3"></circle><path d="M12 1v6m0 6v6m-7-10h6m6 0h6"></path>',
-            tabIcon: '<circle cx="12" cy="12" r="3"></circle><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"></path>',
+            icon: '<circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/>',
             badge: 'live inputs',
             fields: [
                 { name: 'trading_mode', label: 'Trading Mode', type: 'select', options: [['paper', 'Paper'], ['live', 'Live']], hint: 'Paper is safer for simulation and validation.' },
@@ -624,8 +1098,7 @@
             id: 'execution',
             title: 'Execution Profile',
             subtitle: 'Paper execution economics and slippage model.',
-            icon: '<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M7 8h10"></path><path d="M7 12h6"></path>',
-            tabIcon: '<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M7 8h10"></path><path d="M7 12h6"></path>',
+            icon: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10"/><path d="M7 12h6"/>',
             badge: 'execution model',
             fields: [
                 { name: 'paper_initial_balance', label: 'Paper Initial Balance', type: 'number', numberType: 'float', step: '10', min: '0', hint: 'Starting balance for paper trading.' },
@@ -637,271 +1110,363 @@
             id: 'risk',
             title: 'Risk Limits',
             subtitle: 'Soft limits from UI; hard caps remain enforced in code.',
-            icon: '<path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"></path><path d="M9 12l2 2 4-4"></path>',
-            tabIcon: '<path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"></path><path d="M12 8v4"></path><path d="M12 16h.01"></path>',
+            icon: '<path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/>',
             badge: 'clamped by code',
-            fields: [
-                { name: 'max_daily_loss_usd', label: 'Max Daily Loss USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Will be clamped by absolute limits.' },
-                { name: 'max_daily_loss_pct', label: 'Max Daily Loss %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Portfolio percentage loss cap.' },
-                { name: 'max_position_pct', label: 'Max Position %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Per-position capital allocation ceiling.' },
-                { name: 'max_total_exposure_pct', label: 'Total Exposure %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Aggregate exposure across all positions.' },
-                { name: 'max_open_positions', label: 'Max Open Positions', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Concurrent position limit.' },
-                { name: 'max_order_usd', label: 'Max Order USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Upper order size guardrail.' },
-                { name: 'max_trades_per_hour', label: 'Trades Per Hour', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Trade frequency limiter.' },
-                { name: 'max_trades_per_day', label: 'Trades Per Day', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Daily trade volume limiter.' },
-                { name: 'resume_cooldown_min', label: 'Resume Cooldown (min)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Pause before resume after stop.' }
+            fieldGroups: [
+                {
+                    name: 'Loss Limits',
+                    icon: '<path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+                    color: 'var(--red)',
+                    bg: 'var(--red-dim)',
+                    fields: [
+                        { name: 'max_daily_loss_usd', label: 'Max Daily Loss USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Will be clamped by absolute limits.' },
+                        { name: 'max_daily_loss_pct', label: 'Max Daily Loss %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Portfolio percentage loss cap.' }
+                    ]
+                },
+                {
+                    name: 'Position Limits',
+                    icon: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>',
+                    color: 'var(--amber)',
+                    bg: 'var(--amber-dim)',
+                    fields: [
+                        { name: 'max_position_pct', label: 'Max Position %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Per-position capital allocation ceiling.' },
+                        { name: 'max_total_exposure_pct', label: 'Total Exposure %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Aggregate exposure across all positions.' },
+                        { name: 'max_open_positions', label: 'Max Open Positions', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Concurrent position limit.' },
+                        { name: 'max_order_usd', label: 'Max Order USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Upper order size guardrail.' }
+                    ]
+                },
+                {
+                    name: 'Frequency & Cooldown',
+                    icon: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+                    color: 'var(--cyan)',
+                    bg: 'rgba(6,182,212,0.1)',
+                    fields: [
+                        { name: 'max_trades_per_hour', label: 'Trades Per Hour', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Trade frequency limiter.' },
+                        { name: 'max_trades_per_day', label: 'Trades Per Day', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Daily trade volume limiter.' },
+                        { name: 'resume_cooldown_min', label: 'Resume Cooldown (min)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Pause before resume after stop.' }
+                    ]
+                }
             ]
         },
         {
             id: 'system',
             title: 'System Profile',
             subtitle: 'Data freshness, watchdog timing and analytics switches.',
-            icon: '<rect x="4" y="4" width="16" height="16" rx="2"></rect><path d="M9 9h6"></path><path d="M9 13h6"></path><path d="M9 17h4"></path>',
-            tabIcon: '<rect x="4" y="4" width="16" height="16" rx="2"></rect><path d="M9 9h6"></path><path d="M9 13h6"></path><path d="M9 17h4"></path>',
+            icon: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h4"/>',
             badge: 'service behavior',
-            fields: [
-                { name: 'max_data_age_sec', label: 'Max Data Age (sec)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Staleness cutoff for market data.' },
-                { name: 'price_cross_validation_interval', label: 'Cross Validation Interval (sec)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Cross-source price verification cadence.' },
-                { name: 'watchdog_heartbeat_interval', label: 'Watchdog Heartbeat (sec)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Heartbeat write interval.' },
-                { name: 'watchdog_timeout', label: 'Watchdog Timeout (sec)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Time to consider worker dead.' },
-                { name: 'db_backup_interval_hours', label: 'DB Backup Interval (hours)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Database backup cadence.' },
-                { name: 'max_ram_mb', label: 'Max RAM (MB)', type: 'number', numberType: 'int', step: '64', min: '128', hint: 'Memory ceiling for safety checks.' },
-                { name: 'analyzer_stats_enabled', label: 'Analyzer Stats Enabled', type: 'checkbox', hint: 'Enable trade analyzer statistics.' },
-                { name: 'analyzer_ml_shadow_mode', label: 'ML Shadow Mode', type: 'checkbox', hint: 'Collect ML decisions without taking control.' }
+            fieldGroups: [
+                {
+                    name: 'Data & Validation',
+                    icon: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+                    color: 'var(--accent-light)',
+                    bg: 'var(--accent-dim)',
+                    fields: [
+                        { name: 'max_data_age_sec', label: 'Max Data Age (sec)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Staleness cutoff for market data.' },
+                        { name: 'price_cross_validation_interval', label: 'Cross Validation (sec)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Cross-source price verification cadence.' }
+                    ]
+                },
+                {
+                    name: 'Watchdog & Resources',
+                    icon: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+                    color: 'var(--amber)',
+                    bg: 'var(--amber-dim)',
+                    fields: [
+                        { name: 'watchdog_heartbeat_interval', label: 'Heartbeat (sec)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Heartbeat write interval.' },
+                        { name: 'watchdog_timeout', label: 'Timeout (sec)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Time to consider worker dead.' },
+                        { name: 'db_backup_interval_hours', label: 'DB Backup (hours)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Database backup cadence.' },
+                        { name: 'max_ram_mb', label: 'Max RAM (MB)', type: 'number', numberType: 'int', step: '64', min: '128', hint: 'Memory ceiling for safety checks.' }
+                    ]
+                },
+                {
+                    name: 'Analytics Features',
+                    icon: '<path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>',
+                    color: 'var(--green)',
+                    bg: 'var(--green-dim)',
+                    fields: [
+                        { name: 'analyzer_stats_enabled', label: 'Analyzer Stats', type: 'checkbox', hint: 'Enable trade analyzer statistics.' },
+                        { name: 'analyzer_ml_shadow_mode', label: 'ML Shadow Mode', type: 'checkbox', hint: 'Collect ML decisions without taking control.' }
+                    ]
+                }
             ]
         },
         {
             id: 'strategies',
             title: 'Strategy Stack',
             subtitle: 'Enable or tune the built-in strategy families.',
-            icon: '<polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline>',
-            tabIcon: '<polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline>',
+            icon: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
             badge: 'strategy tuning',
-            fields: [
-                { name: 'grid_enabled', label: 'Grid Enabled', type: 'checkbox', hint: 'Activate grid trading strategy.' },
-                { name: 'grid_num_levels', label: 'Grid Levels', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Number of grid levels.' },
-                { name: 'grid_capital_pct', label: 'Grid Capital %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital assigned to the grid.' },
-                { name: 'grid_auto_range', label: 'Grid Auto Range', type: 'checkbox', hint: 'Auto-calculate grid range.' },
-                { name: 'grid_min_profit_pct', label: 'Grid Min Profit %', type: 'number', numberType: 'float', step: '0.01', min: '0', hint: 'Minimum profitable spread.' },
-                { name: 'grid_max_loss_pct', label: 'Grid Max Loss %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Grid stop-loss limit.' },
-                { name: 'meanrev_enabled', label: 'Mean Reversion Enabled', type: 'checkbox', hint: 'Activate mean reversion module.' },
-                { name: 'meanrev_rsi_oversold', label: 'MeanRev RSI Oversold', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Oversold threshold.' },
-                { name: 'meanrev_rsi_overbought', label: 'MeanRev RSI Overbought', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Overbought threshold.' },
-                { name: 'meanrev_capital_pct', label: 'MeanRev Capital %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital assigned to mean reversion.' },
-                { name: 'meanrev_stop_loss_pct', label: 'MeanRev SL %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Mean reversion stop-loss.' },
-                { name: 'meanrev_take_profit_pct', label: 'MeanRev TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Mean reversion take-profit.' },
-                { name: 'bb_breakout_enabled', label: 'Bollinger Breakout Enabled', type: 'checkbox', hint: 'Activate breakout strategy.' },
-                { name: 'bb_period', label: 'BB Period', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Bollinger lookback window.' },
-                { name: 'bb_std_dev', label: 'BB Std Dev', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Standard deviation multiplier.' },
-                { name: 'bb_volume_confirm_mult', label: 'BB Volume Confirm', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Volume confirmation multiplier.' },
-                { name: 'bb_stop_loss_pct', label: 'BB SL %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Breakout stop-loss.' },
-                { name: 'bb_take_profit_pct', label: 'BB TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Breakout take-profit.' },
-                { name: 'bb_trailing_stop_pct', label: 'BB Trailing %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Trailing stop amount.' },
-                { name: 'dca_enabled', label: 'DCA Enabled', type: 'checkbox', hint: 'Activate DCA bot.' },
-                { name: 'dca_base_amount_usd', label: 'DCA Base USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Base DCA order amount.' },
-                { name: 'dca_interval_hours', label: 'DCA Interval (hours)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Hours between DCA orders.' },
-                { name: 'dca_max_daily_buys', label: 'DCA Max Buys / Day', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Daily DCA order cap.' },
-                { name: 'dca_max_invested_pct', label: 'DCA Max Invested %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital ceiling for DCA.' },
-                { name: 'dca_take_profit_pct', label: 'DCA TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'DCA take-profit threshold.' },
-                { name: 'macd_div_enabled', label: 'MACD Divergence Enabled', type: 'checkbox', hint: 'Activate MACD divergence module.' },
-                { name: 'macd_fast', label: 'MACD Fast', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Fast EMA period.' },
-                { name: 'macd_slow', label: 'MACD Slow', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Slow EMA period.' },
-                { name: 'macd_signal_period', label: 'MACD Signal', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Signal line period.' },
-                { name: 'macd_lookback_candles', label: 'MACD Lookback', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Candles used to detect divergence.' },
-                { name: 'macd_require_rsi_confirm', label: 'MACD RSI Confirm', type: 'checkbox', hint: 'Require RSI confirmation.' },
-                { name: 'macd_require_vol_confirm', label: 'MACD Volume Confirm', type: 'checkbox', hint: 'Require volume confirmation.' }
+            strategyGroups: [
+                {
+                    id: 'grid',
+                    name: 'Grid Trading',
+                    description: 'Automated grid orders across price levels',
+                    color: '#10b981',
+                    icon: '<path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="8" rx="1"/><rect x="12" y="6" width="3" height="12" rx="1"/><rect x="17" y="13" width="3" height="5" rx="1"/>',
+                    enableField: 'grid_enabled',
+                    fields: [
+                        { name: 'grid_enabled', label: 'Grid Enabled', type: 'checkbox', hint: 'Activate grid trading strategy.' },
+                        { name: 'grid_num_levels', label: 'Grid Levels', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Number of grid levels.' },
+                        { name: 'grid_capital_pct', label: 'Grid Capital %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital assigned to the grid.' },
+                        { name: 'grid_auto_range', label: 'Grid Auto Range', type: 'checkbox', hint: 'Auto-calculate grid range.' },
+                        { name: 'grid_min_profit_pct', label: 'Grid Min Profit %', type: 'number', numberType: 'float', step: '0.01', min: '0', hint: 'Minimum profitable spread.' },
+                        { name: 'grid_max_loss_pct', label: 'Grid Max Loss %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Grid stop-loss limit.' }
+                    ]
+                },
+                {
+                    id: 'meanrev',
+                    name: 'Mean Reversion',
+                    description: 'RSI-based reversion to the mean',
+                    color: '#06b6d4',
+                    icon: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+                    enableField: 'meanrev_enabled',
+                    fields: [
+                        { name: 'meanrev_enabled', label: 'Mean Reversion Enabled', type: 'checkbox', hint: 'Activate mean reversion module.' },
+                        { name: 'meanrev_rsi_oversold', label: 'RSI Oversold', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Oversold threshold.' },
+                        { name: 'meanrev_rsi_overbought', label: 'RSI Overbought', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Overbought threshold.' },
+                        { name: 'meanrev_capital_pct', label: 'Capital %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital assigned to mean reversion.' },
+                        { name: 'meanrev_stop_loss_pct', label: 'SL %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Mean reversion stop-loss.' },
+                        { name: 'meanrev_take_profit_pct', label: 'TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Mean reversion take-profit.' }
+                    ]
+                },
+                {
+                    id: 'bb',
+                    name: 'Bollinger Breakout',
+                    description: 'Volatility breakout with squeeze detection',
+                    color: '#f59e0b',
+                    icon: '<path d="M2 20h20"/><path d="M5 20V8l3-3 4 5 4-7 4 4v13"/>',
+                    enableField: 'bb_breakout_enabled',
+                    fields: [
+                        { name: 'bb_breakout_enabled', label: 'Breakout Enabled', type: 'checkbox', hint: 'Activate breakout strategy.' },
+                        { name: 'bb_period', label: 'BB Period', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Bollinger lookback window.' },
+                        { name: 'bb_std_dev', label: 'Std Dev', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Standard deviation multiplier.' },
+                        { name: 'bb_volume_confirm_mult', label: 'Volume Confirm', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Volume confirmation multiplier.' },
+                        { name: 'bb_stop_loss_pct', label: 'SL %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Breakout stop-loss.' },
+                        { name: 'bb_take_profit_pct', label: 'TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Breakout take-profit.' },
+                        { name: 'bb_trailing_stop_pct', label: 'Trailing %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Trailing stop amount.' }
+                    ]
+                },
+                {
+                    id: 'dca',
+                    name: 'DCA Bot',
+                    description: 'Dollar-cost averaging automation',
+                    color: '#8b5cf6',
+                    icon: '<circle cx="12" cy="12" r="10"/><path d="M12 6v12M8 8.5l8 7M16 8.5l-8 7"/>',
+                    enableField: 'dca_enabled',
+                    fields: [
+                        { name: 'dca_enabled', label: 'DCA Enabled', type: 'checkbox', hint: 'Activate DCA bot.' },
+                        { name: 'dca_base_amount_usd', label: 'Base USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Base DCA order amount.' },
+                        { name: 'dca_interval_hours', label: 'Interval (hours)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Hours between DCA orders.' },
+                        { name: 'dca_max_daily_buys', label: 'Max Buys / Day', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Daily DCA order cap.' },
+                        { name: 'dca_max_invested_pct', label: 'Max Invested %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital ceiling for DCA.' },
+                        { name: 'dca_take_profit_pct', label: 'TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'DCA take-profit threshold.' }
+                    ]
+                },
+                {
+                    id: 'macd',
+                    name: 'MACD Divergence',
+                    description: 'Momentum divergence with confirmation',
+                    color: '#f43f5e',
+                    icon: '<path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>',
+                    enableField: 'macd_div_enabled',
+                    fields: [
+                        { name: 'macd_div_enabled', label: 'MACD Divergence Enabled', type: 'checkbox', hint: 'Activate MACD divergence module.' },
+                        { name: 'macd_fast', label: 'Fast EMA', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Fast EMA period.' },
+                        { name: 'macd_slow', label: 'Slow EMA', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Slow EMA period.' },
+                        { name: 'macd_signal_period', label: 'Signal Period', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Signal line period.' },
+                        { name: 'macd_lookback_candles', label: 'Lookback', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Candles used to detect divergence.' },
+                        { name: 'macd_require_rsi_confirm', label: 'RSI Confirm', type: 'checkbox', hint: 'Require RSI confirmation.' },
+                        { name: 'macd_require_vol_confirm', label: 'Volume Confirm', type: 'checkbox', hint: 'Require volume confirmation.' }
+                    ]
+                }
             ]
         }
     ];
 
+    /* ═══════════════════════════════════════════
+       HELPERS
+       ═══════════════════════════════════════════ */
+    function getSectionFields(section) {
+        if (section.fieldGroups) {
+            return section.fieldGroups.flatMap(function(g) { return g.fields; });
+        }
+        if (section.strategyGroups) {
+            return section.strategyGroups.flatMap(function(g) { return g.fields; });
+        }
+        return section.fields || [];
+    }
+
     function escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = String(str ?? '');
+        var div = document.createElement('div');
+        div.textContent = String(str != null ? str : '');
         return div.innerHTML;
     }
 
-    function setSaveStatus(text, type) {
-        const node = document.getElementById('save-status');
-        node.textContent = text;
-        node.className = 'status-note' + (type ? ' ' + type : '');
+    function showToast(message, type) {
+        type = type || 'info';
+        var stack = document.getElementById('toast-stack');
+        var icons = {
+            success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+            error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+            info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'
+        };
+        var toast = document.createElement('div');
+        toast.className = 'toast toast--' + type;
+        toast.innerHTML = '<span class="toast__icon">' + (icons[type] || icons.info) + '</span><span>' + escapeHtml(message) + '</span>';
+        stack.appendChild(toast);
+        setTimeout(function() {
+            toast.classList.add('out');
+            setTimeout(function() { toast.remove(); }, 300);
+        }, 3500);
     }
 
-    let baselineValues = null;
-    let hasUnsavedChanges = false;
-    let activeSectionId = null;
+    function setSaveStatus(text, type) {
+        var node = document.getElementById('save-status');
+        node.textContent = text;
+        node.className = 'save-dock__status' + (type ? ' ' + type : '');
+    }
+
+    /* ═══════════════════════════════════════════
+       STATE
+       ═══════════════════════════════════════════ */
+    var baselineValues = null;
+    var hasUnsavedChanges = false;
+    var activeSectionId = null;
 
     function stableStringify(value) {
-        if (Array.isArray(value)) {
-            return '[' + value.map(stableStringify).join(',') + ']';
-        }
+        if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
         if (value && typeof value === 'object') {
-            return '{' + Object.keys(value).sort().map(function(key) {
-                return JSON.stringify(key) + ':' + stableStringify(value[key]);
+            return '{' + Object.keys(value).sort().map(function(k) {
+                return JSON.stringify(k) + ':' + stableStringify(value[k]);
             }).join(',') + '}';
         }
         return JSON.stringify(value);
     }
 
-    function valuesEqual(left, right) {
-        return stableStringify(left) === stableStringify(right);
+    function valuesEqual(a, b) { return stableStringify(a) === stableStringify(b); }
+
+    function getSectionById(id) {
+        return SETTINGS_SCHEMA.find(function(s) { return s.id === id; }) || null;
     }
 
-    function getSectionById(sectionId) {
-        return SETTINGS_SCHEMA.find(function(section) {
-            return section.id === sectionId;
-        }) || null;
-    }
-
-    function sectionHasChanges(section, currentValues) {
+    function sectionHasChanges(section, current) {
         if (!baselineValues) return false;
-        return section.fields.some(function(field) {
-            return !valuesEqual(currentValues[field.name], baselineValues[field.name]);
+        return getSectionFields(section).some(function(f) {
+            return !valuesEqual(current[f.name], baselineValues[f.name]);
         });
     }
 
-    function updateDirtyIndicators(currentValues) {
+    function updateDirtyIndicators(current) {
         SETTINGS_SCHEMA.forEach(function(section) {
-            const tab = document.querySelector('.tab-button[data-section="' + section.id + '"]');
-            if (!tab) return;
-            const hasChanges = sectionHasChanges(section, currentValues);
-            let dot = tab.querySelector('.tab-dirty-dot');
-            if (hasChanges && !dot) {
-                dot = document.createElement('span');
-                dot.className = 'tab-dirty-dot';
-                dot.setAttribute('aria-label', 'Unsaved changes');
-                tab.appendChild(dot);
-            }
-            if (!hasChanges && dot) {
-                dot.remove();
-            }
+            var btn = document.querySelector('.nav-btn[data-section="' + section.id + '"]');
+            if (!btn) return;
+            var badge = btn.querySelector('.nav-btn__badge');
+            var dirty = sectionHasChanges(section, current);
+            badge.style.display = dirty ? 'block' : 'none';
         });
     }
 
     function updateDirtyState() {
-        const currentValues = collectValues();
-        hasUnsavedChanges = baselineValues ? !valuesEqual(currentValues, baselineValues) : false;
-        updateDirtyIndicators(currentValues);
+        var current = collectValues();
+        hasUnsavedChanges = baselineValues ? !valuesEqual(current, baselineValues) : false;
+        updateDirtyIndicators(current);
         if (hasUnsavedChanges) {
             setSaveStatus('Unsaved changes', 'warning');
-        } else if (!document.getElementById('save-status').classList.contains('saved') && !document.getElementById('save-status').classList.contains('error')) {
-            setSaveStatus('Loaded');
+        } else {
+            var st = document.getElementById('save-status');
+            if (!st.classList.contains('saved') && !st.classList.contains('error')) {
+                setSaveStatus('Loaded');
+            }
         }
     }
 
     function renderBadge(mode) {
-        const badge = document.getElementById('mode-badge');
-        const normalized = (mode || 'paper').toLowerCase();
-        badge.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(normalized.toUpperCase());
-        badge.className = 'badge ' + (normalized === 'live' ? 'badge-live' : 'badge-paper');
+        var normalized = (mode || 'paper').toLowerCase();
+        var html = '<span class="badge__dot"></span>' + escapeHtml(normalized.toUpperCase());
+        var cls = 'badge ' + (normalized === 'live' ? 'badge--live' : 'badge--paper');
+        ['mode-badge', 'mode-badge-mobile'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) { el.innerHTML = html; el.className = cls; }
+        });
     }
 
+    /* ═══════════════════════════════════════════
+       NAVIGATION
+       ═══════════════════════════════════════════ */
     function activateSection(sectionId) {
         activeSectionId = sectionId;
-        Array.from(document.querySelectorAll('.tab-button')).forEach(function(button) {
-            const isActive = button.getAttribute('data-section') === sectionId;
-            button.classList.toggle('active', isActive);
-            button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+
+        document.querySelectorAll('.nav-btn').forEach(function(btn) {
+            var isActive = btn.getAttribute('data-section') === sectionId;
+            btn.classList.toggle('active', isActive);
         });
 
-        Array.from(document.querySelectorAll('.panel[data-section]')).forEach(function(panel) {
-            panel.classList.toggle('hidden', panel.getAttribute('data-section') !== sectionId);
-        });
-    }
-
-    function renderTabs() {
-        const tabs = document.getElementById('settings-tabs');
-        tabs.innerHTML = SETTINGS_SCHEMA.map(function(section, index) {
-            return '<button class="tab-button' + (index === 0 ? ' active' : '') + '" type="button" role="tab" aria-selected="' + (index === 0 ? 'true' : 'false') + '" data-section="' + escapeHtml(section.id) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + section.tabIcon + '</svg>' + escapeHtml(section.title) + '</button>';
-        }).join('');
-
-        Array.from(tabs.querySelectorAll('.tab-button')).forEach(function(button) {
-            button.addEventListener('click', function() {
-                activateSection(button.getAttribute('data-section'));
-            });
-        });
-    }
-
-    function setFieldInputValue(field, value) {
-        const input = document.querySelector('[name="' + field.name + '"]');
-        if (!input) return;
-
-        if (field.type === 'checkbox') {
-            input.checked = !!value;
-            const text = input.parentElement.querySelector('.toggle-text');
-            if (text) text.textContent = input.checked ? 'Enabled' : 'Disabled';
-            return;
-        }
-
-        if (field.name === 'trading_symbols') {
-            input.value = Array.isArray(value) ? value.join(', ') : String(value || '');
-            return;
-        }
-
-        input.value = value == null ? '' : String(value);
-    }
-
-    function resetActiveSection() {
-        if (!baselineValues || !activeSectionId) return;
-
-        const section = getSectionById(activeSectionId);
-        if (!section) return;
-
-        const currentValues = collectValues();
-        if (!sectionHasChanges(section, currentValues)) {
-            setSaveStatus('Section already clean');
-            return;
-        }
-
-        if (!confirm('Reset changes in the active section?')) {
-            return;
-        }
-
-        section.fields.forEach(function(field) {
-            setFieldInputValue(field, baselineValues[field.name]);
+        document.querySelectorAll('.section').forEach(function(sec) {
+            var isActive = sec.getAttribute('data-section') === sectionId;
+            sec.classList.toggle('active', isActive);
+            if (isActive) {
+                sec.style.animation = 'none';
+                sec.offsetHeight; /* reflow */
+                sec.style.animation = '';
+            }
         });
 
-        updateDirtyState();
-
-        if (hasUnsavedChanges) {
-            setSaveStatus('Section reset, other changes remain', 'warning');
-        } else {
-            setSaveStatus('Section reset');
-        }
+        /* Close mobile sidebar */
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebar-overlay').classList.remove('visible');
     }
 
+    /* Sidebar nav clicks */
+    document.querySelectorAll('.nav-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            activateSection(btn.getAttribute('data-section'));
+        });
+    });
+
+    /* Mobile menu */
+    document.getElementById('menu-toggle').addEventListener('click', function() {
+        document.getElementById('sidebar').classList.toggle('open');
+        document.getElementById('sidebar-overlay').classList.toggle('visible');
+    });
+    document.getElementById('sidebar-overlay').addEventListener('click', function() {
+        document.getElementById('sidebar').classList.remove('open');
+        this.classList.remove('visible');
+    });
+
+    /* ═══════════════════════════════════════════
+       RENDERING
+       ═══════════════════════════════════════════ */
     function renderField(field, value) {
-        const fieldValue = value == null ? '' : value;
-        const spanClass = field.span === 2 ? 'field-card span-2' : 'field-card';
+        var val = value == null ? '' : value;
+        var spanClass = 'field-card' + (field.span === 2 ? ' span-full' : '');
 
         if (field.type === 'checkbox') {
             return '<div class="' + spanClass + '">' +
                 '<div class="field-label">' + escapeHtml(field.label) + '</div>' +
-                '<label class="toggle-wrap">' +
-                '<input class="toggle-input" type="checkbox" data-type="checkbox" name="' + escapeHtml(field.name) + '" ' + (fieldValue ? 'checked' : '') + '>' +
-                '<span class="toggle-track"></span>' +
-                '<span class="toggle-text">' + (fieldValue ? 'Enabled' : 'Disabled') + '</span>' +
+                '<label class="toggle">' +
+                '<input class="toggle__input" type="checkbox" data-type="checkbox" name="' + escapeHtml(field.name) + '" ' + (val ? 'checked' : '') + '>' +
+                '<span class="toggle__track"></span>' +
+                '<span class="toggle__label">' + (val ? 'Enabled' : 'Disabled') + '</span>' +
                 '</label>' +
                 '<div class="field-hint">' + escapeHtml(field.hint || '') + '</div>' +
                 '</div>';
         }
 
         if (field.type === 'select') {
-            const options = (field.options || []).map(function(option) {
-                const selected = String(option[0]) === String(fieldValue) ? ' selected' : '';
-                return '<option value="' + escapeHtml(option[0]) + '"' + selected + '>' + escapeHtml(option[1]) + '</option>';
+            var opts = (field.options || []).map(function(o) {
+                return '<option value="' + escapeHtml(o[0]) + '"' + (String(o[0]) === String(val) ? ' selected' : '') + '>' + escapeHtml(o[1]) + '</option>';
             }).join('');
             return '<div class="' + spanClass + '">' +
                 '<div class="field-label">' + escapeHtml(field.label) + '</div>' +
-                '<select class="form-control" data-type="select" name="' + escapeHtml(field.name) + '">' + options + '</select>' +
+                '<select class="form-control" data-type="select" name="' + escapeHtml(field.name) + '">' + opts + '</select>' +
                 '<div class="field-hint">' + escapeHtml(field.hint || '') + '</div>' +
                 '</div>';
         }
 
         if (field.type === 'textarea') {
-            const textValue = Array.isArray(fieldValue) ? fieldValue.join(', ') : String(fieldValue);
+            var tv = Array.isArray(val) ? val.join(', ') : String(val);
             return '<div class="' + spanClass + '">' +
                 '<div class="field-label">' + escapeHtml(field.label) + '</div>' +
-                '<textarea class="form-control mono" data-type="textarea" name="' + escapeHtml(field.name) + '" placeholder="' + escapeHtml(field.placeholder || '') + '">' + escapeHtml(textValue) + '</textarea>' +
+                '<textarea class="form-control mono" data-type="textarea" name="' + escapeHtml(field.name) + '" placeholder="' + escapeHtml(field.placeholder || '') + '">' + escapeHtml(tv) + '</textarea>' +
                 '<div class="field-hint">' + escapeHtml(field.hint || '') + '</div>' +
                 '</div>';
         }
@@ -916,138 +1481,289 @@
             (field.step ? 'step="' + escapeHtml(field.step) + '" ' : '') +
             (field.min ? 'min="' + escapeHtml(field.min) + '" ' : '') +
             (field.max ? 'max="' + escapeHtml(field.max) + '" ' : '') +
-            'value="' + escapeHtml(fieldValue) + '" ' +
+            'value="' + escapeHtml(val) + '" ' +
             'placeholder="' + escapeHtml(field.placeholder || '') + '">' +
             '<div class="field-hint">' + escapeHtml(field.hint || '') + '</div>' +
             '</div>';
     }
 
-    function renderSections(values) {
-        const form = document.getElementById('settings-form');
-        form.innerHTML = SETTINGS_SCHEMA.map(function(section, index) {
-            const fieldsHtml = section.fields.map(function(field) {
-                return renderField(field, values[field.name]);
-            }).join('');
-
-            return '<section class="panel fade-in fade-in-delay-' + Math.min(index + 1, 3) + (index === 0 ? '' : ' hidden') + '" data-section="' + escapeHtml(section.id) + '">' +
-                '<div class="panel-title">' +
-                    '<div>' +
-                        '<h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + section.icon + '</svg>' + escapeHtml(section.title) + '</h3>' +
-                        '<div class="panel-subtitle">' + escapeHtml(section.subtitle) + '</div>' +
-                    '</div>' +
-                    '<span class="panel-meta">' + escapeHtml(section.badge) + '</span>' +
+    function renderSubGroup(group, values) {
+        var fieldsHtml = group.fields.map(function(f) { return renderField(f, values[f.name]); }).join('');
+        return '<div class="sub-group">' +
+            '<div class="sub-group__header">' +
+                '<div class="sub-group__icon" style="background:' + (group.bg || 'var(--accent-dim)') + ';color:' + (group.color || 'var(--accent-light)') + '">' +
+                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + group.icon + '</svg>' +
                 '</div>' +
-                '<div class="field-grid">' + fieldsHtml + '</div>' +
-                '</section>';
-        }).join('');
+                '<span class="sub-group__name">' + escapeHtml(group.name) + '</span>' +
+                '<span class="sub-group__hint">' + group.fields.length + ' params</span>' +
+            '</div>' +
+            '<div class="field-grid">' + fieldsHtml + '</div>' +
+        '</div>';
+    }
 
-        Array.from(document.querySelectorAll('.toggle-input')).forEach(function(input) {
+    function renderStrategyCard(group, values) {
+        var isEnabled = !!values[group.enableField];
+        var bodyFields = group.fields.filter(function(f) { return f.name !== group.enableField; });
+        var bodyHtml = bodyFields.map(function(f) { return renderField(f, values[f.name]); }).join('');
+
+        return '<div class="strategy-card' + (isEnabled ? ' is-enabled' : '') + '" data-strategy="' + escapeHtml(group.id) + '" style="--strategy-color:' + group.color + '">' +
+            '<div class="strategy-card__header" onclick="toggleStrategyCard(\'' + escapeHtml(group.id) + '\')">' +
+                '<div class="strategy-card__glyph">' +
+                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + group.icon + '</svg>' +
+                '</div>' +
+                '<div class="strategy-card__info">' +
+                    '<div class="strategy-card__name">' + escapeHtml(group.name) + '</div>' +
+                    '<div class="strategy-card__desc">' + escapeHtml(group.description) + '</div>' +
+                '</div>' +
+                '<span class="strategy-card__status ' + (isEnabled ? 'strategy-card__status--on' : 'strategy-card__status--off') + '">' + (isEnabled ? 'Active' : 'Off') + '</span>' +
+                '<label class="toggle" onclick="event.stopPropagation()">' +
+                    '<input class="toggle__input" type="checkbox" data-type="checkbox" name="' + escapeHtml(group.enableField) + '" ' + (isEnabled ? 'checked' : '') + '>' +
+                    '<span class="toggle__track"></span>' +
+                '</label>' +
+                '<button class="strategy-card__expand" type="button" onclick="event.stopPropagation(); toggleStrategyCard(\'' + escapeHtml(group.id) + '\')">' +
+                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>' +
+                '</button>' +
+            '</div>' +
+            '<div class="strategy-card__body">' +
+                '<div class="field-grid">' + bodyHtml + '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    function toggleStrategyCard(id) {
+        var card = document.querySelector('.strategy-card[data-strategy="' + id + '"]');
+        if (card) card.classList.toggle('is-open');
+    }
+
+    function renderSections(values) {
+        var form = document.getElementById('settings-form');
+        var html = '';
+
+        SETTINGS_SCHEMA.forEach(function(section, index) {
+            var innerHtml = '';
+
+            /* Section header */
+            innerHtml += '<div class="section__header">' +
+                '<div class="section__icon">' +
+                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + section.icon + '</svg>' +
+                '</div>' +
+                '<div class="section__info">' +
+                    '<div class="section__title">' + escapeHtml(section.title) + '</div>' +
+                    '<div class="section__desc">' + escapeHtml(section.subtitle) + '</div>' +
+                '</div>' +
+                '<span class="section__badge">' + escapeHtml(section.badge) + '</span>' +
+            '</div>';
+
+            /* Strategy groups */
+            if (section.strategyGroups) {
+                innerHtml += section.strategyGroups.map(function(g) {
+                    return renderStrategyCard(g, values);
+                }).join('');
+            }
+            /* Field sub-groups */
+            else if (section.fieldGroups) {
+                innerHtml += section.fieldGroups.map(function(g) {
+                    return renderSubGroup(g, values);
+                }).join('');
+            }
+            /* Flat fields */
+            else if (section.fields) {
+                innerHtml += '<div class="field-grid">' +
+                    section.fields.map(function(f) { return renderField(f, values[f.name]); }).join('') +
+                '</div>';
+            }
+
+            html += '<div class="section' + (index === 0 ? ' active' : '') + '" data-section="' + escapeHtml(section.id) + '">' +
+                innerHtml + '</div>';
+        });
+
+        form.innerHTML = html;
+
+        /* Bind toggle text updates */
+        form.querySelectorAll('.toggle__input').forEach(function(input) {
             input.addEventListener('change', function() {
-                const text = input.parentElement.querySelector('.toggle-text');
-                if (text) text.textContent = input.checked ? 'Enabled' : 'Disabled';
+                var label = input.parentElement.querySelector('.toggle__label');
+                if (label) label.textContent = input.checked ? 'Enabled' : 'Disabled';
+
+                /* Update strategy card state */
+                var card = input.closest('.strategy-card');
+                if (card) {
+                    var isOn = input.checked;
+                    card.classList.toggle('is-enabled', isOn);
+                    var st = card.querySelector('.strategy-card__status');
+                    if (st) {
+                        st.textContent = isOn ? 'Active' : 'Off';
+                        st.className = 'strategy-card__status ' + (isOn ? 'strategy-card__status--on' : 'strategy-card__status--off');
+                    }
+                }
+
                 updateDirtyState();
             });
         });
 
-        Array.from(document.querySelectorAll('.form-control')).forEach(function(input) {
+        /* Bind input changes */
+        form.querySelectorAll('.form-control').forEach(function(input) {
             input.addEventListener('input', updateDirtyState);
             input.addEventListener('change', updateDirtyState);
         });
 
-        renderTabs();
         activateSection(SETTINGS_SCHEMA[0].id);
     }
 
+    /* ═══════════════════════════════════════════
+       VALUE COLLECTION
+       ═══════════════════════════════════════════ */
     function normalizeTradingSymbols(value) {
         return String(value)
             .split(/[\n,\s]+/)
-            .map(function(item) { return item.trim().toUpperCase(); })
+            .map(function(s) { return s.trim().toUpperCase(); })
             .filter(Boolean);
     }
 
     function collectValues() {
-        const values = {};
+        var values = {};
         SETTINGS_SCHEMA.forEach(function(section) {
-            section.fields.forEach(function(field) {
-                const input = document.querySelector('[name="' + field.name + '"]');
+            getSectionFields(section).forEach(function(field) {
+                var input = document.querySelector('[name="' + field.name + '"]');
                 if (!input) return;
 
                 if (field.type === 'checkbox') {
                     values[field.name] = input.checked;
                     return;
                 }
-
                 if (field.name === 'trading_symbols') {
                     values[field.name] = normalizeTradingSymbols(input.value);
                     return;
                 }
-
                 if (field.type === 'number') {
-                    const raw = input.value.trim();
+                    var raw = input.value.trim();
                     values[field.name] = raw ? (field.numberType === 'int' ? parseInt(raw, 10) : parseFloat(raw)) : 0;
                     return;
                 }
-
                 values[field.name] = input.value;
             });
         });
         return values;
     }
 
-    async function loadEditableSettings() {
-        if (hasUnsavedChanges && !confirm('You have unsaved changes. Reload values from disk anyway?')) {
+    function setFieldInputValue(field, value) {
+        var input = document.querySelector('[name="' + field.name + '"]');
+        if (!input) return;
+
+        if (field.type === 'checkbox') {
+            input.checked = !!value;
+            var label = input.parentElement.querySelector('.toggle__label');
+            if (label) label.textContent = input.checked ? 'Enabled' : 'Disabled';
+            /* Update strategy card too */
+            var card = input.closest('.strategy-card');
+            if (card) {
+                card.classList.toggle('is-enabled', !!value);
+                var st = card.querySelector('.strategy-card__status');
+                if (st) {
+                    st.textContent = value ? 'Active' : 'Off';
+                    st.className = 'strategy-card__status ' + (value ? 'strategy-card__status--on' : 'strategy-card__status--off');
+                }
+            }
             return;
         }
+        if (field.name === 'trading_symbols') {
+            input.value = Array.isArray(value) ? value.join(', ') : String(value || '');
+            return;
+        }
+        input.value = value == null ? '' : String(value);
+    }
+
+    function resetActiveSection() {
+        if (!baselineValues || !activeSectionId) return;
+        var section = getSectionById(activeSectionId);
+        if (!section) return;
+
+        var current = collectValues();
+        if (!sectionHasChanges(section, current)) {
+            showToast('Section already clean', 'info');
+            return;
+        }
+        if (!confirm('Reset changes in the active section?')) return;
+
+        getSectionFields(section).forEach(function(f) {
+            setFieldInputValue(f, baselineValues[f.name]);
+        });
+        updateDirtyState();
+
+        if (hasUnsavedChanges) {
+            setSaveStatus('Section reset, other changes remain', 'warning');
+        } else {
+            setSaveStatus('Section reset');
+        }
+        showToast('Section reset to saved values', 'info');
+    }
+
+    /* ═══════════════════════════════════════════
+       API
+       ═══════════════════════════════════════════ */
+    async function loadEditableSettings() {
+        if (hasUnsavedChanges && !confirm('You have unsaved changes. Reload values from disk anyway?')) return;
         setSaveStatus('Loading…');
         try {
-            const response = await fetch('/api/settings/editable');
-            const payload = await response.json();
+            var response = await fetch('/api/settings/editable');
+            var payload = await response.json();
             if (!response.ok) throw new Error(payload.error || 'Failed to load settings');
             renderSections(payload.values || {});
             baselineValues = payload.values || {};
             hasUnsavedChanges = false;
             renderBadge(payload.values && payload.values.trading_mode ? payload.values.trading_mode : 'paper');
             setSaveStatus('Loaded');
+            showToast('Settings loaded successfully', 'success');
         } catch (error) {
-            document.getElementById('settings-form').innerHTML = '<div class="panel loading-state">' + escapeHtml(error.message) + '</div>';
+            document.getElementById('settings-form').innerHTML =
+                '<div class="section active" data-section="control"><div style="padding:40px;text-align:center;color:var(--text-muted)">' + escapeHtml(error.message) + '</div></div>';
             setSaveStatus('Load error', 'error');
+            showToast(error.message, 'error');
         }
     }
 
     async function saveSettings() {
-        const button = document.getElementById('save-btn');
-        button.disabled = true;
+        var btn = document.getElementById('save-btn');
+        btn.disabled = true;
         setSaveStatus('Saving…');
         try {
-            const response = await fetch('/api/settings/update', {
+            var response = await fetch('/api/settings/update', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(collectValues())
             });
-            const payload = await response.json();
+            var payload = await response.json();
             if (!response.ok) throw new Error(payload.error || 'Save failed');
             baselineValues = collectValues();
             hasUnsavedChanges = false;
             updateDirtyIndicators(baselineValues);
             renderBadge(payload.values && payload.values.trading_mode ? payload.values.trading_mode : 'paper');
-            setSaveStatus('Saved, restart needed', 'saved');
+            setSaveStatus('Saved ✓', 'saved');
+            showToast('Settings saved. Restart to apply engine changes.', 'success');
         } catch (error) {
             setSaveStatus(error.message, 'error');
+            showToast(error.message, 'error');
         } finally {
-            button.disabled = false;
+            btn.disabled = false;
         }
     }
 
-    window.addEventListener('beforeunload', function(event) {
+    /* ═══════════════════════════════════════════
+       EVENT BINDINGS
+       ═══════════════════════════════════════════ */
+    window.addEventListener('beforeunload', function(e) {
         if (!hasUnsavedChanges) return;
-        event.preventDefault();
-        event.returnValue = '';
+        e.preventDefault();
+        e.returnValue = '';
     });
 
     document.getElementById('reload-btn').addEventListener('click', loadEditableSettings);
     document.getElementById('reset-section-btn').addEventListener('click', resetActiveSection);
     document.getElementById('save-btn').addEventListener('click', saveSettings);
 
+    /* ═══════════════════════════════════════════
+       INIT
+       ═══════════════════════════════════════════ */
     loadEditableSettings();
     </script>
 </body>

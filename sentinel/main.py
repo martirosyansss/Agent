@@ -887,20 +887,14 @@ async def run() -> None:
             if _ml_predictor and settings.analyzer_ml_enabled and _ml_predictor.rollout_mode != "off":
                 try:
                     from core.models import StrategyTrade as _ST
-                    _ml_trade = _ST(
-                        trade_id="pending",
-                        symbol=symbol,
+                    # Integration 10/10: factory guarantees 30/30 field coverage
+                    _ml_trade = _ST.from_feature_vector(
+                        features,
                         strategy_name=strat_name,
                         market_regime=regime_name,
-                        entry_price=features.close,
                         confidence=signal.confidence,
                         hour_of_day=int(time.strftime("%H")),
                         day_of_week=int(time.strftime("%w")),
-                        rsi_at_entry=features.rsi_14,
-                        adx_at_entry=features.adx,
-                        volume_ratio_at_entry=features.volume_ratio,
-                        news_sentiment=features.news_sentiment,
-                        fear_greed_index=features.fear_greed_index,
                     )
                     _prev_trades_for_ml = []
                     if repo:
@@ -1092,7 +1086,9 @@ async def run() -> None:
         limit = _INTERVAL_LIMITS.get(interval, 120)
 
         try:
-            candles = repo.get_candles(primary_symbol, interval, limit=limit)
+            # V2 Fix: Фильтруем данные за последние 14 дней, чтобы избежать дыр и мусора
+            since_ts = int((time.time() - 14 * 86400) * 1000)
+            candles = repo.get_candles(primary_symbol, interval, limit=limit, since_ts=since_ts)
         except Exception as _candle_err:
             log.debug("Chart candle fetch failed: {}", _candle_err)
             candles = []
@@ -1101,12 +1097,12 @@ async def run() -> None:
             "%d %b %H:%M" if interval in ("1h", "4h") else "%d %b"
         )
 
-        # Fallback: aggregate 1m candles into 5m/15m when native candles not yet available
-        if len(candles) < 2 and interval in ("5m", "15m"):
-            bucket_mins = 5 if interval == "5m" else 15
+        # Fallback: aggregate 1m candles into higher timeframes when native candles missing
+        if len(candles) < 10 and interval in ("5m", "15m", "1h"):
+            bucket_mins = {"5m": 5, "15m": 15, "1h": 60}.get(interval, 5)
             raw_limit = bucket_mins * limit
             try:
-                raw = repo.get_candles(primary_symbol, "1m", limit=raw_limit)
+                raw = repo.get_candles(primary_symbol, "1m", limit=raw_limit, since_ts=since_ts)
             except Exception as _agg_err:
                 log.debug("Aggregation candle fetch failed: {}", _agg_err)
                 raw = []

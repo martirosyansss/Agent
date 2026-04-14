@@ -272,6 +272,70 @@ class StrategyTrade:
     bb_bandwidth_at_entry: float = 0.0
     macd_histogram_at_entry: float = 0.0
     atr_at_entry: float = 0.0
+    trend_alignment: float = 0.5       # trend direction multiplier at entry
+    # Phase 2: Enhanced ML features
+    cci_at_entry: float = 0.0          # Commodity Channel Index at entry
+    roc_at_entry: float = 0.0          # Rate of Change 12-period
+    cmf_at_entry: float = 0.0          # Chaikin Money Flow (-1..+1)
+    bb_pct_b_at_entry: float = 0.5     # Bollinger %B (0..1)
+    hist_volatility_at_entry: float = 0.0  # Historical Volatility
+    dmi_spread_at_entry: float = 0.0   # +DI minus -DI
+    stoch_rsi_at_entry: float = 0.0    # Stochastic RSI
+    price_change_5h_at_entry: float = 0.0  # 5-period price change %
+    momentum_at_entry: float = 0.0     # 10-period momentum
+    rsi_daily_at_entry: float = 0.0    # Daily RSI
+
+    @classmethod
+    def from_feature_vector(
+        cls,
+        fv: "FeatureVector",
+        *,
+        trade_id: str = "pending",
+        strategy_name: str = "",
+        market_regime: str = "",
+        confidence: float = 0.0,
+        hour_of_day: int = 0,
+        day_of_week: int = 0,
+    ) -> "StrategyTrade":
+        """Build a StrategyTrade with ALL ML-critical fields from FeatureVector.
+
+        This factory method guarantees 30/30 feature field coverage, eliminating
+        the risk of missing fields at inference time (N-1 class fix).
+        """
+        return cls(
+            trade_id=trade_id,
+            symbol=fv.symbol,
+            strategy_name=strategy_name,
+            market_regime=market_regime,
+            entry_price=fv.close,
+            confidence=confidence,
+            hour_of_day=hour_of_day,
+            day_of_week=day_of_week,
+            # Core technical indicators
+            rsi_at_entry=fv.rsi_14,
+            adx_at_entry=fv.adx,
+            volume_ratio_at_entry=fv.volume_ratio,
+            ema_9_at_entry=fv.ema_9,
+            ema_21_at_entry=fv.ema_21,
+            bb_bandwidth_at_entry=fv.bb_bandwidth,
+            macd_histogram_at_entry=fv.macd_histogram,
+            atr_at_entry=fv.atr,
+            # Sentiment
+            news_sentiment=fv.news_sentiment,
+            fear_greed_index=fv.fear_greed_index,
+            trend_alignment=fv.trend_alignment,
+            # Phase 2: Enhanced ML features
+            cci_at_entry=fv.cci,
+            roc_at_entry=fv.roc,
+            cmf_at_entry=fv.cmf,
+            bb_pct_b_at_entry=fv.bb_pct_b,
+            hist_volatility_at_entry=fv.hist_volatility,
+            dmi_spread_at_entry=fv.dmi_spread,
+            stoch_rsi_at_entry=fv.stoch_rsi,
+            price_change_5h_at_entry=fv.price_change_5m,  # best proxy
+            momentum_at_entry=fv.momentum,
+            rsi_daily_at_entry=fv.rsi_14_daily,
+        )
 
 
 # ──────────────────────────────────────────────

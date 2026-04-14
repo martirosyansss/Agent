@@ -138,8 +138,8 @@ class AdaptiveAllocator:
         total = 0.0
         for alloc in base_allocs:
             skill = self._skill_scores.get(alloc.strategy_name, 0.5)
-            # Scale: skill>0.5 → boost, skill<0.5 → reduce
-            multiplier = skill / 0.5
+            # Quadratic scaling with cap: penalty for skill < 0.5, max 1.5x boost
+            multiplier = min((skill / 0.5) ** 2, 1.5)
             new_pct = alloc.allocation_pct * multiplier
             adjusted.append((alloc.strategy_name, new_pct))
             total += new_pct

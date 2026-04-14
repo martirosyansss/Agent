@@ -124,13 +124,14 @@ class Repository:
         limit: int = 500,
         since_ts: int = 0,
     ) -> list[dict]:
-        """Получить свечи, отсортированные по времени (старые → новые)."""
+        """Получить последние N свечей, отсортированные по времени (старые → новые)."""
         rows = self._db.fetchall(
             "SELECT * FROM candles WHERE symbol = ? AND interval = ? AND timestamp >= ? "
-            "ORDER BY timestamp ASC LIMIT ?",
+            "ORDER BY timestamp DESC LIMIT ?",
             (symbol, interval, since_ts, limit),
         )
-        return [dict(r) for r in rows]
+        # Возвращаем в хронологическом порядке (старые -> новые)
+        return [dict(r) for r in reversed(rows)]
 
     def get_latest_candle(self, symbol: str, interval: str) -> dict | None:
         row = self._db.fetchone(

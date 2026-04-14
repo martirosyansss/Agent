@@ -478,10 +478,18 @@ class Dashboard:
 
         @app.get("/", response_class=HTMLResponse)
         async def dashboard_page():
+            # Read dynamically so UI changes apply without restart
+            index_path = static_dir / "index.html"
+            if index_path.exists():
+                return index_path.read_text(encoding="utf-8")
             return _DASHBOARD_HTML
 
         @app.get("/settings", response_class=HTMLResponse)
         async def settings_page():
+            # Read dynamically so UI changes apply without restart
+            settings_path = static_dir / "settings.html"
+            if settings_path.exists():
+                return settings_path.read_text(encoding="utf-8")
             return _SETTINGS_HTML
 
         self._app = app

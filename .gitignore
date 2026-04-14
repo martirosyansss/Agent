@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+ENV/
+
+# Databases
+*.db
+*.sqlite3
+
+# AI Tools & Agents
+.agents/
+.claude/
+scratch/
+sentinel/scratch/
+*.txt
+*.log
+
+# Models
+sentinel/data/ml_models/*.pkl
+sentinel/data/ml_models/*.json
+!sentinel/data/ml_models/training_report.json
+
+# OS
+.DS_Store
+Thumbs.db

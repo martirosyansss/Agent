@@ -252,10 +252,21 @@ class BacktestEngine:
         gross_loss = abs(sum(t.pnl for t in losses_list))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else 99.99
 
-        # Sharpe Ratio
-        if daily_returns and len(daily_returns) > 1:
-            mean_return = sum(daily_returns) / len(daily_returns)
-            std_return = math.sqrt(sum((r - mean_return) ** 2 for r in daily_returns) / (len(daily_returns) - 1))
+        # N-2 fix: Sharpe Ratio on actual DAILY returns (not per-trade)
+        # Aggregate PnL by calendar date, then compute daily return series
+        from collections import defaultdict
+        daily_pnl_by_date: dict[int, float] = defaultdict(float)
+        for t in trades:
+            # Use exit_time day as the trade's settlement date
+            trade_day = t.exit_time // 86_400_000  # ms → day bucket
+            daily_pnl_by_date[trade_day] += t.pnl
+        daily_returns_agg = list(daily_pnl_by_date.values())
+
+        if daily_returns_agg and len(daily_returns_agg) > 1:
+            # Convert PnL to % returns relative to initial balance
+            daily_ret_pct = [pnl / cfg.initial_balance * 100 for pnl in daily_returns_agg]
+            mean_return = sum(daily_ret_pct) / len(daily_ret_pct)
+            std_return = math.sqrt(sum((r - mean_return) ** 2 for r in daily_ret_pct) / (len(daily_ret_pct) - 1))
             sharpe = (mean_return / std_return * math.sqrt(252)) if std_return > 0 else 0.0
         else:
             sharpe = 0.0
@@ -325,6 +336,7 @@ class BacktestEngine:
         symbol: str = "BTCUSDT",
         n_splits: int = 5,
         train_ratio: float = 0.7,
+        candles_1d: list[Candle] | None = None,
     ) -> dict:
         """Walk-forward validation: split data into N folds, train on first part, test on rest.
 
@@ -355,6 +367,12 @@ class BacktestEngine:
                 history_4h = [c for c in candles_4h if c.timestamp <= t_end]
                 if len(history_4h) > 60:
                     history_4h = history_4h[-60:]
+                # 1d candles for the fold
+                fold_1d = None
+                if candles_1d:
+                    fold_1d = [c for c in candles_1d if c.timestamp <= t_end]
+                    if len(fold_1d) > 60:
+                        fold_1d = fold_1d[-60:]
             else:
                 continue
 
@@ -362,7 +380,7 @@ class BacktestEngine:
                 continue
 
             # Run backtest on the test fold (strategy doesn't retrain — walk-forward test)
-            result = self.run(strategy, test_candles_1h, history_4h, symbol)
+            result = self.run(strategy, test_candles_1h, history_4h, symbol, candles_1d=fold_1d)
             folds.append({
                 "fold": i + 1,
                 "test_start": test_candles_1h[0].timestamp if test_candles_1h else 0,

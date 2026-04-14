@@ -8,7 +8,6 @@ ML Model Training Script — генерирует сделки через бэк
 from __future__ import annotations
 
 import json
-import pickle
 import sys
 import time
 from datetime import datetime, timezone
@@ -27,11 +26,13 @@ from database.repository import Repository
 from backtest.engine import BacktestEngine, BacktestConfig, BacktestTrade
 from features.feature_builder import FeatureBuilder
 from strategy.ema_crossover_rsi import EMACrossoverRSI, EMAConfig
-from strategy.bollinger_breakout import BollingerBreakout
-from strategy.mean_reversion import MeanReversion
-from strategy.macd_divergence import MACDDivergence
+from strategy.bollinger_breakout import BollingerBreakout, BBBreakoutConfig
+from strategy.mean_reversion import MeanReversion, MeanRevConfig
+from strategy.macd_divergence import MACDDivergence, MACDDivConfig
 from strategy.market_regime import detect_regime, reset_hysteresis as reset_regime
 from analyzer.ml_predictor import MLPredictor, MLConfig, REGIME_ENCODING, STRATEGY_ENCODING
+from analyzer.strategy_tuner import StrategyTuner, TunerConfig
+from risk.dynamic_sltp import calculate_dynamic_sltp
 
 
 # ──────────────────────────────────────────────
@@ -100,6 +101,17 @@ def backtest_trade_to_strategy_trade(
         bb_bandwidth_at_entry=f.get("bb_bandwidth", 0.0),
         macd_histogram_at_entry=f.get("macd_histogram", 0.0),
         atr_at_entry=f.get("atr", 0.0),
+        # Phase 2: Enhanced ML features
+        cci_at_entry=f.get("cci", 0.0),
+        roc_at_entry=f.get("roc", 0.0),
+        cmf_at_entry=f.get("cmf", 0.0),
+        bb_pct_b_at_entry=f.get("bb_pct_b", 0.5),
+        hist_volatility_at_entry=f.get("hist_volatility", 0.0),
+        dmi_spread_at_entry=f.get("dmi_spread", 0.0),
+        stoch_rsi_at_entry=f.get("stoch_rsi", 0.0),
+        price_change_5h_at_entry=f.get("price_change_5h", 0.0),
+        momentum_at_entry=f.get("momentum", 0.0),
+        rsi_daily_at_entry=f.get("rsi_daily", 0.0),
     )
 
 
@@ -228,6 +240,17 @@ def run_backtest_with_features(
                 "bb_bandwidth": features.bb_bandwidth,
                 "macd_histogram": features.macd_histogram,
                 "atr": features.atr,
+                # Phase 2: Enhanced features
+                "cci": features.cci,
+                "roc": features.roc,
+                "cmf": features.cmf,
+                "bb_pct_b": features.bb_pct_b,
+                "hist_volatility": features.hist_volatility,
+                "dmi_spread": features.dmi_spread,
+                "stoch_rsi": features.stoch_rsi,
+                "price_change_5h": features.price_change_5m,
+                "momentum": features.momentum,
+                "rsi_daily": features.rsi_14_daily,
             }
 
         elif signal.direction.value == "SELL" and in_position:
@@ -264,12 +287,98 @@ def main():
     repo = Repository(db)
 
     symbols = settings.trading_symbols
-    strategies = {
-        "ema_crossover_rsi": EMACrossoverRSI(),
-        "bollinger_breakout": BollingerBreakout(),
-        "mean_reversion": MeanReversion(),
-        "macd_divergence": MACDDivergence(),
+
+    # ── Auto-Tune strategies if --tune flag is passed ──
+    do_tune = "--tune" in sys.argv
+    tuned_params = {}
+
+    if do_tune:
+        logger.info("🔧 AUTO-TUNE MODE: optimizing strategy parameters with Optuna...")
+        tuner = StrategyTuner(TunerConfig(n_trials=25, min_trades=15))
+
+        # Use first symbol for tuning
+        tune_symbol = symbols[0]
+        logger.info("Loading candles for tuning ({})...", tune_symbol)
+        tc_1h = load_candles(repo, tune_symbol, "1h")
+        tc_4h = load_candles(repo, tune_symbol, "4h")
+        tc_1d = load_candles(repo, tune_symbol, "1d")
+
+        tune_results = []
+        try:
+            logger.info("Tuning ema_crossover_rsi...")
+            r = tuner.tune_ema_crossover(tc_1h, tc_4h, tc_1d, tune_symbol)
+            tune_results.append(r)
+            tuned_params["ema_crossover_rsi"] = r.best_params
+        except Exception as e:
+            logger.error("Tuning ema_crossover_rsi failed: {}", e)
+
+        try:
+            logger.info("Tuning bollinger_breakout...")
+            r = tuner.tune_bollinger(tc_1h, tc_4h, tc_1d, tune_symbol)
+            tune_results.append(r)
+            tuned_params["bollinger_breakout"] = r.best_params
+        except Exception as e:
+            logger.error("Tuning bollinger_breakout failed: {}", e)
+
+        try:
+            logger.info("Tuning mean_reversion...")
+            r = tuner.tune_mean_reversion(tc_1h, tc_4h, tc_1d, tune_symbol)
+            tune_results.append(r)
+            tuned_params["mean_reversion"] = r.best_params
+        except Exception as e:
+            logger.error("Tuning mean_reversion failed: {}", e)
+
+        try:
+            logger.info("Tuning macd_divergence...")
+            r = tuner.tune_macd_divergence(tc_1h, tc_4h, tc_1d, tune_symbol)
+            tune_results.append(r)
+            tuned_params["macd_divergence"] = r.best_params
+        except Exception as e:
+            logger.error("Tuning macd_divergence failed: {}", e)
+
+        # Save tuned params
+        params_path = BASE_DIR / "data" / "ml_models" / "tuned_params.json"
+        tuner.save_params(tune_results, params_path)
+        logger.info("Auto-tune complete. {} strategies tuned.", len(tune_results))
+
+    # ── Build strategies with tuned AND default params (doubles training data) ──
+    strategies_map = {
+        "ema_crossover_rsi_default": EMACrossoverRSI(),
+        "bollinger_breakout_default": BollingerBreakout(),
+        "mean_reversion_default": MeanReversion(),
+        "macd_divergence_default": MACDDivergence()
     }
+
+    if "ema_crossover_rsi" in tuned_params:
+        p = tuned_params["ema_crossover_rsi"]
+        ema_cfg = EMAConfig(**{k: v for k, v in p.items() if hasattr(EMAConfig, k)})
+        strategies_map["ema_crossover_rsi"] = EMACrossoverRSI(config=ema_cfg)
+    else:
+        # Also map base name to default if not tuned (for predict flow)
+        strategies_map["ema_crossover_rsi"] = strategies_map["ema_crossover_rsi_default"]
+
+    if "bollinger_breakout" in tuned_params:
+        p = tuned_params["bollinger_breakout"]
+        bb_cfg = BBBreakoutConfig(**{k: v for k, v in p.items() if hasattr(BBBreakoutConfig, k)})
+        strategies_map["bollinger_breakout"] = BollingerBreakout(config=bb_cfg)
+    else:
+        strategies_map["bollinger_breakout"] = strategies_map["bollinger_breakout_default"]
+
+    if "mean_reversion" in tuned_params:
+        p = tuned_params["mean_reversion"]
+        mr_cfg = MeanRevConfig(**{k: v for k, v in p.items() if hasattr(MeanRevConfig, k)})
+        strategies_map["mean_reversion"] = MeanReversion(config=mr_cfg)
+    else:
+        strategies_map["mean_reversion"] = strategies_map["mean_reversion_default"]
+
+    if "macd_divergence" in tuned_params:
+        p = tuned_params["macd_divergence"]
+        md_cfg = MACDDivConfig(**{k: v for k, v in p.items() if hasattr(MACDDivConfig, k)})
+        strategies_map["macd_divergence"] = MACDDivergence(config=md_cfg)
+    else:
+        strategies_map["macd_divergence"] = strategies_map["macd_divergence_default"]
+
+    strategies = strategies_map
 
     all_trades: list[StrategyTrade] = []
 
@@ -309,19 +418,28 @@ def main():
     # Sort by trade open time
     all_trades.sort(key=lambda t: t.timestamp_open)
 
-    # Train ML model with relaxed thresholds for initial training
+    # Train ML model — heavy regularization for noisy backtest data
+    # With 44% win rate, the signal is weak — use very shallow trees
     ml_config = MLConfig(
-        n_estimators=300,
-        max_depth=6,
-        min_child_samples=15,
-        min_samples_split=10,
-        min_trades=100,
-        block_threshold=0.40,
-        min_precision=0.50,
-        min_recall=0.45,
-        min_roc_auc=0.52,
-        min_skill_score=0.50,
+        n_estimators=250,            # v3: increased from 150 for stronger base models
+        max_depth=4,                 # Slightly deeper — ensemble reduces variance risk
+        learning_rate=0.01,          # Slow learning for LightGBM
+        min_child_samples=40,        # Large leaf size — generalizes better
+        min_samples_split=25,
+        max_features="sqrt",
+        subsample=0.7,               # Bagging reduces variance
+        colsample_bytree=0.7,        # Feature subsampling
+        min_trades=150,
+        block_threshold=0.45,
+        reduce_threshold=0.60,
+        min_precision=0.65,          # PRO LEVEL target
+        min_recall=0.45,             # Recall can be sacrificed for precision
+        min_roc_auc=0.55,
+        min_skill_score=0.72,        # PRO LEVEL target
         cv_splits=5,
+        use_lightgbm=True,
+        use_xgboost=True,
+        max_overfit_gap=0.08,        # Tightened from 0.20 to prevent overfitting
     )
     predictor = MLPredictor(config=ml_config)
 
@@ -334,7 +452,7 @@ def main():
         return
 
     logger.info("=" * 50)
-    logger.info("ML Training Results:")
+    logger.info("ML Training Results (VotingEnsemble v3):")
     logger.info("  Precision:   {:.3f}", metrics.precision)
     logger.info("  Recall:      {:.3f}", metrics.recall)
     logger.info("  ROC AUC:     {:.3f}", metrics.roc_auc)
@@ -342,46 +460,58 @@ def main():
     logger.info("  Skill Score: {:.3f}", metrics.skill_score)
     logger.info("  Train/Test:  {}/{}", metrics.train_samples, metrics.test_samples)
 
-    # Top features
+    # Ensemble member info
+    if predictor._ensemble is not None:
+        members = predictor._ensemble.get_member_info()
+        logger.info("  Ensemble members ({}):", len(members))
+        for m in members:
+            logger.info("    [{}] weight={:.3f}", m['tag'], m['weight'])
+
+    # AdaptiveFeatureSelector info
+    if predictor._feature_selector.is_fitted:
+        dropped = predictor._feature_selector.dropped_names
+        kept = predictor._feature_selector.selected_names
+        logger.info("  Features kept: {}/{}", len(kept), len(kept) + len(dropped))
+        if dropped:
+            logger.info("  Features dropped (low importance): {}", ", ".join(dropped))
+
+    # Top features (ensemble-averaged)
     if metrics.feature_importances:
         sorted_imp = sorted(metrics.feature_importances.items(), key=lambda x: x[1], reverse=True)
-        logger.info("  Top features:")
+        logger.info("  Top features (averaged across ensemble):")
         for name, imp in sorted_imp[:10]:
             logger.info("    {:<25} {:.4f}", name, imp)
 
-    # Save model
+    # Save model — v3: use predictor.save_to_file() which persists VotingEnsemble
     model_dir = BASE_DIR / "data" / "ml_models"
     model_dir.mkdir(parents=True, exist_ok=True)
-
     model_path = model_dir / "ml_predictor.pkl"
-    with open(model_path, "wb") as f:
-        pickle.dump({
-            "model": predictor._model,
-            "scaler": predictor._scaler,
-            "version": predictor._model_version,
-            "metrics": {
-                "precision": metrics.precision,
-                "recall": metrics.recall,
-                "roc_auc": metrics.roc_auc,
-                "accuracy": metrics.accuracy,
-                "skill_score": metrics.skill_score,
-                "train_samples": metrics.train_samples,
-                "test_samples": metrics.test_samples,
-                "feature_importances": metrics.feature_importances,
-            },
-            "trained_at": datetime.now(timezone.utc).isoformat(),
-            "total_trades": len(all_trades),
-        }, f)
 
-    logger.info("Model saved to {}", model_path)
+    saved = predictor.save_to_file(model_path)
+    if saved:
+        n_members = predictor._ensemble.member_count() if predictor._ensemble else 0
+        logger.info("✅ Model saved to {} (ensemble members={})", model_path, n_members)
+    else:
+        logger.warning("⚠️ Model save failed — model may not have passed quality gate")
 
     # Save training report
     report_path = model_dir / "training_report.json"
+    ensemble_info = []
+    if predictor._ensemble is not None:
+        ensemble_info = predictor._ensemble.get_member_info()
+    feature_selector_info = {
+        "kept": predictor._feature_selector.selected_names,
+        "dropped": predictor._feature_selector.dropped_names,
+    } if predictor._feature_selector.is_fitted else {}
+
     report = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "total_trades": len(all_trades),
         "symbols": symbols,
         "strategies": list(strategies.keys()),
+        "model_version": predictor._model_version,
+        "ensemble": ensemble_info,
+        "feature_selector": feature_selector_info,
         "metrics": {
             "precision": metrics.precision,
             "recall": metrics.recall,

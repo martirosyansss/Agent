@@ -25,16 +25,16 @@ class MACDDivConfig:
     macd_slow: int = 26
     macd_signal_period: int = 9
     lookback_candles: int = 50
-    min_divergence_bars: int = 10
+    min_divergence_bars: int = 15
     require_rsi_confirm: bool = True
-    rsi_oversold: float = 35.0
+    rsi_oversold: float = 40.0
     rsi_overbought: float = 65.0
     require_vol_confirm: bool = True
-    min_volume_ratio: float = 1.3
-    stop_loss_pct: float = 3.5
+    min_volume_ratio: float = 1.2
+    stop_loss_pct: float = 3.0
     take_profit_pct: float = 7.0
     max_position_pct: float = 15.0
-    min_confidence: float = 0.68
+    min_confidence: float = 0.72
 
     def __post_init__(self):
         if self.stop_loss_pct <= 0 or self.stop_loss_pct > 50:
