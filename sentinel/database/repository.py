@@ -464,6 +464,43 @@ class Repository:
         return dict(row)
 
     # ==================================================================
+    # STATE RESTORATION (for strategy cold-start)
+    # ==================================================================
+
+    def get_last_filled_buy_ts(self, strategy_name: str, symbol: str) -> int:
+        """Timestamp последнего исполненного BUY для стратегии+символа.
+
+        Используется для восстановления cooldown-таймеров стратегий
+        после перезапуска (например, DCA Bot _last_buy_time).
+        """
+        row = self._db.fetchone(
+            "SELECT MAX(timestamp) as ts FROM signal_executions "
+            "WHERE strategy_name = ? AND symbol = ? "
+            "AND direction = 'BUY' AND outcome = 'filled'",
+            (strategy_name, symbol),
+        )
+        return row["ts"] if row and row["ts"] else 0
+
+    def count_buys_today(self, strategy_name: str, symbol: str) -> int:
+        """Количество исполненных BUY сегодня для стратегии+символа.
+
+        Используется для восстановления дневных лимитов (DCA max_daily_buys).
+        """
+        import datetime
+        today_start_ms = int(
+            datetime.datetime.now()
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .timestamp() * 1000
+        )
+        row = self._db.fetchone(
+            "SELECT COUNT(*) as cnt FROM signal_executions "
+            "WHERE strategy_name = ? AND symbol = ? "
+            "AND direction = 'BUY' AND outcome = 'filled' AND timestamp >= ?",
+            (strategy_name, symbol, today_start_ms),
+        )
+        return row["cnt"] if row else 0
+
+    # ==================================================================
     # ML MODEL REGISTRY
     # ==================================================================
 

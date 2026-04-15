@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     max_daily_loss_pct: float = 5.0
     max_position_pct: float = 10.0
     max_total_exposure_pct: float = 30.0
-    max_open_positions: int = 2
+    max_open_positions: int = 5
     max_order_usd: float = 100.0
     max_trades_per_hour: int = 2
 

@@ -62,6 +62,7 @@ class PositionManager:
         self._lock = asyncio.Lock()  # Protects position open/close operations
         self._positions: dict[str, Position] = {}  # symbol → Position
         self._sl_tp: dict[str, tuple[float, float]] = {}  # symbol → (stop_loss, take_profit)
+        self._trailing: dict[str, tuple[float, float, float]] = {}  # symbol → (activate_pct, trail_pct, max_price)
         self._closed_positions: list[Position] = []
         self._total_realized_pnl: float = 0.0
         self._trades_today: int = 0
@@ -276,6 +277,7 @@ class PositionManager:
             # Переместить в закрытые
             del self._positions[order.symbol]
             self._sl_tp.pop(order.symbol, None)
+            self._trailing.pop(order.symbol, None)
             self._closed_positions.append(position)
             self._record_equity_snapshot()
 
@@ -291,6 +293,17 @@ class PositionManager:
     # Price updates & SL/TP checker
     # ──────────────────────────────────────────────
 
+    def set_trailing_stop(self, symbol: str, activate_pct: float, trail_pct: float) -> None:
+        """Настроить trailing stop для позиции.
+
+        Args:
+            activate_pct: PnL% для активации (e.g. 2.5 = +2.5%)
+            trail_pct: процент отката от максимума для срабатывания (e.g. 1.5)
+        """
+        pos = self._positions.get(symbol)
+        if pos:
+            self._trailing[symbol] = (activate_pct, trail_pct, pos.entry_price)
+
     async def update_price(self, symbol: str, price: float) -> None:
         """Обновить текущую цену позиции (async-safe)."""
         async with self._lock:
@@ -298,13 +311,18 @@ class PositionManager:
             if pos:
                 pos.current_price = price
                 pos.unrealized_pnl = (price - pos.entry_price) * pos.quantity
+                # Update trailing stop max price
+                if symbol in self._trailing:
+                    act, trail, max_p = self._trailing[symbol]
+                    if price > max_p:
+                        self._trailing[symbol] = (act, trail, price)
                 self._record_equity_snapshot()
 
     def check_stop_loss_take_profit(self, symbol: str) -> Optional[str]:
-        """Проверить SL/TP для позиции.
+        """Проверить SL/TP и trailing stop для позиции.
 
         Returns:
-            'stop_loss', 'take_profit' или None.
+            'stop_loss', 'take_profit', 'trailing_stop' или None.
         """
         pos = self._positions.get(symbol)
         if not pos:
@@ -316,6 +334,16 @@ class PositionManager:
             return "stop_loss"
         if tp > 0 and pos.current_price >= tp:
             return "take_profit"
+
+        # Trailing stop (tick-level)
+        if symbol in self._trailing and pos.entry_price > 0:
+            activate_pct, trail_pct, max_price = self._trailing[symbol]
+            pnl_pct = (pos.current_price - pos.entry_price) / pos.entry_price * 100
+            if pnl_pct >= activate_pct and max_price > 0:
+                drawdown_from_max = (max_price - pos.current_price) / max_price * 100
+                if drawdown_from_max >= trail_pct:
+                    return "trailing_stop"
+
         return None
 
     # ──────────────────────────────────────────────

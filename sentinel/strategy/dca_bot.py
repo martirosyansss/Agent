@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core.models import Direction, FeatureVector, Signal
-from strategy.base_strategy import BaseStrategy, news_confidence_adjustment
+from strategy.base_strategy import (
+    BaseStrategy,
+    news_confidence_adjustment,
+    news_should_accelerate_exit,
+)
 
 
 @dataclass
@@ -57,6 +61,31 @@ class DCABot(BaseStrategy):
         self._daily_reset: dict[str, int] = {}
         self._partial_sold: dict[str, bool] = {}
 
+    def restore_state(
+        self,
+        last_buy_times: dict[str, int],
+        daily_buys: dict[str, int],
+    ) -> None:
+        """Восстановить персистентное состояние из БД после перезапуска.
+
+        Без этого вызова DCA Bot «забывает» историю покупок и может
+        сгенерировать BUY-сигнал сразу при старте, игнорируя cooldown.
+
+        Args:
+            last_buy_times: {symbol: timestamp_ms} — время последней покупки.
+            daily_buys: {symbol: count} — количество покупок за сегодня.
+        """
+        now_ms = int(time.time() * 1000)
+        for sym, ts in last_buy_times.items():
+            if ts > 0:
+                self._last_buy_time[sym] = ts
+        for sym, count in daily_buys.items():
+            if count > 0:
+                self._daily_buys[sym] = count
+                # Anchor _daily_reset so _reset_daily() doesn't
+                # immediately wipe the restored counter.
+                self._daily_reset[sym] = now_ms
+
     def _get_dip_multiplier(self, features: FeatureVector) -> float:
         """Определить множитель на основе падения цены (за ~15 часовых свечей)."""
         pct = features.price_change_15m  # 15 x 1h candles ≈ 15h lookback
@@ -94,6 +123,16 @@ class DCABot(BaseStrategy):
                     reason=f"SAFETY: invalid entry_price={entry_price}",
                 )
             pnl_pct = (features.close - entry_price) / entry_price * 100
+
+            # News-driven emergency exit (critical bearish / security event)
+            exit_now, exit_conf, exit_reason = news_should_accelerate_exit(features, pnl_pct)
+            if exit_now:
+                self._partial_sold[sym] = False
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=exit_conf, strategy_name=self.NAME,
+                    reason=exit_reason,
+                )
 
             # Full take profit
             if pnl_pct >= cfg.take_profit_pct:

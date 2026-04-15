@@ -69,6 +69,7 @@ class Dashboard:
         self.on_stop: Optional[Callable[[], Coroutine]] = None
         self.on_resume: Optional[Callable[[], Coroutine]] = None
         self.on_kill: Optional[Callable[[], Coroutine]] = None
+        self.on_settings_update: Optional[Callable[[Any], None]] = None
         self.market_chart_provider: Optional[Callable[[str], dict]] = None
         self.news_collector = None  # устанавливается из main.py
 
@@ -209,12 +210,12 @@ class Dashboard:
 
         class AuthMiddleware(BaseHTTPMiddleware):
             """Token auth for mutating endpoints when password is configured."""
-            _PUBLIC = {"/api/health", "/", "/settings", "/ws"}
+            _PUBLIC = {"/api/health", "/", "/settings", "/trades", "/ws"}
             _READ_ONLY = {"/api/status", "/api/positions", "/api/trades",
                           "/api/pnl-history", "/api/market-chart",
                           "/api/backtest-results", "/api/config",
                           "/api/settings/editable", "/api/strategy-performance",
-                          "/api/trades/export", "/api/news"}
+                          "/api/trades/export", "/api/trades/history", "/api/news"}
 
             async def dispatch(self, request: Request, call_next):
                 path = request.url.path
@@ -387,6 +388,17 @@ class Dashboard:
                 headers={"Content-Disposition": "attachment; filename=sentinel_trades.csv"},
             )
 
+        @app.get("/api/trades/history")
+        async def trades_history(strategy: str = "", symbol: str = "", limit: int = 500):
+            """Full strategy trade history with all details."""
+            state = self._get_state()
+            all_trades = state.get("trades_export_full", [])
+            if strategy:
+                all_trades = [t for t in all_trades if t.get("strategy_name") == strategy]
+            if symbol:
+                all_trades = [t for t in all_trades if t.get("symbol") == symbol]
+            return JSONResponse(content=all_trades[:limit])
+
         @app.get("/api/news")
         async def news_feed():
             """Крипто-новости с анализом влияния на курс."""
@@ -475,10 +487,17 @@ class Dashboard:
             self._settings = updated_settings
             self._password = updated_settings.dashboard_password
 
+            # Propagate runtime-safe settings (risk limits) without restart
+            if self.on_settings_update:
+                try:
+                    self.on_settings_update(updated_settings)
+                except Exception as cb_err:
+                    logger.warning("on_settings_update callback failed: %s", cb_err)
+
             return JSONResponse(content={
                 "result": "saved",
-                "restart_required": True,
-                "message": "Settings saved to .env. Restart the bot to apply engine-level changes.",
+                "restart_required": False,
+                "message": "Settings saved and applied.",
                 "values": get_editable_settings_payload(self._settings),
             })
 
@@ -561,6 +580,10 @@ class Dashboard:
         async def settings_page():
             return _SETTINGS_HTML
 
+        @app.get("/trades", response_class=HTMLResponse)
+        async def trades_page():
+            return _TRADES_HTML
+
         self._app = app
         return app
 
@@ -628,3 +651,4 @@ import pathlib as _pathlib
 _STATIC_DIR = _pathlib.Path(__file__).parent / "static"
 _DASHBOARD_HTML = (_STATIC_DIR / "index.html").read_text(encoding="utf-8") if (_STATIC_DIR / "index.html").exists() else "<h1>Dashboard HTML not found</h1>"
 _SETTINGS_HTML = (_STATIC_DIR / "settings.html").read_text(encoding="utf-8") if (_STATIC_DIR / "settings.html").exists() else "<h1>Settings HTML not found</h1>"
+_TRADES_HTML = (_STATIC_DIR / "trades.html").read_text(encoding="utf-8") if (_STATIC_DIR / "trades.html").exists() else "<h1>Trades HTML not found</h1>"

@@ -1,7 +1,7 @@
 [
   {
     "symbol": "BTCUSDT",
-    "trained_at": "2026-04-15T12:40:46.410942+00:00",
+    "trained_at": "2026-04-15T13:53:10.255055+00:00",
     "total_trades": 1319,
     "strategies": [
       "ema_crossover_rsi_default",
@@ -13,121 +13,19 @@
       "mean_reversion",
       "macd_divergence"
     ],
-    "model_version": "ensemble_v1776256846_3m",
+    "model_version": "ensemble_v1776261190_3m",
     "ensemble": [
       {
         "tag": "rf",
-        "weight": 0.8328535891968727
+        "weight": 0.8683468314862177
       },
       {
         "tag": "lgbm",
-        "weight": 0.8663591012329656
+        "weight": 0.8684458650033047
       },
       {
         "tag": "xgb",
-        "weight": 0.8196868916288125
-      }
-    ],
-    "feature_selector": {
-      "kept": [
-        "rsi_14",
-        "adx",
-        "ema_9_vs_21",
-        "bb_bandwidth",
-        "volume_ratio",
-        "macd_histogram",
-        "atr_ratio",
-        "hour_sin",
-        "hour_cos",
-        "day_sin",
-        "market_regime_encoded",
-        "strategy_regime_fit",
-        "recent_win_rate_10",
-        "hours_since_last_trade",
-        "rolling_avg_pnl_pct_20",
-        "consecutive_losses",
-        "strategy_specific_wr_10",
-        "regime_bias",
-        "cci",
-        "roc",
-        "cmf",
-        "bb_pct_b",
-        "hist_volatility",
-        "dmi_spread",
-        "stoch_rsi",
-        "price_change_5h_norm",
-        "momentum_norm",
-        "rsi_daily"
-      ],
-      "dropped": [
-        "day_cos",
-        "news_sentiment",
-        "fear_greed_normalized",
-        "trend_alignment"
-      ]
-    },
-    "metrics": {
-      "precision": 0.5546875,
-      "recall": 0.9102564102564102,
-      "roc_auc": 0.8391559829059829,
-      "accuracy": 0.6767676767676768,
-      "skill_score": 0.6324816068719966
-    },
-    "feature_importances": {
-      "rsi_14": 54.35344638673525,
-      "adx": 69.02306734312538,
-      "ema_9_vs_21": 15.676445413327988,
-      "bb_bandwidth": 57.68629773701473,
-      "volume_ratio": 50.35252572876556,
-      "macd_histogram": 67.02055069428486,
-      "atr_ratio": 41.35843877921888,
-      "hour_sin": 25.68551811345684,
-      "hour_cos": 5.680292615863112,
-      "day_sin": 6.004601265870921,
-      "day_cos": 0.0020737280055431275,
-      "market_regime_encoded": 0.013144261094022376,
-      "strategy_regime_fit": 0.33570031349525276,
-      "recent_win_rate_10": 14.013792491003471,
-      "hours_since_last_trade": 27.352726050001696,
-      "rolling_avg_pnl_pct_20": 54.01858272198728,
-      "consecutive_losses": 41.55153471330552,
-      "strategy_specific_wr_10": 2.676812221269094,
-      "news_sentiment": 0.0,
-      "fear_greed_normalized": 0.0,
-      "trend_alignment": 0.0,
-      "regime_bias": 0.33337522489946037,
-      "cci": 35.353504203599535,
-      "roc": 22.67405719814829,
-      "cmf": 29.684276969307458,
-      "bb_pct_b": 57.02788075021084,
-      "hist_volatility": 32.35313877799578,
-      "dmi_spread": 35.01542906496266,
-      "stoch_rsi": 9.002702669535559,
-      "price_change_5h_norm": 51.70575995778332,
-      "momentum_norm": 31.353149986267592,
-      "rsi_daily": 54.357841278059276
-    },
-    "model_ready": true
-  },
-  {
-    "symbol": "ETHUSDT",
-    "trained_at": "2026-04-15T12:40:50.059803+00:00",
-    "total_trades": 1507,
-    "strategies": [
-      "ema_crossover_rsi_default",
-      "bollinger_breakout_default",
-      "mean_reversion_default",
-      "macd_divergence_default",
-      "ema_crossover_rsi",
-      "bollinger_breakout",
-      "mean_reversion",
-      "macd_divergence"
-    ],
-    "model_version": "ensemble_v1776256850_1m",
-    "ensemble": [
-      {
-        "tag": "xgb",
-        "weight": 0.7836391487824625
+        "weight": 0.8622454957860337
       }
     ],
     "feature_selector": {
@@ -169,51 +67,161 @@
       ]
     },
     "metrics": {
-      "precision": 0.76,
-      "recall": 0.5,
-      "roc_auc": 0.7617201115371209,
-      "accuracy": 0.7797356828193832,
-      "skill_score": 0.7946020390379922
+      "precision": 0.9795918367346939,
+      "recall": 0.6153846153846154,
+      "roc_auc": 0.8783653846153846,
+      "accuracy": 0.8434343434343434,
+      "skill_score": 0.9128438971742543
     },
     "feature_importances": {
-      "rsi_14": 38.019599460251335,
-      "adx": 32.35450027578239,
-      "ema_9_vs_21": 24.367914367423797,
-      "bb_bandwidth": 57.032193574871485,
-      "volume_ratio": 49.349128077275736,
-      "macd_histogram": 32.33960505547467,
-      "atr_ratio": 33.011697739107454,
-      "hour_sin": 11.003239677798973,
-      "hour_cos": 21.683170306478228,
-      "day_sin": 12.676788955214013,
-      "day_cos": 7.002313236099844,
-      "market_regime_encoded": 0.6677953248615753,
-      "strategy_regime_fit": 3.6691140213740674,
-      "recent_win_rate_10": 9.355903619570583,
-      "hours_since_last_trade": 41.348808657134754,
-      "rolling_avg_pnl_pct_20": 39.013134650388864,
-      "consecutive_losses": 51.53677068468178,
-      "strategy_specific_wr_10": 27.684057564708656,
+      "rsi_14": 41.02293118669385,
+      "adx": 66.69045617870347,
+      "ema_9_vs_21": 20.017796369499706,
+      "bb_bandwidth": 14.339726436173345,
+      "volume_ratio": 33.34045360043109,
+      "macd_histogram": 52.67767248260444,
+      "atr_ratio": 46.009778837151934,
+      "hour_sin": 25.357412825829403,
+      "hour_cos": 7.335177612023436,
+      "day_sin": 19.669821240567792,
+      "day_cos": 2.6759426238778388,
+      "market_regime_encoded": 2.668041001088568,
+      "strategy_regime_fit": 16.334844960516683,
+      "recent_win_rate_10": 9.67000267947038,
+      "hours_since_last_trade": 93.01501445026763,
+      "rolling_avg_pnl_pct_20": 31.68538869144922,
+      "consecutive_losses": 81.61524314677943,
+      "strategy_specific_wr_10": 1.334826463470695,
       "news_sentiment": 0.0,
       "fear_greed_normalized": 0.0,
       "trend_alignment": 0.0,
-      "regime_bias": 0.0002749660894804955,
-      "cci": 41.015879398123026,
-      "roc": 27.355277696791163,
-      "cmf": 62.35010234507638,
-      "bb_pct_b": 34.020654921705315,
-      "hist_volatility": 48.690281576655174,
-      "dmi_spread": 55.02008363797697,
-      "stoch_rsi": 5.334531460097403,
-      "price_change_5h_norm": 53.36620491597031,
-      "momentum_norm": 42.044239814184685,
-      "rsi_daily": 49.68673399958458
+      "regime_bias": 0.00019286536086009524,
+      "cci": 30.36937277913911,
+      "roc": 14.008199049601544,
+      "cmf": 26.68683893201081,
+      "bb_pct_b": 71.36965889929006,
+      "hist_volatility": 7.67320427762268,
+      "dmi_spread": 15.337709796627768,
+      "stoch_rsi": 28.00190745896432,
+      "price_change_5h_norm": 72.38524835176507,
+      "momentum_norm": 24.012155214627338,
+      "rsi_daily": 46.36164826685495
+    },
+    "model_ready": true
+  },
+  {
+    "symbol": "ETHUSDT",
+    "trained_at": "2026-04-15T13:53:13.608841+00:00",
+    "total_trades": 1507,
+    "strategies": [
+      "ema_crossover_rsi_default",
+      "bollinger_breakout_default",
+      "mean_reversion_default",
+      "macd_divergence_default",
+      "ema_crossover_rsi",
+      "bollinger_breakout",
+      "mean_reversion",
+      "macd_divergence"
+    ],
+    "model_version": "ensemble_v1776261193_3m",
+    "ensemble": [
+      {
+        "tag": "rf",
+        "weight": 0.826414308527627
+      },
+      {
+        "tag": "lgbm",
+        "weight": 0.852529631519853
+      },
+      {
+        "tag": "xgb",
+        "weight": 0.8177454863133371
+      }
+    ],
+    "feature_selector": {
+      "kept": [
+        "rsi_14",
+        "adx",
+        "ema_9_vs_21",
+        "bb_bandwidth",
+        "volume_ratio",
+        "macd_histogram",
+        "atr_ratio",
+        "hour_sin",
+        "hour_cos",
+        "day_sin",
+        "day_cos",
+        "strategy_regime_fit",
+        "recent_win_rate_10",
+        "hours_since_last_trade",
+        "rolling_avg_pnl_pct_20",
+        "consecutive_losses",
+        "strategy_specific_wr_10",
+        "cci",
+        "roc",
+        "cmf",
+        "bb_pct_b",
+        "hist_volatility",
+        "dmi_spread",
+        "stoch_rsi",
+        "price_change_5h_norm",
+        "momentum_norm",
+        "rsi_daily"
+      ],
+      "dropped": [
+        "market_regime_encoded",
+        "news_sentiment",
+        "fear_greed_normalized",
+        "trend_alignment",
+        "regime_bias"
+      ]
+    },
+    "metrics": {
+      "precision": 0.8703703703703703,
+      "recall": 0.618421052631579,
+      "roc_auc": 0.8715580341582432,
+      "accuracy": 0.8414096916299559,
+      "skill_score": 0.8779985283296541
+    },
+    "feature_importances": {
+      "rsi_14": 53.02507186617848,
+      "adx": 27.010900660862344,
+      "ema_9_vs_21": 13.035535864735316,
+      "bb_bandwidth": 96.03985587168181,
+      "volume_ratio": 29.67181160903374,
+      "macd_histogram": 39.34116625975363,
+      "atr_ratio": 25.028159840923735,
+      "hour_sin": 14.668303139210776,
+      "hour_cos": 18.344911587143127,
+      "day_sin": 3.6755451050499612,
+      "day_cos": 6.0018093209600805,
+      "market_regime_encoded": 0.0010143804877079652,
+      "strategy_regime_fit": 6.668576396666338,
+      "recent_win_rate_10": 5.021562759791026,
+      "hours_since_last_trade": 102.67774812042607,
+      "rolling_avg_pnl_pct_20": 42.34756028137844,
+      "consecutive_losses": 91.24890067461759,
+      "strategy_specific_wr_10": 13.670600011195708,
+      "news_sentiment": 0.0,
+      "fear_greed_normalized": 0.0,
+      "trend_alignment": 0.0,
+      "regime_bias": 0.0007154655252780318,
+      "cci": 53.35585648172374,
+      "roc": 26.709624549095327,
+      "cmf": 58.67068438578608,
+      "bb_pct_b": 42.6762281987937,
+      "hist_volatility": 32.68445592664512,
+      "dmi_spread": 34.01055359871352,
+      "stoch_rsi": 0.6678802158278444,
+      "price_change_5h_norm": 50.030661503919845,
+      "momentum_norm": 93.03857829203879,
+      "rsi_daily": 56.34239428794654
     },
     "model_ready": true
   },
   {
     "symbol": "UNIFIED",
-    "trained_at": "2026-04-15T12:40:53.957670+00:00",
+    "trained_at": "2026-04-15T13:53:17.813015+00:00",
     "total_trades": 2826,
     "symbols": [
       "BTCUSDT",
@@ -229,13 +237,13 @@
       "mean_reversion",
       "macd_divergence"
     ],
-    "model_version": "ensemble_v1776256853_3m",
+    "model_version": "ensemble_v1776261197_3m",
     "metrics": {
-      "precision": 0.8932038834951457,
-      "recall": 0.5974025974025974,
-      "roc_auc": 0.8957311207311207,
-      "accuracy": 0.8278301886792453,
-      "skill_score": 0.8912073170446957
+      "precision": 0.8854166666666666,
+      "recall": 0.551948051948052,
+      "roc_auc": 0.882996632996633,
+      "accuracy": 0.8113207547169812,
+      "skill_score": 0.8798686267436266
     },
     "model_ready": true
   }

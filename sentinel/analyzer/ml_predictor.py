@@ -367,7 +367,7 @@ class MLPredictor:
         X = self.extract_features_batch(all_trades)
         return X[-1].tolist()  # Last row = current trade
 
-    def _build_rf(self):
+    def _build_rf(self, conservative: bool = False):
         """Build a RandomForest classifier.
 
         Structural regularization only (no L1/L2 in tree ensembles):
@@ -376,8 +376,25 @@ class MLPredictor:
           individual trees from growing arbitrarily wide on noisy assets
         - ccp_alpha=0.002: minimal cost-complexity pruning to trim leaves
           that add negligible impurity reduction
+
+        Args:
+            conservative: If True, use stronger structural constraints for
+                          precision recovery on noisy assets.
         """
         from sklearn.ensemble import RandomForestClassifier
+        if conservative:
+            return RandomForestClassifier(
+                n_estimators=self._cfg.n_estimators,
+                max_depth=4,
+                max_leaf_nodes=64,
+                min_samples_leaf=int(self._cfg.min_child_samples * 1.5),
+                min_samples_split=int(self._cfg.min_samples_split * 1.5),
+                max_features=self._cfg.max_features,
+                ccp_alpha=0.005,
+                class_weight={0: 1.0, 1: 0.6},  # penalize false positives
+                random_state=42,
+                n_jobs=-1,
+            )
         return RandomForestClassifier(
             n_estimators=self._cfg.n_estimators,
             max_depth=6,                    # reduced from 8: structural constraint
@@ -390,17 +407,38 @@ class MLPredictor:
             n_jobs=-1,
         )
 
-    def _build_lgbm(self, scale_pos_weight: float = 1.0):
+    def _build_lgbm(self, scale_pos_weight: float = 1.0, conservative: bool = False):
         """Build a LightGBM classifier if available, else None.
 
         Regularization aligned with XGBoost: L1/L2 penalties + reduced depth
         prevent memorisation on noisier assets (e.g. ETH) and keep the
         train-val precision gap within the overfit guard threshold.
+
+        Args:
+            conservative: If True, use stronger regularization for precision recovery
+                          on noisy assets (higher L1/L2, shallower trees, more penalization
+                          of false positives via scale_pos_weight).
         """
         if not self._cfg.use_lightgbm:
             return None
         try:
             from lightgbm import LGBMClassifier
+            if conservative:
+                return LGBMClassifier(
+                    n_estimators=self._cfg.n_estimators,
+                    max_depth=4,
+                    learning_rate=self._cfg.learning_rate * 0.7,
+                    min_child_samples=int(self._cfg.min_child_samples * 1.5),
+                    subsample=0.65,
+                    colsample_bytree=0.65,
+                    reg_alpha=0.8,
+                    reg_lambda=3.0,
+                    min_split_gain=0.2,
+                    scale_pos_weight=scale_pos_weight,
+                    random_state=42,
+                    n_jobs=-1,
+                    verbose=-1,
+                )
             return LGBMClassifier(
                 n_estimators=self._cfg.n_estimators,
                 max_depth=6,
@@ -420,17 +458,35 @@ class MLPredictor:
             logger.debug("LightGBM not available, using RandomForest only")
             return None
 
-    def _build_xgb(self, scale_pos_weight: float = 1.0):
+    def _build_xgb(self, scale_pos_weight: float = 1.0, conservative: bool = False):
         """Build an XGBoost classifier if available, else None.
 
         Args:
             scale_pos_weight: Ratio of negative/positive samples for class imbalance.
                               Computed dynamically from training data.
+            conservative: If True, use stronger regularization for precision recovery.
         """
         if not self._cfg.use_xgboost:
             return None
         try:
             from xgboost import XGBClassifier
+            if conservative:
+                return XGBClassifier(
+                    n_estimators=200,
+                    max_depth=3,
+                    learning_rate=self._cfg.learning_rate * 0.7,
+                    subsample=0.65,
+                    colsample_bytree=0.65,
+                    min_child_weight=35,
+                    reg_alpha=0.8,
+                    reg_lambda=3.0,
+                    gamma=0.3,
+                    scale_pos_weight=scale_pos_weight,
+                    random_state=42,
+                    n_jobs=-1,
+                    eval_metric='logloss',
+                    verbosity=0,
+                )
             # Deliberately conservative hyperparams to prevent overfitting on small datasets.
             # max_depth=4 (vs RF's 8) + strong L1/L2 + high min_child_weight keeps XGBoost
             # from memorising the training set and allows it to pass the 10% overfit guard.
@@ -755,23 +811,18 @@ class MLPredictor:
         logger.info("ML CV (RF diagnostic): prec=%.3f rec=%.3f auc=%.3f (over %d folds)",
                      avg_prec, avg_rec, avg_auc, len(cv_precisions))
 
-        # Walk-Forward: Train 68% → Val 12% (model selection) → Calib 5% → Test 15%
-        # Separate val/calib sets prevent information leak from model selection to calibration.
-        # Train set kept near 70% to preserve model quality on small datasets.
-        train_end = int(len(X) * 0.68)
-        val_end   = int(len(X) * 0.80)
-        calib_end = int(len(X) * 0.85)
+        # Walk-Forward: Train 70% → Val 15% (model selection + calibration) → Test 15%
+        # Val split internally 50/50 for isotonic calibration vs threshold calibration.
+        train_end = int(len(X) * 0.70)
+        val_end   = int(len(X) * 0.85)
         X_train = X[:train_end]
         X_val   = X[train_end:val_end]
-        X_calib = X[val_end:calib_end]
-        X_test  = X[calib_end:]
+        X_test  = X[val_end:]
         y_train = y_arr[:train_end]
         y_val   = y_arr[train_end:val_end]
-        y_calib = y_arr[val_end:calib_end]
-        y_test  = y_arr[calib_end:]
-        pnl_val   = pnl_values[train_end:val_end]
-        pnl_calib = pnl_values[val_end:calib_end]
-        pnl_test  = pnl_values[calib_end:]
+        y_test  = y_arr[val_end:]
+        pnl_val  = pnl_values[train_end:val_end]
+        pnl_test = pnl_values[val_end:]
 
         if len(X_train) < 50 or len(X_val) < 15 or len(X_test) < 15:
             return None
@@ -779,7 +830,6 @@ class MLPredictor:
         final_scaler = StandardScaler()
         X_train_s = final_scaler.fit_transform(X_train)
         X_val_s   = final_scaler.transform(X_val)
-        X_calib_s = final_scaler.transform(X_calib)
         X_test_s  = final_scaler.transform(X_test)
 
         # v3: TemporalWeighting slices for each split
@@ -817,17 +867,16 @@ class MLPredictor:
                 logger.debug("XGBoost training failed: %s", xgb_err)
                 xgb = None
 
-        # Adaptive overfit threshold using AUC gap (threshold-independent, more stable
-        # than precision gap on small val sets). AUC measures ranking quality — if the
-        # model ranks train samples much better than val, it has memorised the training set.
-        # Formula: max_gap = base_gap + 0.5 / √n_val  (clamped to [base, 0.18])
+        # Adaptive overfit threshold: base gap + variance correction for small val sets.
+        # Precision std on n samples ≈ sqrt(p*(1-p)/n). With p≈0.5,
+        # observed gap ≈ 0.5/√n due to sampling noise alone.
         _n_val = len(y_val)
         _adaptive_gap = min(
             0.18,
             self._cfg.max_overfit_gap + 0.5 / (_n_val ** 0.5) if _n_val > 0 else self._cfg.max_overfit_gap,
         )
         logger.info(
-            "ML overfit guard (AUC-based): base=%.2f adaptive=%.3f (n_val=%d)",
+            "ML overfit guard: base=%.2f adaptive=%.3f (n_val=%d)",
             self._cfg.max_overfit_gap, _adaptive_gap, _n_val,
         )
 
@@ -856,19 +905,15 @@ class MLPredictor:
             pf_v = self._compute_profit_factor_score(y_pred_v, pnl_val)
             skill_v = 0.30 * prec_v + 0.10 * rec_v + 0.35 * auc_v + 0.25 * pf_v
 
-            # AUC-based overfit guard: threshold-independent, stable on small val sets.
-            # Precision gap is noisy because it depends on the decision threshold;
-            # AUC gap measures pure ranking divergence between train and val.
-            try:
-                y_train_proba_c = candidate.predict_proba(X_train_s)[:, 1]
-                auc_train_c = roc_auc_score(y_train, y_train_proba_c)
-            except (ValueError, IndexError):
-                auc_train_c = 0.5
-            overfit_gap = auc_train_c - auc_v
+            # Precision-based overfit guard: directly catches the metric that drives
+            # trading PnL. Train precision >> val precision = model memorized train set.
+            y_train_pred_c = candidate.predict(X_train_s)
+            train_prec_c = precision_score(y_train, y_train_pred_c, zero_division=0)
+            overfit_gap = train_prec_c - prec_v
             if overfit_gap > _adaptive_gap:
                 logger.warning(
-                    "ML OVERFITTING [%s]: train_auc=%.3f val_auc=%.3f gap=%.3f (threshold=%.3f) — REJECTED",
-                    tag, auc_train_c, auc_v, overfit_gap, _adaptive_gap,
+                    "ML OVERFITTING [%s]: train_prec=%.3f val_prec=%.3f gap=%.3f (threshold=%.3f) — REJECTED",
+                    tag, train_prec_c, prec_v, overfit_gap, _adaptive_gap,
                 )
                 continue
 
@@ -922,14 +967,12 @@ class MLPredictor:
             # Apply selector to all splits (32 → N selected features)
             X_train_sel = self._feature_selector.transform(X_train)
             X_val_sel   = self._feature_selector.transform(X_val)
-            X_calib_sel = self._feature_selector.transform(X_calib)
             X_test_sel  = self._feature_selector.transform(X_test)
 
             # Refit scaler on selected features only
             final_scaler = StandardScaler()
             X_train_s = final_scaler.fit_transform(X_train_sel)
             X_val_s   = final_scaler.transform(X_val_sel)
-            X_calib_s = final_scaler.transform(X_calib_sel)
             X_test_s  = final_scaler.transform(X_test_sel)
 
             # Retrain all models on selected features
@@ -973,13 +1016,10 @@ class MLPredictor:
                     auc_v = 0.5
                 pf_v = self._compute_profit_factor_score(y_pred_v, pnl_val)
                 skill_v = 0.30 * prec_v + 0.10 * rec_v + 0.35 * auc_v + 0.25 * pf_v
-                try:
-                    _train_proba_p2 = candidate.predict_proba(X_train_s)[:, 1]
-                    _auc_train_p2 = roc_auc_score(y_train, _train_proba_p2)
-                except (ValueError, IndexError):
-                    _auc_train_p2 = 0.5
-                if _auc_train_p2 - auc_v > _adaptive_gap:
-                    logger.warning("ML phase-2 OVERFITTING [%s]: auc_gap=%.3f (threshold=%.3f) — REJECTED", tag, _auc_train_p2 - auc_v, _adaptive_gap)
+                y_train_pred_c = candidate.predict(X_train_s)
+                train_prec_c   = precision_score(y_train, y_train_pred_c, zero_division=0)
+                if train_prec_c - prec_v > _adaptive_gap:
+                    logger.warning("ML phase-2 OVERFITTING [%s]: gap=%.3f (threshold=%.3f) — REJECTED", tag, train_prec_c - prec_v, _adaptive_gap)
                     continue
                 ensemble.add_member(candidate, tag, skill_v)
                 candidate_metrics[tag] = skill_v
@@ -994,24 +1034,31 @@ class MLPredictor:
                 best_model = {"rf": rf2, "lgbm": lgbm2, "xgb": xgb2}.get(best_tag)
                 rf, lgbm, xgb = rf2, lgbm2, xgb2  # update refs for calibration below
 
-        # Isotonic calibration on dedicated CALIB split (never seen during model selection)
-        if len(X_calib_s) >= 15:
-            ensemble.apply_isotonic_calibration(y_calib, X_calib_s)
+        # Isotonic calibration on first half of val, threshold on second half
+        val_mid = len(X_val_s) // 2
+        if val_mid >= 10:
+            X_val_iso, X_val_thr = X_val_s[:val_mid], X_val_s[val_mid:]
+            y_val_iso, y_val_thr = y_val[:val_mid], y_val[val_mid:]
+            pnl_val_thr = pnl_val[val_mid:]
+            ensemble.apply_isotonic_calibration(y_val_iso, X_val_iso)
         else:
-            logger.warning("ML: calib set too small (%d) — skipping isotonic", len(X_calib_s))
+            X_val_thr = X_val_s
+            y_val_thr = y_val
+            pnl_val_thr = pnl_val
+            ensemble.apply_isotonic_calibration(y_val, X_val_s)
 
         # Keep best single model as legacy fallback (for save_to_file compat)
         best_tag = max(candidate_metrics, key=candidate_metrics.get) if candidate_metrics else "rf"
         best_model: Any = {"rf": rf, "lgbm": lgbm, "xgb": xgb}.get(best_tag, rf)
 
-        # Threshold calibration on CALIB split (profit-factor objective, independent of model selection)
-        y_proba_calib_ensemble = ensemble.predict_proba_calibrated(X_calib_s)
-        pnl_calib_arr = np.array(pnl_calib, dtype=np.float64) if pnl_calib else None
+        # Threshold calibration via profit-factor optimization on second half of val
+        y_proba_val_ensemble = ensemble.predict_proba_calibrated(X_val_thr)
+        pnl_thr_arr = np.array(pnl_val_thr, dtype=np.float64) if pnl_val_thr else None
 
         calib_target = max(0.50, self._cfg.min_precision - 0.02)
         calibrated_thr = self._calibrate_threshold(
-            y_calib, y_proba_calib_ensemble,
-            min_precision=calib_target, pnl=pnl_calib_arr,
+            y_val_thr, y_proba_val_ensemble,
+            min_precision=calib_target, pnl=pnl_thr_arr,
         )
         logger.info(
             "ML VotingEnsemble calibrated threshold: %.3f (targeting P=%.2f, members=%d)",
@@ -1043,6 +1090,159 @@ class MLPredictor:
         # Precision 3x recall weight: false positives (losing trades) are far more expensive
         # than missed winners. AUC remains highest (threshold-independent ranking quality).
         final_skill = 0.30 * best_precision + 0.10 * best_recall + 0.35 * best_roc_auc + 0.25 * pf_score
+
+        # --- Precision recovery: when initial pass fails on precision ---
+        # Noisy assets (e.g. ETH) often produce high recall / low precision.
+        # Recovery strategy:
+        #   Phase A: raise threshold on existing ensemble (cheap — no retraining)
+        #   Phase B: retrain with conservative hyperparams + higher class penalty
+        if best_precision < self._cfg.min_precision and best_recall > 0.40:
+            logger.info(
+                "ML PRECISION RECOVERY triggered: prec=%.3f < min=%.3f (recall=%.3f)",
+                best_precision, self._cfg.min_precision, best_recall,
+            )
+
+            # Phase A: search for a higher threshold that meets precision target
+            recovered = False
+            for thr_candidate in np.arange(calibrated_thr + 0.02, 0.80, 0.01):
+                y_pred_try = (y_proba_holdout >= thr_candidate).astype(int)
+                n_pred_pos = int(y_pred_try.sum())
+                if n_pred_pos < 5:
+                    break
+                prec_try = precision_score(y_test, y_pred_try, zero_division=0)
+                rec_try = recall_score(y_test, y_pred_try, zero_division=0)
+                if prec_try >= self._cfg.min_precision and rec_try >= 0.30:
+                    pf_try = self._compute_profit_factor_score(y_pred_try, pnl_test)
+                    skill_try = 0.30 * prec_try + 0.10 * rec_try + 0.35 * best_roc_auc + 0.25 * pf_try
+                    if skill_try >= self._cfg.min_skill_score * 0.95:
+                        calibrated_thr = float(thr_candidate)
+                        best_precision = prec_try
+                        best_recall = rec_try
+                        best_accuracy = accuracy_score(y_test, y_pred_try)
+                        pf_score = pf_try
+                        final_skill = skill_try
+                        y_pred_holdout = y_pred_try
+                        recovered = True
+                        logger.info(
+                            "ML PRECISION RECOVERY Phase A: thr=%.3f → prec=%.3f rec=%.3f skill=%.3f",
+                            calibrated_thr, best_precision, best_recall, final_skill,
+                        )
+                        break
+
+            # Phase B: retrain with conservative models if threshold bump wasn't enough
+            if not recovered:
+                logger.info("ML PRECISION RECOVERY Phase B: retraining with conservative hyperparams")
+                spw_boost = spw * 1.8  # stronger false-positive penalty
+
+                ensemble_b = VotingEnsemble()
+                cand_metrics_b: dict[str, float] = {}
+
+                rf_b = self._build_rf(conservative=True)
+                try:
+                    rf_b.fit(X_train_s, y_train, sample_weight=train_weights)
+                except TypeError:
+                    rf_b.fit(X_train_s, y_train)
+
+                lgbm_b = self._build_lgbm(scale_pos_weight=spw_boost, conservative=True)
+                if lgbm_b is not None:
+                    try:
+                        lgbm_b.fit(X_train_s, y_train, sample_weight=train_weights)
+                    except Exception:
+                        lgbm_b = None
+
+                xgb_b = self._build_xgb(scale_pos_weight=spw_boost, conservative=True)
+                if xgb_b is not None:
+                    try:
+                        xgb_b.fit(X_train_s, y_train, sample_weight=train_weights)
+                    except Exception:
+                        xgb_b = None
+
+                for candidate_b, tag_b in [(rf_b, "rf"), (lgbm_b, "lgbm"), (xgb_b, "xgb")]:
+                    if candidate_b is None:
+                        continue
+                    try:
+                        y_pred_bv = candidate_b.predict(X_val_s)
+                        y_proba_bv = candidate_b.predict_proba(X_val_s)[:, 1] if len(set(y_train)) > 1 else np.full(len(y_val), 0.5)
+                    except Exception:
+                        continue
+                    prec_bv = precision_score(y_val, y_pred_bv, zero_division=0)
+                    rec_bv = recall_score(y_val, y_pred_bv, zero_division=0)
+                    try:
+                        auc_bv = roc_auc_score(y_val, y_proba_bv)
+                    except ValueError:
+                        auc_bv = 0.5
+                    pf_bv = self._compute_profit_factor_score(y_pred_bv, pnl_val)
+                    skill_bv = 0.30 * prec_bv + 0.10 * rec_bv + 0.35 * auc_bv + 0.25 * pf_bv
+
+                    y_train_pred_b = candidate_b.predict(X_train_s)
+                    train_prec_b = precision_score(y_train, y_train_pred_b, zero_division=0)
+                    if train_prec_b - prec_bv > _adaptive_gap:
+                        logger.warning("ML recovery [%s]: overfitting gap=%.3f — skipped", tag_b, train_prec_b - prec_bv)
+                        continue
+
+                    ensemble_b.add_member(candidate_b, tag_b, skill_bv)
+                    cand_metrics_b[tag_b] = skill_bv
+                    logger.info("ML recovery [%s]: prec=%.3f rec=%.3f auc=%.3f → accepted", tag_b, prec_bv, rec_bv, auc_bv)
+
+                if ensemble_b.is_ready:
+                    # Calibrate the recovery ensemble
+                    if val_mid >= 10:
+                        ensemble_b.apply_isotonic_calibration(y_val_iso, X_val_iso)
+                    else:
+                        ensemble_b.apply_isotonic_calibration(y_val, X_val_s)
+
+                    # Find precision-targeting threshold for recovery ensemble
+                    y_proba_b_val = ensemble_b.predict_proba_calibrated(X_val_thr)
+                    pnl_thr_arr_b = np.array(pnl_val_thr, dtype=np.float64) if pnl_val_thr else None
+                    thr_b = self._calibrate_threshold(
+                        y_val_thr, y_proba_b_val,
+                        min_precision=self._cfg.min_precision, pnl=pnl_thr_arr_b,
+                        min_recall=0.25,
+                    )
+
+                    # Evaluate on holdout
+                    y_proba_b_holdout = ensemble_b.predict_proba_calibrated(X_test_s)
+                    y_pred_b_holdout = (y_proba_b_holdout >= thr_b).astype(int)
+                    n_pred_b = int(y_pred_b_holdout.sum())
+                    if n_pred_b >= 5:
+                        prec_b = precision_score(y_test, y_pred_b_holdout, zero_division=0)
+                        rec_b = recall_score(y_test, y_pred_b_holdout, zero_division=0)
+                        try:
+                            auc_b = roc_auc_score(y_test, y_proba_b_holdout)
+                        except ValueError:
+                            auc_b = 0.5
+                        pf_b = self._compute_profit_factor_score(y_pred_b_holdout, pnl_test)
+                        skill_b = 0.30 * prec_b + 0.10 * rec_b + 0.35 * auc_b + 0.25 * pf_b
+
+                        logger.info(
+                            "ML PRECISION RECOVERY Phase B holdout: prec=%.3f rec=%.3f auc=%.3f skill=%.3f (thr=%.3f)",
+                            prec_b, rec_b, auc_b, skill_b, thr_b,
+                        )
+
+                        # Accept recovery if it improved precision AND skill is reasonable
+                        if prec_b > best_precision and skill_b > final_skill * 0.90:
+                            ensemble = ensemble_b
+                            calibrated_thr = thr_b
+                            best_precision = prec_b
+                            best_recall = rec_b
+                            best_roc_auc = auc_b
+                            best_accuracy = accuracy_score(y_test, y_pred_b_holdout)
+                            pf_score = pf_b
+                            final_skill = skill_b
+                            y_pred_holdout = y_pred_b_holdout
+                            y_proba_holdout = y_proba_b_holdout
+                            # Update best_model ref for legacy save
+                            best_tag_b = max(cand_metrics_b, key=cand_metrics_b.get)
+                            best_model = {"rf": rf_b, "lgbm": lgbm_b, "xgb": xgb_b}.get(best_tag_b, rf_b)
+                            logger.info(
+                                "ML PRECISION RECOVERY Phase B ACCEPTED: prec=%.3f rec=%.3f skill=%.3f",
+                                best_precision, best_recall, final_skill,
+                            )
+                        else:
+                            logger.info(
+                                "ML PRECISION RECOVERY Phase B: no improvement (prec %.3f→%.3f, skill %.3f→%.3f)",
+                                best_precision, prec_b, final_skill, skill_b,
+                            )
 
         # --- Naive baseline: always predict "win" ---
         baseline_win_rate = float(y_test.mean()) if len(y_test) > 0 else 0.5

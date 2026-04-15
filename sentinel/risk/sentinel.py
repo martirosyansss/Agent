@@ -26,7 +26,7 @@ class RiskLimits:
     max_daily_trades: int = 6
     max_position_pct: float = 20.0
     max_total_exposure_pct: float = 60.0
-    max_open_positions: int = 2
+    max_open_positions: int = 5
     max_trades_per_hour: int = 2
     min_trade_interval_sec: int = 1800
     min_order_usd: float = 10.0

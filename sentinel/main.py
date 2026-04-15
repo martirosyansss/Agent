@@ -644,6 +644,11 @@ async def run() -> None:
                 opened = await position_manager.open_position(order)
                 if opened and risk_sentinel:
                     risk_sentinel.record_trade(order.commission, increment_trade=True)
+                # Setup trailing stop for strategies that support it
+                if opened and order.strategy_name == "ema_crossover_rsi":
+                    position_manager.set_trailing_stop(order.symbol, 2.5, 1.5)
+                elif opened and order.strategy_name == "bollinger_breakout":
+                    position_manager.set_trailing_stop(order.symbol, 3.0, 2.0)
                 # Persist opened position to DB
                 if opened and repo:
                     try:
@@ -799,6 +804,21 @@ async def run() -> None:
         strategies["dca_bot"] = DCABot()
         strategies["macd_divergence"] = MACDDivergence()
         strategies["grid_trading"] = GridTrading()
+
+        # ── Restore DCA Bot state from DB (prevent duplicate orders on restart) ──
+        if repo:
+            dca: DCABot = strategies["dca_bot"]
+            _last_buys: dict[str, int] = {}
+            _today_buys: dict[str, int] = {}
+            for sym in settings.trading_symbols:
+                _last_buys[sym] = repo.get_last_filled_buy_ts(DCABot.NAME, sym)
+                _today_buys[sym] = repo.count_buys_today(DCABot.NAME, sym)
+            dca.restore_state(_last_buys, _today_buys)
+            _restored = {s: t for s, t in _last_buys.items() if t > 0}
+            if _restored:
+                log.info("[DCA] State restored from DB: last_buys={}, daily={}", _restored, _today_buys)
+            else:
+                log.info("[DCA] No prior buy history found — fresh start")
 
         log.info("[Module] Strategies initialized: {}", list(strategies.keys()))
     except Exception as e:
@@ -1822,35 +1842,57 @@ async def run() -> None:
             "win_rate_per_symbol": _calc_win_rate_per_symbol(position_state.get("recent_trades", [])),
             "strategy_performance": repo.get_strategy_performance() if repo else [],
             "trades_export": repo.get_all_trades_for_export() if repo else [],
+            "trades_export_full": repo.get_strategy_trades() if repo else [],
             "alerts": _alert_monitor.get_recent_alerts() if _alert_monitor else [],
             "signal_exec_stats": repo.get_signal_execution_stats() if repo else {},
             "ml_predictor": _ml_predictor,
             "ml_retrain_fn": _run_ml_training,
         }
 
+    # Control handlers — shared by Dashboard and Telegram bot
+    async def _handle_stop():
+        nonlocal trading_paused
+        log.warning("STOP requested — trading paused")
+        trading_paused = True
+
+    async def _handle_resume():
+        nonlocal trading_paused
+        log.info("RESUME requested — trading resumed")
+        trading_paused = False
+        if risk_state_machine:
+            risk_state_machine.reset()
+
+    async def _handle_kill():
+        log.warning("KILL requested — shutting down")
+        shutdown.trigger()
+
+    def _handle_settings_update(new_settings):
+        """Propagate risk-limit changes to runtime objects without restart."""
+        nonlocal settings
+        settings = new_settings
+        if risk_sentinel:
+            risk_sentinel._limits.max_open_positions = new_settings.max_open_positions
+            risk_sentinel._limits.max_daily_loss_usd = new_settings.max_daily_loss_usd
+            risk_sentinel._limits.max_daily_loss_pct = new_settings.max_daily_loss_pct
+            risk_sentinel._limits.max_position_pct = new_settings.max_position_pct
+            risk_sentinel._limits.max_total_exposure_pct = new_settings.max_total_exposure_pct
+            risk_sentinel._limits.max_trades_per_hour = new_settings.max_trades_per_hour
+            risk_sentinel._limits.max_order_usd = new_settings.max_order_usd
+            risk_sentinel._limits.max_loss_per_trade_pct = new_settings.stop_loss_pct
+            risk_sentinel._limits.max_daily_commission_pct = new_settings.cb_commission_alert_pct
+            log.info("Risk limits updated at runtime: max_open_positions={}", new_settings.max_open_positions)
+        if position_manager:
+            position_manager._max_open_positions = new_settings.max_open_positions
+            log.info("PositionManager max_open_positions updated to {}", new_settings.max_open_positions)
+
     try:
         from dashboard.app import Dashboard
         dashboard = Dashboard(settings, bus, state_provider=get_system_state)
 
-        async def _handle_stop():
-            nonlocal trading_paused
-            log.warning("STOP requested from dashboard — trading paused")
-            trading_paused = True
-
-        async def _handle_resume():
-            nonlocal trading_paused
-            log.info("RESUME requested from dashboard — trading resumed")
-            trading_paused = False
-            if risk_state_machine:
-                risk_state_machine.reset()
-
-        async def _handle_kill():
-            log.warning("KILL requested from dashboard — shutting down")
-            shutdown.trigger()
-
         dashboard.on_stop = _handle_stop
         dashboard.on_resume = _handle_resume
         dashboard.on_kill = _handle_kill
+        dashboard.on_settings_update = _handle_settings_update
         dashboard.market_chart_provider = build_market_chart
 
         # News collector
@@ -1869,6 +1911,29 @@ async def run() -> None:
         log.info("[Module] Dashboard started on http://localhost:{}", settings.dashboard_port)
     except Exception as e:
         log.warning("[Module] Dashboard failed: {}", e)
+
+    # 19. Telegram Bot
+    telegram_bot = None
+    try:
+        from telegram_bot.bot import TelegramBot
+        telegram_bot = TelegramBot(settings, bus, state_provider=get_system_state)
+        telegram_bot.on_stop = _handle_stop
+        telegram_bot.on_resume = _handle_resume
+        telegram_bot.on_kill = _handle_kill
+        await telegram_bot.start()
+        if telegram_bot.enabled and telegram_bot._running:
+            log.info("[Module] Telegram bot started")
+            # Отправить уведомление о старте
+            await telegram_bot.send_message(
+                f"🟢 <b>SENTINEL v{VERSION}</b> запущен\n"
+                f"Режим: {settings.trading_mode.upper()}\n"
+                f"Символы: {', '.join(settings.trading_symbols)}"
+            )
+        else:
+            log.warning("[Module] Telegram bot disabled (token/chat_id not set)")
+    except Exception as e:
+        log.warning("[Module] Telegram bot failed: {}", e)
+        telegram_bot = None
 
     # ── ML Auto-Retrain loop ─────────────────────────────────────────────────
     async def _ml_retrain_loop():
@@ -1964,6 +2029,12 @@ async def run() -> None:
     if collector_task:
         collector_task.cancel()
         await asyncio.gather(collector_task, return_exceptions=True)
+    if telegram_bot:
+        try:
+            await telegram_bot.send_message("🔴 <b>SENTINEL</b> останавливается...")
+            await telegram_bot.stop()
+        except Exception:
+            pass
     if dashboard:
         await dashboard.stop()
     # Final sync: persist latest position prices to DB before closing

@@ -161,11 +161,16 @@ class TelegramBot:
         if not self._app or not self.enabled:
             return
         try:
-            await self._app.bot.send_message(
-                chat_id=self._chat_id,
-                text=text,
-                parse_mode="HTML",
+            await asyncio.wait_for(
+                self._app.bot.send_message(
+                    chat_id=self._chat_id,
+                    text=text,
+                    parse_mode="HTML",
+                ),
+                timeout=10.0,
             )
+        except asyncio.TimeoutError:
+            logger.error("Telegram send_message timed out (10s)")
         except Exception as exc:
             logger.error("Failed to send Telegram message: %s", exc)
 
