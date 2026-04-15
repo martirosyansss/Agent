@@ -757,6 +757,17 @@ async def run() -> None:
                         if _ml_predictor:
                             _ml_predictor.record_outcome(_entry_prob, _actual_win)
 
+                        # ML auto-promote: shadow → block after 30+ trades with live precision >= training precision * 0.9
+                        for _auto_ml in [_sym_ml, _ml_predictor]:
+                            if _auto_ml and _auto_ml.rollout_mode == "shadow" and _auto_ml._live_tracker.n_recorded >= 30:
+                                _live = _auto_ml._live_tracker.live_metrics()
+                                if "live_precision" in _live and _auto_ml.metrics:
+                                    _train_prec = _auto_ml.metrics.precision
+                                    if _live["live_precision"] >= _train_prec * 0.9 and _live["live_auc"] >= 0.60:
+                                        _auto_ml.rollout_mode = "block"
+                                        log.info("ML AUTO-PROMOTE: shadow → block (live_prec={:.3f} >= {:.3f}, auc={:.3f}, n={})",
+                                                 _live["live_precision"], _train_prec * 0.9, _live["live_auc"], _live["n"])
+
             if risk_state_machine:
                 await risk_state_machine.update(position_manager.total_realized_pnl)
 

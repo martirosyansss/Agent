@@ -71,6 +71,7 @@ class Dashboard:
         self.on_kill: Optional[Callable[[], Coroutine]] = None
         self.on_settings_update: Optional[Callable[[Any], None]] = None
         self.market_chart_provider: Optional[Callable[[str], dict]] = None
+        self.trade_history_provider: Optional[Callable[[], list]] = None
         self.news_collector = None  # устанавливается из main.py
 
     def _build_config_payload(self) -> dict[str, Any]:

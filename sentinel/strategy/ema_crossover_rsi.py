@@ -41,10 +41,10 @@ class EMAConfig:
     min_volume_ratio: float = 1.0
     stop_loss_pct: float = 2.5
     take_profit_pct: float = 5.0
-    trailing_stop_pct: float = 1.5
-    trailing_activate_pct: float = 2.5
+    trailing_stop_pct: float = 2.0
+    trailing_activate_pct: float = 1.5    # lowered from 2.5 so trailing actually activates
     max_hold_hours: int = 72
-    min_confidence: float = 0.60
+    min_confidence: float = 0.70          # tightened from 0.60
     max_position_pct: float = 20.0
 
     def __post_init__(self):
@@ -145,6 +145,11 @@ class EMACrossoverRSI(BaseStrategy):
             log.debug("{} BUY skip: close {:.2f} < EMA50 {:.2f}", f.symbol, f.close, f.ema_50)
             return None
 
+        # ADX filter: skip sideways markets (EMA crossover needs trend)
+        if f.adx < 20:
+            log.debug("{} BUY skip: ADX {:.1f} < 20 (sideways)", f.symbol, f.adx)
+            return None
+
         # ── Расчёт confidence ──
         confidence = 0.50  # base
 
@@ -181,6 +186,14 @@ class EMACrossoverRSI(BaseStrategy):
             elif f.trend_alignment <= 0.2:
                 confidence -= 0.10
 
+        # Penalty factors for marginal conditions
+        if 60 <= f.rsi_14 < 70:
+            confidence -= 0.05    # approaching overbought
+        if 1.0 <= f.volume_ratio < 1.2:
+            confidence -= 0.03    # volume barely passing
+        if 20 <= f.adx < 25:
+            confidence -= 0.03    # weak trend
+
         # News: block entry on critical events (black swan / security)
         blocked, block_reason = news_should_block_entry(f)
         if blocked:
@@ -197,8 +210,15 @@ class EMACrossoverRSI(BaseStrategy):
             log.debug("{} BUY skip: confidence {:.2f} < {}", f.symbol, confidence, cfg.min_confidence)
             return None
 
-        # SL / TP (adjusted for news-driven volatility)
-        sl_price, tp_price = news_adjust_sl_tp(f, f.close, cfg.stop_loss_pct, cfg.take_profit_pct)
+        # ATR-adaptive SL/TP: use 1.5x ATR as SL floor, 2.5x ATR as TP floor
+        if f.atr > 0 and f.close > 0:
+            atr_pct = f.atr / f.close * 100
+            sl_pct = max(cfg.stop_loss_pct, atr_pct * 1.5)
+            tp_pct = max(cfg.take_profit_pct, atr_pct * 2.5)
+        else:
+            sl_pct = cfg.stop_loss_pct
+            tp_pct = cfg.take_profit_pct
+        sl_price, tp_price = news_adjust_sl_tp(f, f.close, sl_pct, tp_pct)
 
         reasons = []
         reasons.append(f"EMA crossover: EMA9={f.ema_9:.2f} > EMA21={f.ema_21:.2f}")

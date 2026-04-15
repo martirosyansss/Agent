@@ -2,10 +2,10 @@
 Стратегия V5: DCA Bot (Smart Dollar-Cost Averaging).
 
 Логика:
-  BUY:  каждые 24h, с множителем при dip (-3%→1.5x, -5%→2x, -10%→3x)
-  SELL: partial TP при +5% (30%), full TP при +8%
+  BUY:  каждые 24h, с множителем при dip (-3%->1.5x, -5%->2x, -10%->3x)
+  SELL: trailing stop at +5%, full TP at +8%, drawdown stop at -15%
 
-Confidence: всегда 0.80 (математический подход, не предсказание).
+Confidence: base 0.80 (математический подход).
 Защита: max 40% invested, min $100 reserve, drawdown < 15%.
 Режим рынка: ALL (лучше в trending_down / sideways)
 """
@@ -21,6 +21,7 @@ from strategy.base_strategy import (
     BaseStrategy,
     news_confidence_adjustment,
     news_should_accelerate_exit,
+    news_should_block_entry,
 )
 
 
@@ -32,8 +33,8 @@ class DCAConfig:
     max_invested_pct: float = 40.0
     stop_drawdown_pct: float = 15.0
     take_profit_pct: float = 8.0
-    partial_tp_pct: float = 5.0
-    partial_tp_sell_ratio: float = 0.30
+    trailing_activate_pct: float = 5.0
+    trailing_stop_pct: float = 2.5
     min_confidence: float = 0.70
 
     # Dip multipliers: (price_drop_pct, amount_multiplier)
@@ -59,22 +60,14 @@ class DCABot(BaseStrategy):
         self._last_buy_time: dict[str, int] = {}
         self._daily_buys: dict[str, int] = {}
         self._daily_reset: dict[str, int] = {}
-        self._partial_sold: dict[str, bool] = {}
+        self._max_price: dict[str, float] = {}
 
     def restore_state(
         self,
         last_buy_times: dict[str, int],
         daily_buys: dict[str, int],
     ) -> None:
-        """Восстановить персистентное состояние из БД после перезапуска.
-
-        Без этого вызова DCA Bot «забывает» историю покупок и может
-        сгенерировать BUY-сигнал сразу при старте, игнорируя cooldown.
-
-        Args:
-            last_buy_times: {symbol: timestamp_ms} — время последней покупки.
-            daily_buys: {symbol: count} — количество покупок за сегодня.
-        """
+        """Восстановить персистентное состояние из БД после перезапуска."""
         now_ms = int(time.time() * 1000)
         for sym, ts in last_buy_times.items():
             if ts > 0:
@@ -82,13 +75,10 @@ class DCABot(BaseStrategy):
         for sym, count in daily_buys.items():
             if count > 0:
                 self._daily_buys[sym] = count
-                # Anchor _daily_reset so _reset_daily() doesn't
-                # immediately wipe the restored counter.
                 self._daily_reset[sym] = now_ms
 
     def _get_dip_multiplier(self, features: FeatureVector) -> float:
-        """Определить множитель на основе падения цены (за ~15 часовых свечей)."""
-        pct = features.price_change_15m  # 15 x 1h candles ≈ 15h lookback
+        pct = features.price_change_15m
         multiplier = 1.0
         for threshold, mult in sorted(self._cfg.dip_thresholds, key=lambda x: x[0], reverse=True):
             if pct <= threshold:
@@ -96,12 +86,14 @@ class DCABot(BaseStrategy):
         return multiplier
 
     def _reset_daily(self, sym: str, now_ms: int) -> None:
-        """Сбросить дневные счётчики."""
         day_ms = 86400 * 1000
         last_reset = self._daily_reset.get(sym, 0)
         if now_ms - last_reset > day_ms:
             self._daily_buys[sym] = 0
             self._daily_reset[sym] = now_ms
+
+    def _cleanup(self, sym: str) -> None:
+        self._max_price.pop(sym, None)
 
     def generate_signal(
         self,
@@ -114,89 +106,91 @@ class DCABot(BaseStrategy):
         now_ms = int(time.time() * 1000)
         self._reset_daily(sym, now_ms)
 
-        # ── SELL (если есть позиция) ──
+        # ── SELL ──
         if has_open_position and entry_price is not None:
             if entry_price <= 0:
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=0.99, strategy_name=self.NAME,
-                    reason=f"SAFETY: invalid entry_price={entry_price}",
-                )
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                              confidence=0.99, strategy_name=self.NAME,
+                              reason=f"SAFETY: invalid entry_price={entry_price}", features=features)
             pnl_pct = (features.close - entry_price) / entry_price * 100
+            self._max_price[sym] = max(self._max_price.get(sym, entry_price), features.close)
 
-            # News-driven emergency exit (critical bearish / security event)
+            # News-driven emergency exit
             exit_now, exit_conf, exit_reason = news_should_accelerate_exit(features, pnl_pct)
             if exit_now:
-                self._partial_sold[sym] = False
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=exit_conf, strategy_name=self.NAME,
-                    reason=exit_reason,
-                )
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                              confidence=exit_conf, strategy_name=self.NAME,
+                              reason=exit_reason, features=features)
 
             # Full take profit
             if pnl_pct >= cfg.take_profit_pct:
-                self._partial_sold[sym] = False
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=0.85, strategy_name=self.NAME,
-                    reason=f"DCA full TP: +{pnl_pct:.1f}% >= {cfg.take_profit_pct}%",
-                )
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                              confidence=0.85, strategy_name=self.NAME,
+                              reason=f"DCA full TP: +{pnl_pct:.1f}% >= {cfg.take_profit_pct}%",
+                              features=features)
 
-            # Partial take profit (sell 30% at +5%)
-            if pnl_pct >= cfg.partial_tp_pct and not self._partial_sold.get(sym, False):
-                self._partial_sold[sym] = True
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=0.80, strategy_name=self.NAME,
-                    reason=f"DCA partial TP ({cfg.partial_tp_sell_ratio*100:.0f}%): +{pnl_pct:.1f}%",
-                    suggested_quantity=0.0,  # PositionManager handles ratio
-                )
+            # Trailing stop (replaces broken partial TP)
+            max_p = self._max_price.get(sym, entry_price)
+            max_gain_pct = (max_p - entry_price) / entry_price * 100
+            if max_gain_pct >= cfg.trailing_activate_pct:
+                drop_from_max = (max_p - features.close) / max_p * 100
+                if drop_from_max >= cfg.trailing_stop_pct:
+                    self._cleanup(sym)
+                    return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                                  confidence=0.82, strategy_name=self.NAME,
+                                  reason=f"DCA trailing: drop {drop_from_max:.1f}% from max (activated at +{max_gain_pct:.1f}%)",
+                                  features=features)
 
             # Drawdown stop
             if pnl_pct <= -cfg.stop_drawdown_pct:
-                self._partial_sold[sym] = False
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=0.95, strategy_name=self.NAME,
-                    reason=f"DCA drawdown stop: {pnl_pct:.1f}% <= -{cfg.stop_drawdown_pct}%",
-                )
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                              confidence=0.95, strategy_name=self.NAME,
+                              reason=f"DCA drawdown stop: {pnl_pct:.1f}% <= -{cfg.stop_drawdown_pct}%",
+                              features=features)
             return None
 
         # ── BUY ──
-        # Check interval
         last_buy = self._last_buy_time.get(sym, 0)
         interval_ms = cfg.interval_hours * 3600 * 1000
         if now_ms - last_buy < interval_ms:
             return None
-
-        # Check daily limit
         daily = self._daily_buys.get(sym, 0)
         if daily >= cfg.max_daily_buys:
             return None
 
-        # Calculate amount with dip multiplier
+        # News block
+        blocked, block_reason = news_should_block_entry(features)
+        if blocked:
+            return None
+
         multiplier = self._get_dip_multiplier(features)
-
-        self._last_buy_time[sym] = now_ms
-        self._daily_buys[sym] = daily + 1
-
-        # DCA: professional news-aware sizing
         news_delta, news_reason = news_confidence_adjustment(features, direction="buy")
         dca_confidence = 0.80 + news_delta
 
-        # Scale multiplier based on news signal (compound with dip multiplier)
+        if dca_confidence < cfg.min_confidence:
+            return None
+
+        # News-aware sizing
         news_mult = 1.0
         if features.news_critical_alert:
-            news_mult = 0.5  # reduce position on critical news (highest priority)
+            news_mult = 0.5
         elif features.news_composite_score < -0.2 and features.news_actionable:
-            news_mult = 1.3  # more DCA in fear (contrarian)
+            news_mult = 1.3
         elif features.news_composite_score > 0.3 and features.news_actionable:
-            news_mult = 0.7  # less DCA at euphoria
+            news_mult = 0.7
         multiplier *= news_mult
 
         amount = cfg.base_amount_usd * multiplier
         qty = amount / features.close if features.close > 0 else 0
+
+        # Update cooldown AFTER all validation passed
+        self._last_buy_time[sym] = now_ms
+        self._daily_buys[sym] = daily + 1
+        self._max_price[sym] = features.close
 
         reason = f"DCA buy: ${amount:.2f} (mult={multiplier:.1f}x)"
         if news_delta != 0:
@@ -205,8 +199,8 @@ class DCABot(BaseStrategy):
         return Signal(
             timestamp=now_ms, symbol=sym, direction=Direction.BUY,
             confidence=dca_confidence, strategy_name=self.NAME,
-            reason=reason,
-            suggested_quantity=qty,
+            reason=reason, suggested_quantity=qty,
             stop_loss_price=features.close * (1 - cfg.stop_drawdown_pct / 100),
             take_profit_price=features.close * (1 + cfg.take_profit_pct / 100),
+            features=features,
         )

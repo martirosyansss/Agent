@@ -2467,7 +2467,7 @@
                     <span class="has-tooltip" style="margin-left:auto" tabindex="0" aria-label="Что такое PnL?">
                         <span class="info-btn" aria-hidden="true">?</span>
                         <div class="tooltip-box" role="tooltip">
-                            <div class="tooltip-title">📈 PnL Сегодня (Profit &amp; Loss)</div>
+                            <div class="tooltip-title">^ PnL Сегодня (Profit &amp; Loss)</div>
                             <div class="tooltip-body">Прибыль или убыток за текущий торговый день. <strong>Зелёный</strong> = в плюсе, <strong>красный</strong> = в убытке. Сбрасывается каждый день в полночь UTC.</div>
                             <div class="tooltip-range">Хорошо: &gt;0 · Плохо: &lt;-3% от баланса</div>
                         </div>
@@ -2628,7 +2628,7 @@
             </div>
         </div>
 
-        <div class="section-divider"><h2>📈 Анализ рынка</h2></div>
+        <div class="section-divider"><h2>^ Анализ рынка</h2></div>
         <p style="font-size:12px;color:var(--text-dim);margin:-12px 0 20px;line-height:1.5;">
             График цен, риски и индикаторы — если ты новичок, прокрути каждую карточку — по значку <span class="info-btn" style="display:inline-flex;vertical-align:middle">?</span> появится подсказка с объяснением.
         </p>
@@ -2695,7 +2695,7 @@
                         <span class="risk-metric-label has-tooltip" tabindex="0">
                             Дневной убыток
                             <div class="tooltip-box">
-                                <div class="tooltip-title">📉 Daily Loss</div>
+                                <div class="tooltip-title">v Daily Loss</div>
                                 <div class="tooltip-body">Общий убыток за сегодня. Бот автоматически останавливается, если порог превышен.</div>
                                 <div class="tooltip-range">Опасно: &gt;3% от баланса в день</div>
                             </div>
@@ -2709,7 +2709,7 @@
                         <span class="risk-metric-label has-tooltip" tabindex="0">
                             Просадка
                             <div class="tooltip-box">
-                                <div class="tooltip-title">📉 Max Drawdown</div>
+                                <div class="tooltip-title">v Max Drawdown</div>
                                 <div class="tooltip-body">Максимальное падение баланса от пика до дна. Если 10% — значит, бот потерял 10 центов с $1 до текущего значения.</div>
                                 <div class="tooltip-range">Норма: &lt;10% · Опасно: &gt;20%</div>
                             </div>
@@ -2817,7 +2817,7 @@
                     <span class="ind-card-label has-tooltip" tabindex="0" style="cursor:help">
                         EMA 9 / 21
                         <div class="tooltip-box" style="left:0;transform:none;">
-                            <div class="tooltip-title">📈 EMA — Скользящее среднее</div>
+                            <div class="tooltip-title">^ EMA — Скользящее среднее</div>
                             <div class="tooltip-body">EMA (Скользящая Средняя) — средняя цена за N свечей. <strong>EMA 9 &gt; EMA 21</strong> = цена растёт (бычий сигнал). <strong>EMA 9 &lt; EMA 21</strong> = цена падает (медвежий сигнал).</div>
                             <div class="tooltip-range">Бычий: EMA9 &gt; EMA21 · Медвежий: EMA9 &lt; EMA21</div>
                         </div>
@@ -2848,7 +2848,7 @@
                     <span class="ind-card-label has-tooltip" tabindex="0" style="cursor:help">
                         MACD
                         <div class="tooltip-box" style="left:0;transform:none;">
-                            <div class="tooltip-title">📉 MACD — Сигнал разворота</div>
+                            <div class="tooltip-title">v MACD — Сигнал разворота</div>
                             <div class="tooltip-body">Разность двух EMA. <strong>MACD &gt; линии</strong> = бычий импульс. <strong>MACD &lt; линии</strong> = медвежий. Гистограмма показывает силу движения.</div>
                             <div class="tooltip-range">&gt;0 = бычий · &lt;0 = медвежий</div>
                         </div>
@@ -4187,11 +4187,11 @@
             var trendBull = ind.trend === 'bullish';
             var trendBear = ind.trend === 'bearish';
             var emaSent = hasCross && crossStrong ? 'bullish' : trendBull ? 'bullish' : trendBear ? 'bearish' : 'neutral';
-            factors.push({ name: 'Тренд (EMA 9/21)', icon: hasCross ? '🔀' : trendBull ? '📈' : trendBear ? '📉' : '➡️', sentiment: emaSent, score: hasCross ? (crossStrong ? 'CROSS' : 'weak') : (trendBull ? '+1' : trendBear ? '-1' : '0'), scoreNum: emaSent === 'bullish' ? 1 : emaSent === 'bearish' ? -1 : 0, detail: hasCross ? (crossStrong ? 'EMA9 пересекла EMA21 снизу вверх — ГЛАВНЫЙ сигнал BUY!' : 'Кроссовер есть, но слишком слабый (< ATR*0.1)') : trendBull ? 'EMA9 > EMA21 — тренд вверх, но кроссовера нет (ждём пересечение)' : trendBear ? 'EMA9 < EMA21 — тренд вниз' : 'Боковик' });
+            factors.push({ name: 'Тренд (EMA 9/21)', icon: hasCross ? '🔀' : trendBull ? '^' : trendBear ? 'v' : '➡️', sentiment: emaSent, score: hasCross ? (crossStrong ? 'CROSS' : 'weak') : (trendBull ? '+1' : trendBear ? '-1' : '0'), scoreNum: emaSent === 'bullish' ? 1 : emaSent === 'bearish' ? -1 : 0, detail: hasCross ? (crossStrong ? 'EMA9 пересекла EMA21 снизу вверх — ГЛАВНЫЙ сигнал BUY!' : 'Кроссовер есть, но слишком слабый (< ATR*0.1)') : trendBull ? 'EMA9 > EMA21 — тренд вверх, но кроссовера нет (ждём пересечение)' : trendBear ? 'EMA9 < EMA21 — тренд вниз' : 'Боковик' });
             totalScore += emaSent === 'bullish' ? 1 : emaSent === 'bearish' ? -1 : 0; maxPossible += 1;
 
             var rsi = ind.rsi_14;
-            factors.push({ name: 'RSI (14)', icon: rsi < 30 ? '🟢' : rsi > 70 ? '🔴' : '🟡', sentiment: rsi < 40 ? 'bullish' : rsi > 70 ? 'bearish' : 'neutral', score: rsi.toFixed(1), scoreNum: rsi < 40 ? 1 : rsi > 70 ? -1 : 0, detail: 'RSI=' + rsi.toFixed(1) + (rsi < 70 ? ' < 70 — не перекуплен, вход разрешён' : ' >= 70 — перекуплен, BUY ЗАБЛОКИРОВАН') });
+            factors.push({ name: 'RSI (14)', icon: rsi < 30 ? '+' : rsi > 70 ? '-' : '~', sentiment: rsi < 40 ? 'bullish' : rsi > 70 ? 'bearish' : 'neutral', score: rsi.toFixed(1), scoreNum: rsi < 40 ? 1 : rsi > 70 ? -1 : 0, detail: 'RSI=' + rsi.toFixed(1) + (rsi < 70 ? ' < 70 -- ne perekuplen' : ' >= 70 -- perekuplen, BUY BLOCKED') });
             totalScore += rsi < 40 ? 1 : rsi > 70 ? -1 : 0; maxPossible += 1;
 
             var adx = ind.adx || 0;
@@ -4250,7 +4250,7 @@
         pctEl.style.color = ringColor;
 
         // ── Badge ──
-        if (isSignal) { badgeEl.className = 'forecast-status-badge ready'; badgeEl.textContent = '🚀 ВХОД ВЫПОЛНЕН'; }
+        if (isSignal) { badgeEl.className = 'forecast-status-badge ready'; badgeEl.textContent = '>> ВХОД ВЫПОЛНЕН'; }
         else if (wasBlocked) { badgeEl.className = 'forecast-status-badge blocked'; badgeEl.textContent = '⛔ ЗАБЛОКИРОВАНО'; }
         else if (probability >= 65) { badgeEl.className = 'forecast-status-badge ready'; badgeEl.textContent = '✅ ГОТОВ К ВХОДУ'; }
         else if (probability >= 35) { badgeEl.className = 'forecast-status-badge wait'; badgeEl.textContent = '⏳ ОЖИДАНИЕ'; }
@@ -4341,7 +4341,7 @@
         ph += '<div class="pipeline-check"><div class="pipeline-check-icon">'+(mlReady?'✅':'⏳')+'</div><div class="pipeline-check-name">Модель обучена и готова</div><div class="pipeline-check-value '+(mlReady?'pass':'neutral')+'">'+(mlReady?'ДА':'НЕТ')+'</div></div>';
         ph += '<div class="pipeline-check"><div class="pipeline-check-icon">🎚️</div><div class="pipeline-check-name">Режим</div><div class="pipeline-check-value neutral">'+mlMode+'</div></div>';
         ph += '<div class="pipeline-check"><div class="pipeline-check-icon">🚫</div><div class="pipeline-check-name">Порог блокировки</div><div class="pipeline-check-value neutral">'+((ml.block_threshold||0.55)*100).toFixed(0)+'%</div></div>';
-        ph += '<div class="pipeline-check"><div class="pipeline-check-icon">📉</div><div class="pipeline-check-name">Порог уменьшения размера</div><div class="pipeline-check-value neutral">'+((ml.reduce_threshold||0.65)*100).toFixed(0)+'%</div></div>';
+        ph += '<div class="pipeline-check"><div class="pipeline-check-icon">v</div><div class="pipeline-check-name">Порог уменьшения размера</div><div class="pipeline-check-value neutral">'+((ml.reduce_threshold||0.65)*100).toFixed(0)+'%</div></div>';
         ph += '</div><div class="pipeline-formula">';
         ph += '<span class="label">ML решение:</span>\n';
         ph += '  prob <span class="op"><</span> <span class="val">'+((ml.block_threshold||0.55)*100).toFixed(0)+'%</span>   <span class="op">→</span> <span class="fail">БЛОК (ордер отменён)</span>\n';

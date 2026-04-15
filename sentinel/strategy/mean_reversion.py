@@ -2,8 +2,8 @@
 Стратегия V3: Mean Reversion (RSI Extreme + Bollinger Bands).
 
 Логика:
-  BUY:  RSI(4h) < 25 + цена < lower BB(4h) + Volume > 1.5× avg + EMA50(1d) растёт
-  SELL: RSI(4h) > 75 + цена > upper BB ИЛИ цена вернулась к EMA21 ИЛИ SL/TP
+  BUY:  RSI(4h) < 25 + цена < lower BB(4h) + Volume > 1.8× avg + not falling knife
+  SELL: RSI(4h) > 75 + trailing stop + BB middle revert + SL/TP + max hold
 
 Confidence: base=0.65 + RSI extreme(+0.10) + volume(+0.08) + trend(+0.07)
 Режим рынка: any (ловит экстремумы)
@@ -27,13 +27,16 @@ from strategy.base_strategy import (
 
 @dataclass
 class MeanRevConfig:
-    rsi_oversold: float = 30.0
+    rsi_oversold: float = 25.0
     rsi_overbought: float = 75.0
     stop_loss_pct: float = 3.0
     take_profit_pct: float = 8.0
-    min_volume_ratio: float = 1.2
+    trailing_activate_pct: float = 4.0
+    trailing_stop_pct: float = 2.0
+    min_volume_ratio: float = 1.8
     min_confidence: float = 0.65
     max_position_pct: float = 15.0
+    max_hold_hours: int = 96
 
     def __post_init__(self):
         if self.stop_loss_pct <= 0 or self.stop_loss_pct > 50:
@@ -43,93 +46,82 @@ class MeanRevConfig:
 
 
 class MeanReversion(BaseStrategy):
-    """Стратегия V3: Mean Reversion — торговля от экстремумов RSI + BB."""
-
     NAME = "mean_reversion"
 
     def __init__(self, config: MeanRevConfig | None = None) -> None:
         super().__init__()
         self._cfg = config or MeanRevConfig()
+        self._max_price: dict[str, float] = {}
+        self._entry_ts: dict[str, int] = {}
 
-    def generate_signal(
-        self,
-        features: FeatureVector,
-        has_open_position: bool = False,
-        entry_price: float | None = None,
-    ) -> Optional[Signal]:
+    def _cleanup(self, sym: str) -> None:
+        self._max_price.pop(sym, None)
+        self._entry_ts.pop(sym, None)
+
+    def generate_signal(self, features: FeatureVector, has_open_position: bool = False, entry_price: float | None = None) -> Optional[Signal]:
         cfg = self._cfg
         sym = features.symbol
         now_ms = int(time.time() * 1000)
 
-        # ── SELL (если есть позиция) ──
         if has_open_position and entry_price is not None:
             if entry_price <= 0:
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=0.99, strategy_name=self.NAME,
-                    reason=f"SAFETY: invalid entry_price={entry_price}",
-                )
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL, confidence=0.99, strategy_name=self.NAME, reason=f"SAFETY: invalid entry_price={entry_price}", features=features)
             pnl_pct = (features.close - entry_price) / entry_price * 100
+            self._max_price[sym] = max(self._max_price.get(sym, entry_price), features.close)
 
-            # News-driven emergency exit (critical bearish / security event / profit lock)
             exit_now, exit_conf, exit_reason = news_should_accelerate_exit(features, pnl_pct)
             if exit_now:
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=exit_conf, strategy_name=self.NAME,
-                    reason=exit_reason,
-                )
-
-            # Take profit
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL, confidence=exit_conf, strategy_name=self.NAME, reason=exit_reason, features=features)
             if pnl_pct >= cfg.take_profit_pct:
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=0.90, strategy_name=self.NAME,
-                    reason=f"MeanRev TP: +{pnl_pct:.1f}% >= {cfg.take_profit_pct}%",
-                )
-            # Stop loss
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL, confidence=0.90, strategy_name=self.NAME, reason=f"MeanRev TP: +{pnl_pct:.1f}% >= {cfg.take_profit_pct}%", features=features)
             if pnl_pct <= -cfg.stop_loss_pct:
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=0.95, strategy_name=self.NAME,
-                    reason=f"MeanRev SL: {pnl_pct:.1f}% <= -{cfg.stop_loss_pct}%",
-                )
-            # RSI overbought exit
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL, confidence=0.95, strategy_name=self.NAME, reason=f"MeanRev SL: {pnl_pct:.1f}% <= -{cfg.stop_loss_pct}%", features=features)
+
+            max_p = self._max_price.get(sym, entry_price)
+            max_gain = (max_p - entry_price) / entry_price * 100
+            if max_gain >= cfg.trailing_activate_pct:
+                drop = (max_p - features.close) / max_p * 100
+                if drop >= cfg.trailing_stop_pct:
+                    self._cleanup(sym)
+                    return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL, confidence=0.85, strategy_name=self.NAME, reason=f"MeanRev trailing: drop {drop:.1f}% from max", features=features)
+
             if features.rsi_14 > cfg.rsi_overbought:
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=0.80, strategy_name=self.NAME,
-                    reason=f"MeanRev exit: RSI {features.rsi_14:.1f} > {cfg.rsi_overbought}",
-                )
-            # Price reverted to EMA21 AND RSI normalized — take partial confirmation
-            if features.close >= features.ema_21 > 0 and features.rsi_14 > 60:
-                return Signal(
-                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
-                    confidence=0.75, strategy_name=self.NAME,
-                    reason=f"MeanRev revert: price={features.close:.2f} >= EMA21={features.ema_21:.2f}, RSI={features.rsi_14:.0f}",
-                )
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL, confidence=0.80, strategy_name=self.NAME, reason=f"MeanRev exit: RSI {features.rsi_14:.1f} > {cfg.rsi_overbought}", features=features)
+
+            entry_ts = self._entry_ts.get(sym, now_ms)
+            hours_held = (now_ms - entry_ts) / 3_600_000
+            bb_mid = (features.bb_upper + features.bb_lower) / 2 if features.bb_upper > 0 and features.bb_lower > 0 else 0
+            if hours_held >= 4.0 and bb_mid > 0 and features.close >= bb_mid and features.rsi_14 > 72:
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL, confidence=0.75, strategy_name=self.NAME, reason=f"MeanRev revert: price>BB_mid, RSI={features.rsi_14:.0f} (held {hours_held:.1f}h)", features=features)
+
+            if hours_held >= cfg.max_hold_hours and pnl_pct < cfg.take_profit_pct * 0.5:
+                self._cleanup(sym)
+                return Signal(timestamp=now_ms, symbol=sym, direction=Direction.SELL, confidence=0.70, strategy_name=self.NAME, reason=f"MeanRev time exit: held {hours_held:.0f}h", features=features)
             return None
 
-        # ── BUY (нет позиции) ──
         if has_open_position:
             return None
 
-        # RSI oversold
         if features.rsi_14 >= cfg.rsi_oversold:
             return None
-        # Price below lower BB
         if features.bb_lower > 0 and features.close >= features.bb_lower:
             return None
-        # Volume confirmation
         if features.volume_ratio < cfg.min_volume_ratio:
             return None
-
-        # Trend filter: do NOT buy in strong downtrend (catching a falling knife)
-        if (features.ema_9 < features.ema_21 < features.ema_50
-                and features.ema_50 > 0 and features.adx > 25):
+        if features.ema_9 < features.ema_21 < features.ema_50 and features.ema_50 > 0 and features.adx > 25:
+            return None
+        if features.ema_50 > 0 and features.close < features.ema_50 and features.adx > 30:
+            return None
+        dmi_spread = getattr(features, 'dmi_spread', None)
+        if dmi_spread is not None and dmi_spread < -20:
             return None
 
-        # Confidence scoring
         confidence = 0.65
         if features.rsi_14 < 20:
             confidence += 0.10
@@ -138,30 +130,25 @@ class MeanReversion(BaseStrategy):
         if features.ema_50 > 0 and features.close > features.ema_50 * 0.95:
             confidence += 0.07
 
-        # News: block on critical black swan even for contrarian strategy
         blocked, block_reason = news_should_block_entry(features)
         if blocked:
             return None
-
-        # News confidence (contrarian: moderate fear = opportunity, extreme = danger)
         news_delta, news_reason = news_confidence_adjustment(features, "buy", "mean_reversion")
         confidence += news_delta
-
         confidence = min(confidence, 0.95)
-
         if confidence < cfg.min_confidence:
             return None
 
-        # SL / TP (adjusted for news-driven volatility)
-        sl, tp = news_adjust_sl_tp(features, features.close, cfg.stop_loss_pct, cfg.take_profit_pct)
-
+        # ATR-adaptive SL/TP
+        if features.atr > 0 and features.close > 0:
+            atr_pct = features.atr / features.close * 100
+            sl_pct = max(cfg.stop_loss_pct, atr_pct * 1.5)
+            tp_pct = max(cfg.take_profit_pct, atr_pct * 3.0)
+        else:
+            sl_pct, tp_pct = cfg.stop_loss_pct, cfg.take_profit_pct
+        sl, tp = news_adjust_sl_tp(features, features.close, sl_pct, tp_pct)
         reason = f"MeanRev BUY: RSI={features.rsi_14:.1f}, price<lowerBB, vol_ratio={features.volume_ratio:.1f}"
         if news_delta != 0:
             reason += f", {news_reason}"
-
-        return Signal(
-            timestamp=now_ms, symbol=sym, direction=Direction.BUY,
-            confidence=confidence, strategy_name=self.NAME,
-            reason=reason,
-            stop_loss_price=sl, take_profit_price=tp,
-        )
+        self._entry_ts[sym] = now_ms
+        return Signal(timestamp=now_ms, symbol=sym, direction=Direction.BUY, confidence=confidence, strategy_name=self.NAME, reason=reason, stop_loss_price=sl, take_profit_price=tp, features=features)

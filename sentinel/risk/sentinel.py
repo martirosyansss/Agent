@@ -156,6 +156,11 @@ class RiskSentinel:
                 )
             order_value = signal.suggested_quantity * current_market_price
             new_exposure_pct = total_exposure_pct + (order_value / balance * 100)
+            # Correlation risk: BTC+ETH are ~0.85 correlated, apply 15% penalty
+            # to effective exposure when both are held (prevents false diversification)
+            correlated_symbols = {"BTCUSDT", "ETHUSDT"}
+            if signal.symbol in correlated_symbols and open_positions_count > 0:
+                new_exposure_pct *= 1.15  # 15% correlation surcharge
             if new_exposure_pct > self._limits.max_total_exposure_pct:
                 return RiskCheckResult(
                     approved=False,

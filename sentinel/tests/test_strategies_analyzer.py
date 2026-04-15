@@ -185,7 +185,7 @@ class TestMeanReversion:
     def test_sell_tp(self):
         from strategy.mean_reversion import MeanReversion
         s = MeanReversion()
-        f = make_fv(close=107.0)
+        f = make_fv(close=109.0)  # +9% >= TP 8%
         sig = s.generate_signal(f, has_open_position=True, entry_price=100.0)
         assert sig is not None
         assert sig.direction == Direction.SELL
@@ -250,7 +250,7 @@ class TestBollingerBreakout:
         sym = "BTCUSDT"
         # Simulate price going up then dropping
         s._max_price[sym] = 106.0  # Was at 106
-        f = make_fv(close=103.5)  # pnl=3.5%>=3% activate, drop=2.36%>=2% trail
+        f = make_fv(close=102.5)  # pnl=2.5%>=2% activate, drop=3.3%>=3% trail
         sig = s.generate_signal(f, has_open_position=True, entry_price=100.0)
         assert sig is not None
         assert sig.direction == Direction.SELL
@@ -288,14 +288,18 @@ class TestDCABot:
         assert sig.direction == Direction.SELL
         assert "full TP" in sig.reason
 
-    def test_sell_partial_tp(self):
+    def test_sell_trailing_stop(self):
+        """DCA trailing stop replaces old broken partial TP."""
         from strategy.dca_bot import DCABot
         s = DCABot()
-        f = make_fv(close=105.5)
+        sym = "BTCUSDT"
+        # Max was 106 (+6% gain), now dropped to 103 (2.9% from max >= 2.5% trail)
+        s._max_price[sym] = 106.0
+        f = make_fv(close=103.0)
         sig = s.generate_signal(f, has_open_position=True, entry_price=100.0)
         assert sig is not None
         assert sig.direction == Direction.SELL
-        assert "partial" in sig.reason
+        assert "trailing" in sig.reason
 
     def test_dip_multiplier(self):
         from strategy.dca_bot import DCABot
@@ -330,10 +334,19 @@ class TestMACDDivergence:
         from strategy.macd_divergence import MACDDivergence
         s = MACDDivergence()
         sym = "BTCUSDT"
-        # 10+ bars for min_divergence_bars=10
-        s._price_history[sym] = [110, 108, 106, 105, 104, 103, 102, 101, 100, 99]
-        s._macd_history[sym] = [-0.5, -0.4, -0.3, -0.2, -0.1, -0.15, -0.12, -0.08, -0.05, -0.02]
-        f = make_fv(close=98.0, rsi_14=30.0, volume_ratio=1.5, macd_histogram=0.0)
+        # Swing-point divergence: swing_window=3, min_divergence_bars=10
+        # Price swing lows: idx=4 (97), idx=16 (96) → lower-lower
+        # MACD swing lows:  idx=4 (-0.6), idx=16 (-0.3) → higher-lower (divergence!)
+        # generate_signal appends one more point, total becomes 21
+        s._price_history[sym] = [
+            105, 103, 100, 98, 97, 98, 100, 103, 105, 106,
+            104, 103, 101, 99, 98, 97, 96, 97, 99, 101,
+        ]
+        s._macd_history[sym] = [
+            -0.1, -0.2, -0.4, -0.5, -0.6, -0.5, -0.3, -0.1, 0.0, 0.1,
+            -0.05, -0.1, -0.15, -0.2, -0.25, -0.28, -0.3, -0.28, -0.2, -0.1,
+        ]
+        f = make_fv(close=103.0, rsi_14=25.0, volume_ratio=1.5, macd_histogram=-0.05, macd=-0.05)
         sig = s.generate_signal(f, has_open_position=False)
         assert sig is not None
         assert sig.direction == Direction.BUY
