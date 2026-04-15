@@ -68,6 +68,7 @@ class BinanceWebSocketCollector:
         """Запуск сбора данных (вызывать через asyncio.create_task)."""
         self._running = True
         log.info("Collector запущен для {}", self._symbols)
+        await self._backfill_gaps()
         while self._running:
             try:
                 await self._connect_and_listen()
@@ -115,6 +116,101 @@ class BinanceWebSocketCollector:
             "symbols": [s.upper() for s in self._symbols],
             "data_age_sec": round(self.last_data_age_sec, 1) if self.last_data_age_sec != float("inf") else None,
         }
+
+    # ------------------------------------------------------------------
+    # Backfill gaps via REST API
+    # ------------------------------------------------------------------
+
+    async def _backfill_gaps(self) -> None:
+        """При старте докачивает пропущенные свечи через Binance REST API.
+
+        Для каждого символа и интервала проверяет последнюю свечу в БД.
+        Если с момента последней свечи прошло больше одного периода —
+        значит бот был выключен и в БД есть дыра. Докачиваем через REST.
+
+        Максимум 1000 свечей за один запрос (ограничение Binance).
+        При 3-дневном простое: 72 свечи по 1h — один запрос.
+        """
+        import requests as _requests
+
+        INTERVALS = ["1h", "4h", "1d"]
+        INTERVAL_MS: dict[str, int] = {
+            "1h":  3_600_000,
+            "4h": 14_400_000,
+            "1d": 86_400_000,
+        }
+        BINANCE_REST = "https://api.binance.com/api/v3/klines"
+        now_ms = int(time.time() * 1000)
+
+        for symbol in self._symbols:
+            sym_upper = symbol.upper()
+            for interval in INTERVALS:
+                try:
+                    last = await asyncio.to_thread(
+                        self._repo.get_latest_candle, sym_upper, interval
+                    )
+                except Exception as e:
+                    log.warning("Backfill: не удалось получить последнюю свечу {}/{}: {}", sym_upper, interval, e)
+                    continue
+
+                if not last:
+                    continue  # нет истории — скип (download_history.py для начальной загрузки)
+
+                last_ts: int = last["timestamp"]
+                interval_ms = INTERVAL_MS[interval]
+                gap_ms = now_ms - last_ts
+
+                if gap_ms < interval_ms * 2:
+                    continue  # пропущено < 2 свечей — не считаем дырой
+
+                missing_count = int(gap_ms // interval_ms)
+                log.info(
+                    "Backfill: {}/{} — обнаружена дыра ~{} свечей ({:.1f}ч), докачиваю...",
+                    sym_upper, interval, missing_count, gap_ms / 3_600_000,
+                )
+
+                try:
+                    params = {
+                        "symbol": sym_upper,
+                        "interval": interval,
+                        "startTime": last_ts + interval_ms,
+                        "endTime": now_ms,
+                        "limit": 1000,
+                    }
+                    resp = await asyncio.to_thread(
+                        lambda p=params: _requests.get(BINANCE_REST, params=p, timeout=10)
+                    )
+                    if resp.status_code != 200:
+                        log.warning("Backfill REST ошибка {}: {} {}", resp.status_code, sym_upper, interval)
+                        continue
+
+                    raw = resp.json()
+                    if not raw:
+                        continue
+
+                    from core.models import Candle as _Candle
+                    candles = [
+                        _Candle(
+                            timestamp=int(k[0]),
+                            symbol=sym_upper,
+                            interval=interval,
+                            open=float(k[1]),
+                            high=float(k[2]),
+                            low=float(k[3]),
+                            close=float(k[4]),
+                            volume=float(k[5]),
+                            trades_count=int(k[8]),
+                        )
+                        for k in raw
+                    ]
+
+                    inserted = await asyncio.to_thread(
+                        self._repo.upsert_candles_batch, candles
+                    )
+                    log.info("Backfill: {}/{} — сохранено {} свечей ✅", sym_upper, interval, inserted)
+
+                except Exception as e:
+                    log.warning("Backfill: {}/{} — ошибка при докачке: {}", sym_upper, interval, e)
 
     # ------------------------------------------------------------------
     # Connection

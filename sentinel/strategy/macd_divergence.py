@@ -16,7 +16,13 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core.models import Direction, FeatureVector, Signal
-from strategy.base_strategy import BaseStrategy
+from strategy.base_strategy import (
+    BaseStrategy,
+    news_confidence_adjustment,
+    news_should_accelerate_exit,
+    news_should_block_entry,
+    news_adjust_sl_tp,
+)
 
 
 @dataclass
@@ -120,6 +126,15 @@ class MACDDivergence(BaseStrategy):
                 )
             pnl_pct = (features.close - entry_price) / entry_price * 100
 
+            # News-driven emergency exit (critical bearish / security event / profit lock)
+            exit_now, exit_conf, exit_reason = news_should_accelerate_exit(features, pnl_pct)
+            if exit_now:
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=exit_conf, strategy_name=self.NAME,
+                    reason=exit_reason,
+                )
+
             if pnl_pct >= cfg.take_profit_pct:
                 return Signal(
                     timestamp=now_ms, symbol=sym, direction=Direction.SELL,
@@ -168,27 +183,26 @@ class MACDDivergence(BaseStrategy):
         if len(mh) >= 2 and mh[-2] < 0 <= mh[-1]:
             confidence += 0.05
 
-        # News sentiment boost/penalty (±0.08)
-        if features.news_sentiment > 0.3:
-            confidence += 0.08
-        elif features.news_sentiment > 0.15:
-            confidence += 0.04
-        elif features.news_sentiment < -0.3:
-            confidence -= 0.08
-        elif features.news_sentiment < -0.15:
-            confidence -= 0.04
+        # News: block entry on critical events (black swan / security)
+        blocked, block_reason = news_should_block_entry(features)
+        if blocked:
+            return None
+
+        # News confidence adjustment (divergence = lower weight, reversal-focused)
+        news_delta, news_reason = news_confidence_adjustment(features, "buy", "divergence")
+        confidence += news_delta
 
         confidence = min(confidence, 0.95)
 
         if confidence < cfg.min_confidence:
             return None
 
-        sl = features.close * (1 - cfg.stop_loss_pct / 100)
-        tp = features.close * (1 + cfg.take_profit_pct / 100)
+        # SL / TP (adjusted for news-driven volatility)
+        sl, tp = news_adjust_sl_tp(features, features.close, cfg.stop_loss_pct, cfg.take_profit_pct)
 
         reason = f"MACD bullish divergence: RSI={features.rsi_14:.0f}, vol_r={features.volume_ratio:.1f}"
-        if features.news_sentiment != 0.0:
-            reason += f", sentiment={features.news_sentiment:+.2f}"
+        if news_delta != 0:
+            reason += f", {news_reason}"
 
         return Signal(
             timestamp=now_ms, symbol=sym, direction=Direction.BUY,

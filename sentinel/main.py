@@ -572,14 +572,70 @@ async def run() -> None:
             if not position_manager:
                 return
 
+            # Persist order to DB
+            if repo:
+                try:
+                    await asyncio.to_thread(repo.insert_order, order)
+                except Exception as _db_err:
+                    log.debug("Order DB write failed: {}", _db_err)
+
             if order.side == Direction.BUY:
                 opened = await position_manager.open_position(order)
                 if opened and risk_sentinel:
                     risk_sentinel.record_trade(order.commission, increment_trade=True)
             elif order.side == Direction.SELL:
+                # Capture position data BEFORE close (close deletes from dict)
+                _pos_before = position_manager.get_position(order.symbol)
+                _entry_px_pos = _pos_before.entry_price if _pos_before else 0.0
+                _opened_at = _pos_before.opened_at if _pos_before else ""
+                _strat_name = _pos_before.strategy_name if _pos_before else order.strategy_name
+                _signal_id = _pos_before.signal_id if _pos_before else ""
+                _signal_reason = _pos_before.signal_reason if _pos_before else ""
+
                 closed = await position_manager.close_position(order)
                 if closed and risk_sentinel:
                     risk_sentinel.record_trade(order.commission, increment_trade=False)
+
+                # Persist completed trade to strategy_trades DB
+                if closed and repo:
+                    try:
+                        from core.models import StrategyTrade as _ST
+                        import uuid as _uuid
+                        _fill_px = order.fill_price or order.price or 0
+                        _fill_qty = order.fill_quantity or order.quantity
+                        _pnl = closed.realized_pnl
+                        _pnl_pct = ((_fill_px - _entry_px_pos) / _entry_px_pos * 100) if _entry_px_pos > 0 else 0.0
+                        _hold_ms = (int(closed.closed_at or 0) - int(_opened_at or 0)) if _opened_at else 0
+                        _hold_hours = max(_hold_ms / 3_600_000, 0)
+                        _regime_name = _current_regime.regime.value if _current_regime else "unknown"
+
+                        _st = _ST(
+                            trade_id=_uuid.uuid4().hex[:12],
+                            signal_id=_signal_id,
+                            symbol=order.symbol,
+                            strategy_name=_strat_name,
+                            market_regime=_regime_name,
+                            timestamp_open=_opened_at,
+                            timestamp_close=closed.closed_at or "",
+                            entry_price=_entry_px_pos,
+                            exit_price=_fill_px,
+                            quantity=_fill_qty,
+                            pnl_usd=round(_pnl, 4),
+                            pnl_pct=round(_pnl_pct, 4),
+                            is_win=_pnl > 0,
+                            confidence=0.0,
+                            hour_of_day=int(time.strftime("%H")),
+                            day_of_week=int(time.strftime("%w")),
+                            exit_reason=order.signal_reason or "",
+                            hold_duration_hours=round(_hold_hours, 2),
+                            commission_usd=order.commission,
+                        )
+                        await asyncio.to_thread(repo.insert_strategy_trade, _st)
+                        log.info("Trade saved to DB: {} {} PnL=${:.2f} ({:.2f}%)",
+                                 order.symbol, _strat_name, _pnl, _pnl_pct)
+                    except Exception as _db_err:
+                        log.warning("Strategy trade DB write failed: {}", _db_err)
+
                 # Feed realized outcome back to ML tracker for concept drift detection
                 if closed and _ml_predictor and order.symbol in _ml_prob_at_entry:
                     _entry_prob, _entry_px = _ml_prob_at_entry.pop(order.symbol, (0.5, 0.0))
@@ -880,6 +936,15 @@ async def run() -> None:
             if signal is None:
                 strat_results.append({"strategy": strat_name, "result": "no_signal"})
                 continue
+
+            # For SELL signals, use current position quantity
+            if signal.suggested_quantity <= 0 and signal.direction == Direction.SELL:
+                if pos and pos.quantity > 0:
+                    signal.suggested_quantity = pos.quantity
+                else:
+                    log.warning("SELL signal from {} but no open position for {}", strat_name, symbol)
+                    strat_results.append({"strategy": strat_name, "result": "no_position"})
+                    continue
 
             # Compute position size with real Kelly params from recent trades
             if signal.suggested_quantity <= 0 and signal.direction == Direction.BUY:

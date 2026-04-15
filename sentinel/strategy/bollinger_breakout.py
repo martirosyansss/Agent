@@ -16,7 +16,13 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core.models import Direction, FeatureVector, Signal
-from strategy.base_strategy import BaseStrategy
+from strategy.base_strategy import (
+    BaseStrategy,
+    news_confidence_adjustment,
+    news_should_accelerate_exit,
+    news_should_block_entry,
+    news_adjust_sl_tp,
+)
 
 
 @dataclass
@@ -69,6 +75,16 @@ class BollingerBreakout(BaseStrategy):
                     reason=f"SAFETY: invalid entry_price={entry_price}",
                 )
             pnl_pct = (features.close - entry_price) / entry_price * 100
+
+            # News-driven emergency exit (critical bearish / security event / profit lock)
+            exit_now, exit_conf, exit_reason = news_should_accelerate_exit(features, pnl_pct)
+            if exit_now:
+                self._max_price.pop(sym, None)
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=exit_conf, strategy_name=self.NAME,
+                    reason=exit_reason,
+                )
 
             # Update max price for trailing stop
             self._max_price[sym] = max(self._max_price.get(sym, entry_price), features.close)
@@ -146,27 +162,26 @@ class BollingerBreakout(BaseStrategy):
         if features.ema_9 > features.ema_21:
             confidence += 0.05
 
-        # News sentiment boost/penalty (±0.10)
-        if features.news_sentiment > 0.3:
-            confidence += 0.10
-        elif features.news_sentiment > 0.15:
-            confidence += 0.05
-        elif features.news_sentiment < -0.3:
-            confidence -= 0.10
-        elif features.news_sentiment < -0.15:
-            confidence -= 0.05
+        # News: block entry on critical events (black swan / security)
+        blocked, block_reason = news_should_block_entry(features)
+        if blocked:
+            return None
+
+        # News confidence adjustment (composite_score, strength, category, F&G)
+        news_delta, news_reason = news_confidence_adjustment(features, "buy", "breakout")
+        confidence += news_delta
 
         confidence = min(confidence, 0.95)
 
         if confidence < cfg.min_confidence:
             return None
 
-        sl = features.close * (1 - cfg.stop_loss_pct / 100)
-        tp = features.close * (1 + cfg.take_profit_pct / 100)
+        # SL / TP (adjusted for news-driven volatility)
+        sl, tp = news_adjust_sl_tp(features, features.close, cfg.stop_loss_pct, cfg.take_profit_pct)
 
         reason = f"BB Breakout: close={features.close:.2f}>upperBB={features.bb_upper:.2f}, ADX={features.adx:.0f}, squeeze={is_squeeze}"
-        if features.news_sentiment != 0.0:
-            reason += f", sentiment={features.news_sentiment:+.2f}"
+        if news_delta != 0:
+            reason += f", {news_reason}"
 
         return Signal(
             timestamp=now_ms, symbol=sym, direction=Direction.BUY,

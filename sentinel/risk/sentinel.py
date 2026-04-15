@@ -115,21 +115,25 @@ class RiskSentinel:
         Returns:
             RiskCheckResult(approved=True/False, reason=...)
         """
+        # SELL (closing positions) must NEVER be blocked — holding a losing
+        # position is always riskier than closing it.
+        is_sell = signal.direction == Direction.SELL
+
         # [0] State check
-        if self._sm.state == RiskState.STOP:
+        if self._sm.state == RiskState.STOP and not is_sell:
             return RiskCheckResult(approved=False, reason="Trading stopped: STOP state")
 
         if self._sm.state == RiskState.SAFE and signal.direction == Direction.BUY:
             return RiskCheckResult(approved=False, reason="SAFE state: only SELL allowed")
 
-        if self._sm.state == RiskState.REDUCED and signal.confidence < 0.8:
+        if self._sm.state == RiskState.REDUCED and signal.confidence < 0.8 and not is_sell:
             return RiskCheckResult(
                 approved=False,
                 reason=f"REDUCED state: requires confidence >= 0.8, got {signal.confidence:.2f}",
             )
 
-        # [1] Daily Loss
-        if daily_pnl <= -self._limits.max_daily_loss_usd:
+        # [1] Daily Loss (never block SELL — must be able to close losing positions)
+        if daily_pnl <= -self._limits.max_daily_loss_usd and not is_sell:
             return RiskCheckResult(
                 approved=False,
                 reason=f"Daily loss limit exhausted: ${daily_pnl:.2f}",

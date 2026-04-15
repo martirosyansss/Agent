@@ -19,7 +19,13 @@ from typing import Optional
 from loguru import logger
 
 from core.models import Direction, FeatureVector, Signal
-from strategy.base_strategy import BaseStrategy
+from strategy.base_strategy import (
+    BaseStrategy,
+    news_confidence_adjustment,
+    news_should_accelerate_exit,
+    news_should_block_entry,
+    news_adjust_sl_tp,
+)
 
 log = logger.bind(module="strategy")
 
@@ -175,21 +181,15 @@ class EMACrossoverRSI(BaseStrategy):
             elif f.trend_alignment <= 0.2:
                 confidence -= 0.10
 
-        # News sentiment boost/penalty (±0.10)
-        if f.news_sentiment > 0.3:
-            confidence += 0.10
-        elif f.news_sentiment > 0.15:
-            confidence += 0.05
-        elif f.news_sentiment < -0.3:
-            confidence -= 0.10
-        elif f.news_sentiment < -0.15:
-            confidence -= 0.05
+        # News: block entry on critical events (black swan / security)
+        blocked, block_reason = news_should_block_entry(f)
+        if blocked:
+            log.debug("{} BUY {}", f.symbol, block_reason)
+            return None
 
-        # Fear & Greed: extreme fear = contrarian buy boost, extreme greed = caution
-        if f.fear_greed_index <= 20:
-            confidence += 0.05  # extreme fear = потенциальный разворот
-        elif f.fear_greed_index >= 80:
-            confidence -= 0.05  # extreme greed = осторожность
+        # News confidence adjustment (composite_score, strength, category, F&G)
+        news_delta, news_reason = news_confidence_adjustment(f, "buy", "trend")
+        confidence += news_delta
 
         confidence = min(confidence, 0.95)
 
@@ -197,9 +197,8 @@ class EMACrossoverRSI(BaseStrategy):
             log.debug("{} BUY skip: confidence {:.2f} < {}", f.symbol, confidence, cfg.min_confidence)
             return None
 
-        # SL / TP prices
-        sl_price = f.close * (1 - cfg.stop_loss_pct / 100)
-        tp_price = f.close * (1 + cfg.take_profit_pct / 100)
+        # SL / TP (adjusted for news-driven volatility)
+        sl_price, tp_price = news_adjust_sl_tp(f, f.close, cfg.stop_loss_pct, cfg.take_profit_pct)
 
         reasons = []
         reasons.append(f"EMA crossover: EMA9={f.ema_9:.2f} > EMA21={f.ema_21:.2f}")
@@ -209,8 +208,8 @@ class EMACrossoverRSI(BaseStrategy):
             reasons.append("MACD+")
         if hasattr(f, 'trend_alignment') and f.trend_alignment >= 0.8:
             reasons.append(f"trend_align={f.trend_alignment:.2f}")
-        if f.news_sentiment != 0.0:
-            reasons.append(f"sentiment={f.news_sentiment:+.2f}")
+        if news_delta != 0:
+            reasons.append(news_reason)
 
         return Signal(
             timestamp=now_ms,
@@ -237,6 +236,13 @@ class EMACrossoverRSI(BaseStrategy):
             return self._make_sell_signal(f, now_ms, 0.99, ["SAFETY: invalid entry_price"])
 
         pnl_pct = (f.close - entry_price) / entry_price * 100
+
+        # News-driven emergency exit (critical bearish / security event / profit lock)
+        exit_now, exit_conf, exit_reason = news_should_accelerate_exit(f, pnl_pct)
+        if exit_now:
+            self._max_price.pop(f.symbol, None)
+            self._entry_ts.pop(f.symbol, None)
+            return self._make_sell_signal(f, now_ms, exit_conf, [exit_reason])
 
         # Stop-loss
         if pnl_pct <= -cfg.stop_loss_pct:
