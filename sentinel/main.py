@@ -577,7 +577,7 @@ async def run() -> None:
                 try:
                     await asyncio.to_thread(repo.insert_order, order)
                 except Exception as _db_err:
-                    log.debug("Order DB write failed: {}", _db_err)
+                    log.warning("Order DB write failed: {}", _db_err)
 
             if order.side == Direction.BUY:
                 opened = await position_manager.open_position(order)
@@ -623,7 +623,7 @@ async def run() -> None:
                             pnl_usd=round(_pnl, 4),
                             pnl_pct=round(_pnl_pct, 4),
                             is_win=_pnl > 0,
-                            confidence=0.0,
+                            confidence=0.0,  # Order model lacks confidence; entry conf in signal_exec table
                             hour_of_day=int(time.strftime("%H")),
                             day_of_week=int(time.strftime("%w")),
                             exit_reason=order.signal_reason or "",
@@ -1202,6 +1202,27 @@ async def run() -> None:
         bus.subscribe(EVENT_NEW_CANDLE, _on_new_candle)
         bus.subscribe(EVENT_NEW_TRADE, _check_sl_tp)
         log.info("[Module] Trading loop active — listening for {} candles", settings.signal_timeframe)
+
+        # ── Startup prediction: сразу прогноз по последней закрытой свече ──
+        async def _startup_prediction():
+            from core.models import Candle as CandleModel
+            for sym in settings.trading_symbols:
+                last = await asyncio.to_thread(repo.get_latest_candle, sym, settings.signal_timeframe)
+                if last:
+                    candle = CandleModel(
+                        timestamp=last["timestamp"], symbol=last["symbol"],
+                        interval=last["interval"],
+                        open=float(last["open"]), high=float(last["high"]),
+                        low=float(last["low"]), close=float(last["close"]),
+                        volume=float(last.get("volume", 0)),
+                        trades_count=int(last.get("trades_count", 0)),
+                    )
+                    log.info("[Startup] Running prediction on last closed {} candle for {}", settings.signal_timeframe, sym)
+                    await _on_new_candle(candle)
+                else:
+                    log.info("[Startup] No historical {} candles for {} — waiting for first close", settings.signal_timeframe, sym)
+
+        asyncio.ensure_future(_startup_prediction())
     else:
         log.warning("[Module] Trading loop DISABLED — strategies not initialized")
 
@@ -1386,6 +1407,54 @@ async def run() -> None:
             trend_strength = "strong"
         elif f.adx >= 25:
             trend_strength = "moderate"
+        # Crossover state from EMA strategy
+        ema_diff = f.ema_9 - f.ema_21
+        prev_ema_diff = None
+        has_crossover = False
+        strat_ema = strategies.get("ema_crossover_rsi")
+        if strat_ema and hasattr(strat_ema, '_prev_ema_diff'):
+            prev_ema_diff = strat_ema._prev_ema_diff.get(f.symbol)
+            if prev_ema_diff is not None:
+                has_crossover = prev_ema_diff <= 0 and ema_diff > 0
+
+        # Min crossover threshold
+        min_cross_threshold = f.atr * 0.1 if f.atr > 0 else f.close * 0.0003
+        crossover_strong = has_crossover and ema_diff >= min_cross_threshold
+
+        # News data
+        news = {
+            "sentiment": round(f.news_sentiment, 3),
+            "composite_score": round(f.news_composite_score, 3),
+            "signal_strength": round(f.news_signal_strength, 3),
+            "fear_greed_index": f.fear_greed_index,
+            "critical_alert": f.news_critical_alert,
+            "actionable": f.news_actionable,
+            "dominant_category": f.news_dominant_category,
+            "impact_pct": round(f.news_impact_pct, 3),
+        }
+
+        # Confidence breakdown (simulating EMA crossover strategy logic)
+        conf_base = 0.50
+        conf_rsi = 0.10 if f.rsi_14 < 50 else (0.05 if f.rsi_14 < 60 else 0.0)
+        conf_volume = 0.10 if f.volume_ratio > 2.0 else (0.05 if f.volume_ratio > 1.5 else 0.0)
+        conf_ema50 = 0.10 if (f.ema_50 > 0 and f.close > f.ema_50) else 0.0
+        conf_macd = 0.10 if f.macd_histogram > 0 else 0.0
+        conf_adx = 0.05 if f.adx > 25 else 0.0
+        conf_trend_align = 0.10 if f.trend_alignment >= 0.8 else (0.05 if f.trend_alignment >= 0.6 else (-0.10 if f.trend_alignment <= 0.2 else 0.0))
+        conf_total = min(conf_base + conf_rsi + conf_volume + conf_ema50 + conf_macd + conf_adx + conf_trend_align, 0.95)
+
+        # BUY conditions checklist
+        buy_conditions = {
+            "ema_crossover": has_crossover,
+            "crossover_strong": crossover_strong,
+            "rsi_below_70": f.rsi_14 < 70,
+            "volume_above_1x": f.volume_ratio >= 1.0,
+            "price_above_ema50": f.close > f.ema_50 if f.ema_50 > 0 else True,
+            "no_critical_news": not (f.news_critical_alert and f.news_composite_score < -0.3 and f.news_signal_strength > 0.3),
+            "confidence_above_min": conf_total >= 0.60,
+        }
+        all_conditions_met = all(buy_conditions.values())
+
         return {
             "symbol": f.symbol,
             "close": round(f.close, 2),
@@ -1394,6 +1463,11 @@ async def run() -> None:
             "ema_9": round(f.ema_9, 2),
             "ema_21": round(f.ema_21, 2),
             "ema_50": round(f.ema_50, 2),
+            "ema_diff": round(ema_diff, 4),
+            "prev_ema_diff": round(prev_ema_diff, 4) if prev_ema_diff is not None else None,
+            "has_crossover": has_crossover,
+            "crossover_strong": crossover_strong,
+            "min_cross_threshold": round(min_cross_threshold, 4),
             "rsi_14": round(f.rsi_14, 2),
             "macd": round(f.macd, 4),
             "macd_signal": round(f.macd_signal, 4),
@@ -1407,6 +1481,22 @@ async def run() -> None:
             "volume_ratio": round(f.volume_ratio, 2),
             "stoch_rsi": round(f.stoch_rsi, 2),
             "momentum": round(f.momentum, 4),
+            "trend_alignment": round(f.trend_alignment, 3),
+            "ema_50_daily": round(f.ema_50_daily, 2),
+            "rsi_14_daily": round(f.rsi_14_daily, 2),
+            "news": news,
+            "confidence_breakdown": {
+                "base": conf_base,
+                "rsi_bonus": conf_rsi,
+                "volume_bonus": conf_volume,
+                "ema50_bonus": conf_ema50,
+                "macd_bonus": conf_macd,
+                "adx_bonus": conf_adx,
+                "trend_align_bonus": conf_trend_align,
+                "total": round(conf_total, 3),
+            },
+            "buy_conditions": buy_conditions,
+            "all_buy_conditions_met": all_conditions_met,
         }
 
     def get_system_state() -> dict:
@@ -1482,6 +1572,35 @@ async def run() -> None:
                 "daily_commission": float(risk_metrics.get("daily_commission", 0.0)),
                 "market_data_age_sec": market_data_age_sec,
                 "cooldown_remaining_sec": int(risk_metrics.get("cooldown_remaining_sec", 0)),
+                "daily_trades": int(risk_metrics.get("daily_trades", 0)),
+                "limits": {
+                    "max_daily_loss_usd": risk_sentinel._limits.max_daily_loss_usd if risk_sentinel else 50.0,
+                    "max_open_positions": risk_sentinel._limits.max_open_positions if risk_sentinel else 2,
+                    "max_total_exposure_pct": risk_sentinel._limits.max_total_exposure_pct if risk_sentinel else 60.0,
+                    "max_daily_trades": risk_sentinel._limits.max_daily_trades if risk_sentinel else 6,
+                    "max_trades_per_hour": risk_sentinel._limits.max_trades_per_hour if risk_sentinel else 2,
+                    "min_trade_interval_sec": risk_sentinel._limits.min_trade_interval_sec if risk_sentinel else 1800,
+                    "min_order_usd": risk_sentinel._limits.min_order_usd if risk_sentinel else 10.0,
+                    "max_order_usd": risk_sentinel._limits.max_order_usd if risk_sentinel else 100.0,
+                    "max_loss_per_trade_pct": risk_sentinel._limits.max_loss_per_trade_pct if risk_sentinel else 3.0,
+                },
+                "risk_checks": {
+                    "state_ok": risk_state_machine.state.value != "STOP" if risk_state_machine else True,
+                    "daily_loss_ok": pnl_today > -(risk_sentinel._limits.max_daily_loss_usd if risk_sentinel else 50.0),
+                    "positions_ok": int(position_state.get("open_positions", 0)) < (risk_sentinel._limits.max_open_positions if risk_sentinel else 2),
+                    "exposure_ok": float(position_state.get("exposure_pct", 0.0)) < (risk_sentinel._limits.max_total_exposure_pct if risk_sentinel else 60.0),
+                    "daily_trades_ok": int(risk_metrics.get("daily_trades", 0)) < (risk_sentinel._limits.max_daily_trades if risk_sentinel else 6),
+                    "hourly_trades_ok": int(risk_metrics.get("trades_last_hour", 0)) < (risk_sentinel._limits.max_trades_per_hour if risk_sentinel else 2),
+                    "cooldown_ok": int(risk_metrics.get("cooldown_remaining_sec", 0)) <= 0,
+                },
+            },
+            "ml_status": {
+                "enabled": settings.analyzer_ml_enabled if hasattr(settings, 'analyzer_ml_enabled') else False,
+                "is_ready": _ml_predictor.is_ready if _ml_predictor else False,
+                "mode": _ml_predictor.rollout_mode if _ml_predictor else "off",
+                "block_threshold": _ml_predictor._cfg.block_threshold if _ml_predictor else 0.55,
+                "reduce_threshold": _ml_predictor._cfg.reduce_threshold if _ml_predictor else 0.65,
+                "model_version": _ml_predictor._model_version if _ml_predictor and hasattr(_ml_predictor, '_model_version') else "",
             },
             "indicators": _build_indicators_snapshot(),
             "strategy_performance": repo.get_strategy_performance() if repo else [],

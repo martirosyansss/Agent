@@ -274,6 +274,7 @@ class Dashboard:
                 "indicators": state.get("indicators", {}),
                 "readiness": state.get("readiness", {}),
                 "strategy_log": state.get("strategy_log", []),
+                "ml_status": state.get("ml_status", {}),
                 "version": VERSION,
             })
 
@@ -500,6 +501,7 @@ class Dashboard:
                             "indicators": state.get("indicators", {}),
                             "readiness": state.get("readiness", {}),
                             "strategy_log": state.get("strategy_log", []),
+                            "ml_status": state.get("ml_status", {}),
                         },
                     })
                     await asyncio.sleep(2)

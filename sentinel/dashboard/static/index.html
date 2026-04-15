@@ -701,106 +701,296 @@
         .strat-perf-stat { display: flex; flex-direction: column; gap: 2px; }
         .strat-perf-stat-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
 
-        /* ═══════════════════ NEWS PANEL ═══════════════════ */
-        .news-panel { }
-        .news-sentiment-bar {
-            display: flex; align-items: center; justify-content: space-between;
-            background: var(--bg-inset);
-            border: 1px solid var(--border-dark);
-            border-radius: var(--radius-md);
-            padding: 16px 20px; margin-bottom: 14px; flex-wrap: wrap; gap: 12px;
-        }
-        .news-fng { display: flex; align-items: baseline; gap: 10px; }
-        .news-fng-value {
-            font-family: 'JetBrains Mono', monospace; font-size: 28px;
-            font-weight: 800; color: var(--red);
-        }
-        .news-fng-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
-        .news-stats {
-            display: flex; gap: 18px; flex-wrap: wrap;
-        }
-        .news-stat { text-align: center; }
-        .news-stat-value {
-            font-family: 'JetBrains Mono', monospace; font-size: 14px;
-            font-weight: 700; display: block;
-        }
-        .news-stat-value.bullish { color: var(--green-bright); }
-        .news-stat-value.bearish { color: var(--red); }
-        .news-stat-value.neutral-val { color: var(--text-secondary); }
-        .news-stat-value.impact { color: var(--cyan); }
-        .news-stat-value.consensus { color: var(--purple); }
-        .news-stat-value.critical { color: var(--amber); }
-        .news-stat-label { font-size: 8px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+        /* ═══════════════════ NEWS PANEL — PRO MAX ═══════════════════ */
+        .news-panel { overflow: hidden; }
 
-        .news-signal-bar {
-            background: var(--bg-inset);
-            border: 1px solid var(--border-dark);
+        /* ── Hero strip: gauge + stats ── */
+        .news-hero {
+            display: grid; grid-template-columns: auto 1fr; gap: 0;
+            background: linear-gradient(135deg, rgba(8,12,24,0.9) 0%, rgba(14,20,38,0.7) 100%);
+            border: 1px solid rgba(60,75,100,0.4);
             border-radius: var(--radius-md);
-            padding: 10px 18px; margin-bottom: 14px;
-            display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+            margin-bottom: 12px; overflow: hidden;
+        }
+
+        /* ── Gauge (left) ── */
+        .news-gauge-wrap {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 20px 24px 14px; position: relative;
+            border-right: 1px solid var(--border-dark);
+            min-width: 130px;
+        }
+        .news-gauge-svg { width: 100px; height: 56px; }
+        .news-gauge-value {
+            font-family: 'JetBrains Mono', monospace; font-size: 28px;
+            font-weight: 800; line-height: 1; margin-top: 2px;
+            transition: color 0.6s;
+        }
+        .news-gauge-label-text {
+            font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em;
+            color: var(--text-dim); margin-top: 2px;
+            font-weight: 600;
+        }
+
+        /* ── Stats grid (right) ── */
+        .news-stats-grid {
+            display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: 1fr 1fr;
+            gap: 0;
+        }
+        .news-stat-cell {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 12px 8px; position: relative;
+            border-bottom: 1px solid rgba(60,75,100,0.3);
+            border-right: 1px solid rgba(60,75,100,0.3);
+            transition: background 0.2s;
+        }
+        .news-stat-cell:hover { background: rgba(255,255,255,0.04); }
+        .news-stat-cell:nth-child(3n) { border-right: none; }
+        .news-stat-cell:nth-child(n+4) { border-bottom: none; }
+        .news-stat-cell .ns-val {
+            font-family: 'JetBrains Mono', monospace; font-size: 20px;
+            font-weight: 800; line-height: 1; transition: color 0.4s;
+        }
+        .news-stat-cell .ns-label {
+            font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+            color: #8892a8; margin-top: 5px; font-weight: 600;
+        }
+        .news-stat-cell .ns-icon {
+            position: absolute; top: 6px; left: 8px;
+            width: 12px; height: 12px; opacity: 0.15;
+        }
+
+        /* ── Sentiment pulse bar ── */
+        .news-pulse-bar {
+            display: flex; height: 5px; border-radius: 3px; overflow: hidden;
+            margin-bottom: 12px; background: rgba(255,255,255,0.05);
+        }
+        .news-pulse-seg { height: 100%; transition: width 0.8s cubic-bezier(0.4,0,0.2,1); min-width: 2px; }
+        .news-pulse-seg.bull { background: linear-gradient(90deg, #10b981, #4ade80); }
+        .news-pulse-seg.bear { background: linear-gradient(90deg, #f87171, #ef4444); }
+        .news-pulse-seg.neut { background: rgba(136,146,168,0.45); }
+
+        /* ── Signal strip ── */
+        .news-signal-strip {
+            display: flex; align-items: center; gap: 0;
+            background: rgba(6,10,20,0.6);
+            border: 1px solid rgba(60,75,100,0.35);
+            border-radius: var(--radius-md);
+            margin-bottom: 12px; overflow: hidden;
             font-size: 12px;
         }
-        .news-signal-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
-        .news-signal-value {
-            font-family: 'JetBrains Mono', monospace; font-weight: 700;
+        .news-signal-strip.critical-glow {
+            border-color: rgba(239,68,68,0.4);
+            box-shadow: 0 0 20px rgba(239,68,68,0.08);
+        }
+        .nss-cell {
+            flex: 1; display: flex; flex-direction: column; align-items: center;
+            padding: 10px 6px; border-right: 1px solid var(--border-dark);
+        }
+        .nss-cell:last-child { border-right: none; }
+        .nss-cell .nss-val {
+            font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 13px;
+        }
+        .nss-cell .nss-lbl {
+            font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
+            color: #8892a8; margin-top: 3px; font-weight: 600;
+        }
+        .nss-bias-pill {
+            font-size: 9px; font-weight: 800; padding: 2px 10px; border-radius: 10px;
+            text-transform: uppercase; letter-spacing: 0.06em;
+        }
+        .nss-bias-pill.bullish { background: rgba(16,185,129,0.2); color: #4ade80; }
+        .nss-bias-pill.bearish { background: rgba(239,68,68,0.2); color: #fca5a5; }
+        .nss-bias-pill.neutral { background: rgba(136,146,168,0.15); color: #b8c0d4; }
+
+        /* ── Category filter tabs ── */
+        .news-filter-row {
+            display: flex; align-items: center; gap: 6px;
+            margin-bottom: 10px; overflow-x: auto; padding-bottom: 2px;
+            scrollbar-width: none;
+        }
+        .news-filter-row::-webkit-scrollbar { display: none; }
+        .news-filter-btn {
+            font-size: 10px; font-weight: 700; padding: 4px 12px;
+            border-radius: 8px; border: 1px solid var(--border-dark);
+            background: transparent; color: var(--text-dim);
+            cursor: pointer; white-space: nowrap; transition: all 0.2s;
+            text-transform: uppercase; letter-spacing: 0.04em;
+            font-family: 'Inter', sans-serif;
+        }
+        .news-filter-btn:hover { background: rgba(255,255,255,0.04); color: var(--text-secondary); }
+        .news-filter-btn.active {
+            background: var(--accent-dim); color: var(--accent-light);
+            border-color: rgba(99,102,241,0.3);
+        }
+        .news-filter-count {
+            font-family: 'JetBrains Mono', monospace; font-size: 9px;
+            opacity: 0.6; margin-left: 3px;
         }
 
+        /* ── News feed ── */
         .news-list {
-            max-height: 340px; overflow-y: auto;
-            scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+            max-height: 440px; overflow-y: auto;
+            scrollbar-width: thin; scrollbar-color: rgba(99,102,241,0.2) transparent;
         }
-        .news-list::-webkit-scrollbar { width: 4px; }
+        .news-list::-webkit-scrollbar { width: 3px; }
         .news-list::-webkit-scrollbar-track { background: transparent; }
-        .news-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+        .news-list::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.25); border-radius: 3px; }
 
-        .news-item {
-            display: flex; gap: 14px; align-items: flex-start;
-            padding: 14px 16px; border-radius: var(--radius-md);
-            border: 1px solid transparent;
-            transition: all 0.25s; cursor: default;
-            margin-bottom: 4px;
+        /* ── News card ── */
+        .news-card {
+            display: flex; gap: 0; align-items: stretch;
+            border-radius: 10px; border: 1px solid transparent;
+            transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
+            cursor: default; margin-bottom: 4px; overflow: hidden;
+            background: transparent;
         }
-        .news-item:hover { background: var(--bg-elevated); border-color: var(--border-dark); }
+        .news-card:hover {
+            background: rgba(255,255,255,0.02);
+            border-color: var(--border-dark);
+            transform: translateX(2px);
+        }
 
-        .news-impact-badge {
-            flex-shrink: 0; width: 50px; height: 50px;
-            border-radius: var(--radius-md); display: flex;
-            align-items: center; justify-content: center;
+        /* Impact accent stripe */
+        .news-card-stripe {
+            width: 3px; flex-shrink: 0; border-radius: 3px 0 0 3px;
+            transition: background 0.3s;
+        }
+        .news-card-stripe.s-bull { background: linear-gradient(180deg, #10b981, #4ade80); }
+        .news-card-stripe.s-bear { background: linear-gradient(180deg, #ef4444, #f87171); }
+        .news-card-stripe.s-flat { background: rgba(136,146,168,0.35); }
+
+        /* Card body */
+        .news-card-body { flex: 1; padding: 12px 14px; min-width: 0; }
+
+        /* Top row: impact + title */
+        .news-card-top { display: flex; align-items: flex-start; gap: 10px; }
+
+        .news-impact-chip {
+            flex-shrink: 0; display: flex; align-items: center; gap: 3px;
             font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
-            background: var(--bg-inset); border: 1px solid var(--border-dark);
+            padding: 3px 8px; border-radius: 6px; margin-top: 1px;
+            white-space: nowrap;
         }
-        .news-impact-badge.impact-positive { color: var(--green-bright); }
-        .news-impact-badge.impact-negative { color: var(--red); }
+        .news-impact-chip.ic-bull { background: rgba(16,185,129,0.18); color: #4ade80; }
+        .news-impact-chip.ic-bear { background: rgba(239,68,68,0.18); color: #fca5a5; }
+        .news-impact-chip.ic-flat { background: rgba(136,146,168,0.12); color: #b8c0d4; }
 
-        .news-content { flex: 1; min-width: 0; }
-        .news-title { font-size: 13px; font-weight: 600; color: var(--text-primary); line-height: 1.4; margin-bottom: 4px; }
-        .news-desc { font-size: 11px; color: var(--text-dim); line-height: 1.4; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .news-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10px; color: var(--text-dim); }
+        .news-card-title {
+            font-size: 13px; font-weight: 600; color: var(--text-primary);
+            line-height: 1.45; flex: 1; min-width: 0;
+        }
+        .news-card-title a { color: inherit; text-decoration: none; transition: color 0.2s; }
+        .news-card-title a:hover { color: var(--accent-light); }
+
+        /* AI reasoning */
+        .news-reasoning {
+            font-size: 11px; color: var(--text-dim); line-height: 1.45;
+            margin-top: 5px; padding: 6px 10px;
+            background: rgba(99,102,241,0.04); border-radius: 6px;
+            border-left: 2px solid rgba(99,102,241,0.2);
+        }
+
+        /* Meta row */
+        .news-card-meta {
+            display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+            margin-top: 6px; font-size: 10px; color: var(--text-dim);
+        }
+
+        .news-mode-tag {
+            font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+            letter-spacing: 0.02em;
+        }
+        .news-mode-tag.llm { background: rgba(99,102,241,0.1); color: var(--accent-light); }
+        .news-mode-tag.kw { background: rgba(136,146,168,0.08); color: var(--text-dim); }
 
         .news-urgency-badge {
             font-size: 8px; font-weight: 800; text-transform: uppercase;
-            padding: 1px 6px; border-radius: 3px; letter-spacing: 0.06em;
+            padding: 2px 7px; border-radius: 4px; letter-spacing: 0.06em;
         }
-        .news-urgency-badge.urgency-high { background: rgba(245,158,11,0.15); color: var(--amber); }
-        .news-urgency-badge.urgency-critical { background: rgba(239,68,68,0.15); color: var(--red); }
-        .news-urgency-badge.urgency-medium { background: rgba(168,85,247,0.12); color: var(--purple); }
-        .news-urgency-badge.urgency-low { background: var(--bg-hover); color: var(--text-muted); }
+        .news-urgency-badge.critical { background: rgba(239,68,68,0.15); color: #f87171; animation: urgPulse 2s infinite; }
+        .news-urgency-badge.high { background: rgba(245,158,11,0.15); color: var(--amber); }
+        .news-urgency-badge.medium { background: rgba(168,85,247,0.1); color: var(--purple); }
+        @keyframes urgPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.7; } }
+
+        .news-cat-tag {
+            font-size: 9px; font-weight: 600; padding: 1px 7px; border-radius: 4px;
+            background: rgba(6,182,212,0.08); color: var(--cyan);
+            text-transform: capitalize;
+        }
 
         .news-coin-tag {
-            font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700;
+            font-family: 'JetBrains Mono', monospace; font-size: 8px; font-weight: 700;
             padding: 1px 5px; border-radius: 3px;
             background: var(--accent-dim); color: var(--accent-light);
         }
-        .news-conf-bar {
-            width: 40px; height: 3px; background: rgba(255,255,255,0.04);
-            border-radius: 2px; overflow: hidden; display: inline-block; vertical-align: middle;
-        }
-        .news-conf-fill { height: 100%; background: var(--accent); border-radius: 2px; }
 
-        .news-direction-badge {
-            font-size: 11px; font-weight: 700; padding: 3px 12px;
-            border-radius: var(--radius-sm);
+        .news-conf-inline {
+            display: inline-flex; align-items: center; gap: 3px;
         }
+        .news-conf-track {
+            width: 28px; height: 3px; background: rgba(255,255,255,0.06);
+            border-radius: 2px; overflow: hidden;
+        }
+        .news-conf-fill { height: 100%; border-radius: 2px; transition: width 0.4s; }
+        .news-conf-pct { font-family: 'JetBrains Mono', monospace; font-size: 9px; }
+
+        .news-src { color: var(--text-dim); }
+        .news-time { color: var(--text-dim); }
+        .news-dot { color: rgba(136,146,168,0.3); }
+
+        /* Direction badge in header */
+        .news-direction-badge {
+            font-size: 10px; font-weight: 800; padding: 3px 10px;
+            border-radius: 8px; letter-spacing: 0.04em;
+        }
+        .news-direction-badge.bullish { background: rgba(16,185,129,0.12); color: var(--green-bright); }
+        .news-direction-badge.bearish { background: rgba(239,68,68,0.12); color: #f87171; }
+        .news-direction-badge.neutral { background: rgba(136,146,168,0.08); color: var(--text-dim); }
+
+        /* ── Two-column layout ── */
+        .news-two-col {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+        }
+        @media (max-width: 900px) {
+            .news-two-col { grid-template-columns: 1fr; }
+        }
+        .news-col {
+            border: 1px solid rgba(60,75,100,0.3);
+            border-radius: 10px; overflow: hidden;
+            background: rgba(4,6,14,0.3);
+        }
+        .news-col-bull { border-top: 2px solid rgba(74,222,128,0.4); }
+        .news-col-bear { border-top: 2px solid rgba(248,113,113,0.4); }
+
+        /* Column headers */
+        .news-col-header {
+            display: flex; align-items: center; gap: 8px;
+            padding: 10px 14px; margin: 0;
+            font-size: 11px; font-weight: 800; text-transform: uppercase;
+            letter-spacing: 0.08em;
+            border-bottom: 1px solid rgba(60,75,100,0.2);
+        }
+        .news-col-header .nsh-icon { font-size: 10px; }
+        .news-col-header .nsh-title { flex: 1; }
+        .news-col-header .nsh-count {
+            font-family: 'JetBrains Mono', monospace; font-size: 10px;
+            font-weight: 700; padding: 2px 8px; border-radius: 6px;
+        }
+        .bull-header { color: #4ade80; }
+        .bull-header .nsh-count { background: rgba(16,185,129,0.18); color: #4ade80; }
+        .bear-header { color: #fca5a5; }
+        .bear-header .nsh-count { background: rgba(239,68,68,0.18); color: #fca5a5; }
+
+        .news-col .news-list { max-height: 420px; }
+
+        /* ── Empty state ── */
+        .news-empty {
+            display: flex; flex-direction: column; align-items: center;
+            padding: 48px 20px; color: var(--text-dim); gap: 8px;
+            font-size: 12px; text-align: center;
+        }
+        .news-empty svg { width: 32px; height: 32px; opacity: 0.2; }
 
         /* ═══════════════════ ALERTS ═══════════════════ */
         .alerts-section { position: relative; z-index: 1; }
@@ -1035,48 +1225,11 @@
         .activity-value.price { color: var(--green-bright); }
         .activity-sub { font-size: 10px; color: var(--text-dim); }
 
-        /* ── News Sentiment (actual class names) ── */
-        .news-fgi { display: flex; align-items: center; gap: 10px; }
-        .news-fgi-value {
-            font-family: 'JetBrains Mono', monospace; font-size: 28px;
-            font-weight: 800; line-height: 1;
-        }
-        .news-fgi-label {
-            font-size: 10px; color: var(--text-dim); text-transform: uppercase;
-            letter-spacing: 0.06em; margin-top: 4px;
-        }
-        .news-sentiment-stats { display: flex; gap: 18px; flex-wrap: wrap; }
-        .news-stat-val {
-            font-family: 'JetBrains Mono', monospace; font-size: 14px;
-            font-weight: 700; display: block; line-height: 1.3;
-        }
-
-        /* ── News Signal Summary ── */
-        .news-signal-summary {
-            background: var(--bg-inset);
-            border: 1px solid var(--border-dark);
-            border-radius: var(--radius-md);
-            padding: 10px 18px; margin-bottom: 14px;
-            display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-            font-size: 12px;
-        }
-        .news-signal-val {
-            font-family: 'JetBrains Mono', monospace; font-weight: 700;
-        }
-
-        /* ── News Empty State ── */
-        .news-empty {
-            display: flex; flex-direction: column; align-items: center;
-            padding: 40px 20px; color: var(--text-dim); gap: 8px;
-            font-size: 12px; text-align: center;
-        }
-        .news-empty svg { width: 32px; height: 32px; opacity: 0.2; }
-
-        /* ── News Link Reset (prevent blue underline) ── */
-        .news-title a, .news-item a, .news-list a {
+        /* ── News Link Reset ── */
+        .news-card-title a, .news-card a, .news-list a {
             color: var(--text-primary); text-decoration: none;
         }
-        .news-title a:hover, .news-item a:hover { color: var(--accent-light); }
+        .news-card-title a:hover, .news-card a:hover { color: var(--accent-light); }
         a { color: inherit; text-decoration: none; }
 
         /* ── Controls Spacer ── */
@@ -1413,13 +1566,12 @@
         .strat-perf-name { font-size: 13px; }
         .strat-perf-stats { font-size: 12px; }
 
-        /* ── News Panel — better readability ── */
-        .news-item { padding: 16px 18px; }
-        .news-title { font-size: 14px; }
-        .news-desc { font-size: 12px; color: var(--text-muted); }
-        .news-meta { font-size: 11px; }
-        .news-fgi-value { font-size: 32px; }
-        .news-stat-val { font-size: 15px; }
+        /* ── News Panel — desktop ── */
+        .news-hero { grid-template-columns: 150px 1fr; }
+        .news-gauge-value { font-size: 32px; }
+        .news-stat-cell .ns-val { font-size: 20px; }
+        .news-card-title { font-size: 14px; }
+        .news-card-meta { font-size: 11px; }
         .news-panel .panel-desc { border-bottom: none; margin-bottom: 8px; }
 
         /* ── Better Focus Rings (Accessibility) ── */
@@ -1500,66 +1652,271 @@
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             text-align: center;
         }
-        .forecast-ring-pct { font-size: 28px; font-weight: 700; line-height: 1; }
-        .forecast-ring-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; letter-spacing: 0.06em; text-transform: uppercase; }
+        .forecast-ring-pct { font-size: 32px; font-weight: 800; line-height: 1; }
+        .forecast-ring-label { font-size: 10px; color: #8892a8; margin-top: 5px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600; }
         .forecast-status-badge {
-            display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px;
-            border-radius: 20px; font-size: 12px; font-weight: 600;
+            display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px;
+            border-radius: 20px; font-size: 12px; font-weight: 700;
             text-transform: uppercase; letter-spacing: 0.06em;
+            transition: box-shadow 0.3s ease;
         }
-        .forecast-status-badge.wait { background: rgba(99,102,241,0.15); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.3); }
-        .forecast-status-badge.ready { background: rgba(16,185,129,0.15); color: var(--green-bright); border: 1px solid rgba(16,185,129,0.3); }
-        .forecast-status-badge.blocked { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+        .forecast-status-badge.wait {
+            background: rgba(99,102,241,0.15); color: #c4b5fd;
+            border: 1px solid rgba(99,102,241,0.3);
+        }
+        .forecast-status-badge.ready {
+            background: rgba(16,185,129,0.18); color: #86efac;
+            border: 1px solid rgba(16,185,129,0.4);
+            box-shadow: 0 0 12px rgba(16,185,129,0.2);
+            animation: pulseBadgeReady 2.5s ease-in-out infinite;
+        }
+        .forecast-status-badge.blocked {
+            background: rgba(239,68,68,0.18); color: #fca5a5;
+            border: 1px solid rgba(239,68,68,0.4);
+            box-shadow: 0 0 12px rgba(239,68,68,0.2);
+            animation: pulseBadgeBlocked 2s ease-in-out infinite;
+        }
+        @keyframes pulseBadgeReady {
+            0%, 100% { box-shadow: 0 0 8px rgba(16,185,129,0.15); }
+            50% { box-shadow: 0 0 20px rgba(16,185,129,0.4); }
+        }
+        @keyframes pulseBadgeBlocked {
+            0%, 100% { box-shadow: 0 0 8px rgba(239,68,68,0.15); }
+            50% { box-shadow: 0 0 20px rgba(239,68,68,0.4); }
+        }
 
         /* Factor cards */
-        .forecast-factors { display: flex; flex-direction: column; gap: 10px; }
+        .forecast-factors { display: flex; flex-direction: column; gap: 8px; }
         .forecast-factor {
-            display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: center;
-            padding: 10px 14px; border-radius: var(--radius-md);
-            background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04);
-            transition: border-color 0.2s;
+            display: grid; grid-template-columns: 32px 1fr auto; gap: 12px; align-items: center;
+            padding: 10px 14px; border-radius: 12px;
+            background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.04);
+            transition: border-color 0.25s ease, background 0.25s ease, transform 0.2s ease;
         }
-        .forecast-factor:hover { border-color: rgba(255,255,255,0.08); }
+        .forecast-factor:hover { border-color: rgba(255,255,255,0.1); background: rgba(255,255,255,0.04); transform: translateX(2px); }
         .forecast-factor-icon {
-            width: 28px; height: 28px; border-radius: 8px;
+            width: 32px; height: 32px; border-radius: 10px;
             display: flex; align-items: center; justify-content: center;
-            font-size: 14px; flex-shrink: 0;
+            font-size: 15px; flex-shrink: 0;
         }
-        .forecast-factor-icon.bullish { background: rgba(16,185,129,0.15); color: var(--green-bright); }
-        .forecast-factor-icon.bearish { background: rgba(239,68,68,0.15); color: var(--red); }
-        .forecast-factor-icon.neutral { background: rgba(99,102,241,0.12); color: #a5b4fc; }
+        .forecast-factor-icon.bullish { background: rgba(16,185,129,0.15); color: #86efac; box-shadow: 0 0 8px rgba(16,185,129,0.1); }
+        .forecast-factor-icon.bearish { background: rgba(239,68,68,0.15); color: #fca5a5; box-shadow: 0 0 8px rgba(239,68,68,0.1); }
+        .forecast-factor-icon.neutral { background: rgba(99,102,241,0.12); color: #c4b5fd; }
         .forecast-factor-body { min-width: 0; }
         .forecast-factor-name {
-            font-size: 12px; font-weight: 600; color: var(--text-primary);
+            font-size: 12.5px; font-weight: 700; color: #eef0ff;
             display: flex; align-items: center; gap: 6px;
         }
-        .forecast-factor-detail { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+        .forecast-factor-detail { font-size: 11.5px; color: #9ca6be; margin-top: 3px; line-height: 1.4; }
         .forecast-factor-score {
-            font-size: 14px; font-weight: 700; text-align: right; min-width: 44px;
+            font-size: 14px; font-weight: 800; text-align: right; min-width: 50px;
         }
-        .forecast-factor-score.bullish { color: var(--green-bright); }
-        .forecast-factor-score.bearish { color: var(--red); }
-        .forecast-factor-score.neutral { color: var(--text-muted); }
+        .forecast-factor-score.bullish { color: #86efac; text-shadow: 0 0 6px rgba(16,185,129,0.25); }
+        .forecast-factor-score.bearish { color: #fca5a5; text-shadow: 0 0 6px rgba(239,68,68,0.25); }
+        .forecast-factor-score.neutral { color: #a5b4fc; }
 
         /* Decision explanation */
         .forecast-decision {
-            margin-top: 14px; padding: 12px 16px; border-radius: var(--radius-md);
-            background: rgba(6,10,20,0.5); border: 1px solid var(--border);
-            font-size: 13px; line-height: 1.6; color: var(--text-secondary);
+            margin-top: 16px; padding: 14px 18px; border-radius: 14px;
+            background: rgba(8,12,24,0.65); backdrop-filter: blur(10px);
+            border: 1px solid rgba(99,102,241,0.12);
+            font-size: 13px; line-height: 1.7; color: #bcc4da;
         }
         .forecast-decision-title {
-            font-size: 11px; font-weight: 600; text-transform: uppercase;
-            letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 6px;
+            font-size: 11px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.1em; color: #c4b5fd; margin-bottom: 8px;
         }
-        .forecast-decision strong { color: var(--text-primary); }
-        .forecast-decision .green { color: var(--green-bright); }
-        .forecast-decision .red { color: var(--red); }
-        .forecast-decision .amber { color: var(--amber); }
+        .forecast-decision strong { color: #f0f2ff; }
+        .forecast-decision .green { color: #86efac; font-weight: 700; }
+        .forecast-decision .red { color: #fca5a5; font-weight: 700; }
+        .forecast-decision .amber { color: #fbbf24; font-weight: 600; }
 
         /* Last scan info */
         .forecast-meta {
             display: flex; justify-content: space-between; align-items: center;
             margin-top: 12px; font-size: 11px; color: var(--text-dim);
+        }
+
+        /* ── Decision Pipeline (Redesigned) ── */
+        .decision-pipeline {
+            margin-top: 22px; position: relative;
+            padding-left: 14px;
+        }
+        /* Vertical connector line */
+        .decision-pipeline::before {
+            content: ''; position: absolute; left: 27px; top: 18px; bottom: 18px; width: 2px;
+            background: linear-gradient(180deg, rgba(99,102,241,0.4), rgba(6,182,212,0.25) 40%, rgba(16,185,129,0.35) 100%);
+            border-radius: 2px; z-index: 0;
+        }
+
+        .pipeline-section {
+            position: relative; z-index: 1;
+            margin-bottom: 16px; padding: 18px 20px; border-radius: 16px;
+            background: rgba(10,14,28,0.72); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(99,102,241,0.12);
+            box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+            transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.2s ease;
+        }
+        .pipeline-section:hover {
+            border-color: rgba(99,102,241,0.3);
+            box-shadow: 0 6px 28px rgba(99,102,241,0.1), inset 0 1px 0 rgba(255,255,255,0.05);
+            transform: translateY(-1px);
+        }
+        .pipeline-section-header {
+            display: flex; align-items: center; gap: 12px;
+            cursor: pointer; user-select: none; padding: 2px 0;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .pipeline-section-header:active { opacity: 0.85; }
+
+        /* Chevron arrow */
+        .pipeline-chevron {
+            width: 18px; height: 18px; flex-shrink: 0;
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            color: #7c8db5;
+        }
+        .pipeline-section.open .pipeline-chevron { transform: rotate(90deg); color: #c4b5fd; }
+
+        /* Collapsible content */
+        .pipeline-content {
+            display: grid; grid-template-rows: 0fr;
+            transition: grid-template-rows 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
+            opacity: 0;
+        }
+        .pipeline-section.open .pipeline-content { grid-template-rows: 1fr; opacity: 1; }
+        .pipeline-content-inner {
+            overflow: hidden; padding-top: 0;
+            transition: padding-top 0.3s ease;
+        }
+        .pipeline-section.open .pipeline-content-inner { padding-top: 14px; }
+
+        /* Step number circles */
+        .pipeline-step-num {
+            width: 30px; height: 30px; border-radius: 50%; font-size: 13px; font-weight: 800;
+            display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+            background: rgba(99,102,241,0.18); color: #c4b5fd;
+            border: 2px solid rgba(99,102,241,0.3);
+            transition: all 0.35s ease;
+        }
+        .pipeline-step-num.pass {
+            background: rgba(16,185,129,0.18); color: #86efac;
+            border-color: rgba(16,185,129,0.5);
+            box-shadow: 0 0 14px rgba(16,185,129,0.3);
+            animation: pulseStepGreen 2.8s ease-in-out infinite;
+        }
+        .pipeline-step-num.fail {
+            background: rgba(239,68,68,0.18); color: #fca5a5;
+            border-color: rgba(239,68,68,0.5);
+            box-shadow: 0 0 14px rgba(239,68,68,0.3);
+            animation: pulseStepRed 2.2s ease-in-out infinite;
+        }
+        @keyframes pulseStepGreen {
+            0%, 100% { box-shadow: 0 0 8px rgba(16,185,129,0.2); border-color: rgba(16,185,129,0.4); }
+            50% { box-shadow: 0 0 22px rgba(16,185,129,0.5); border-color: rgba(16,185,129,0.7); }
+        }
+        @keyframes pulseStepRed {
+            0%, 100% { box-shadow: 0 0 8px rgba(239,68,68,0.2); border-color: rgba(239,68,68,0.4); }
+            50% { box-shadow: 0 0 22px rgba(239,68,68,0.5); border-color: rgba(239,68,68,0.7); }
+        }
+
+        .pipeline-section-title {
+            font-size: 13.5px; font-weight: 700; color: #f0f2ff; flex: 1;
+            letter-spacing: 0.02em;
+        }
+        .pipeline-section-status {
+            font-size: 11px; font-weight: 700; padding: 4px 14px; border-radius: 14px;
+            letter-spacing: 0.05em; text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .pipeline-section-status.pass {
+            background: rgba(16,185,129,0.16); color: #86efac;
+            border: 1px solid rgba(16,185,129,0.35);
+            box-shadow: 0 0 10px rgba(16,185,129,0.15);
+            animation: pulseBadgeGreen 3s ease-in-out infinite;
+        }
+        .pipeline-section-status.fail {
+            background: rgba(239,68,68,0.16); color: #fca5a5;
+            border: 1px solid rgba(239,68,68,0.35);
+            box-shadow: 0 0 10px rgba(239,68,68,0.15);
+            animation: pulseBadgeRed 2.5s ease-in-out infinite;
+        }
+        .pipeline-section-status.wait {
+            background: rgba(99,102,241,0.14); color: #c4b5fd;
+            border: 1px solid rgba(99,102,241,0.3);
+        }
+        @keyframes pulseBadgeGreen {
+            0%, 100% { box-shadow: 0 0 6px rgba(16,185,129,0.1); }
+            50% { box-shadow: 0 0 18px rgba(16,185,129,0.35), 0 0 4px rgba(16,185,129,0.2); }
+        }
+        @keyframes pulseBadgeRed {
+            0%, 100% { box-shadow: 0 0 6px rgba(239,68,68,0.1); }
+            50% { box-shadow: 0 0 18px rgba(239,68,68,0.35), 0 0 4px rgba(239,68,68,0.2); }
+        }
+
+        /* Check rows */
+        .pipeline-checks { display: flex; flex-direction: column; gap: 5px; }
+        .pipeline-check {
+            display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: center;
+            font-size: 12.5px; padding: 9px 14px; border-radius: 10px;
+            background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.03);
+            transition: background 0.2s ease, border-color 0.2s ease;
+        }
+        .pipeline-check:hover {
+            background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.08);
+        }
+        .pipeline-check-icon { font-size: 15px; text-align: center; line-height: 1; }
+        .pipeline-check-name { color: #dce0ef; line-height: 1.5; }
+        .pipeline-check-name small { color: #8892a8 !important; font-size: 11px; }
+        .pipeline-check-value {
+            font-weight: 700; font-size: 11.5px;
+            padding: 3px 12px; border-radius: 8px;
+            min-width: 46px; text-align: center;
+            letter-spacing: 0.03em;
+        }
+        .pipeline-check-value.pass {
+            color: #86efac; background: rgba(16,185,129,0.14);
+            border: 1px solid rgba(16,185,129,0.2);
+        }
+        .pipeline-check-value.fail {
+            color: #fca5a5; background: rgba(239,68,68,0.14);
+            border: 1px solid rgba(239,68,68,0.2);
+        }
+        .pipeline-check-value.neutral {
+            color: #c4b5fd; background: rgba(99,102,241,0.1);
+            border: 1px solid rgba(99,102,241,0.15);
+        }
+
+        /* Formula blocks */
+        .pipeline-formula {
+            margin-top: 14px; padding: 16px 18px; border-radius: 12px;
+            background: rgba(2,5,14,0.8); backdrop-filter: blur(8px);
+            border: 1px solid rgba(99,102,241,0.1);
+            font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', monospace;
+            font-size: 12px; line-height: 1.85; color: #d0d8ec; white-space: pre-wrap;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 2px 8px rgba(0,0,0,0.2);
+        }
+        .pipeline-formula .val { color: #67e8f9; font-weight: 700; }
+        .pipeline-formula .pass { color: #86efac; font-weight: 700; }
+        .pipeline-formula .fail { color: #fca5a5; font-weight: 700; }
+        .pipeline-formula .label { color: #7c8db5; }
+        .pipeline-formula .op { color: #c4b5fd; font-weight: 700; }
+        .pipeline-formula .result {
+            color: #fbbf24; font-weight: 800;
+            text-shadow: 0 0 10px rgba(251,191,36,0.35);
+        }
+
+        /* Explanation blocks */
+        .pipeline-explain {
+            margin-top: 12px; font-size: 12.5px; color: #a8b2ca;
+            line-height: 1.65; padding: 12px 16px; border-radius: 12px;
+            background: linear-gradient(135deg, rgba(99,102,241,0.07), rgba(6,182,212,0.04));
+            border-left: 3px solid rgba(99,102,241,0.4);
+        }
+        .pipeline-explain strong { color: #c4b5fd; font-weight: 700; }
+
+        @media (prefers-reduced-motion: reduce) {
+            .pipeline-step-num.pass, .pipeline-step-num.fail,
+            .pipeline-section-status.pass, .pipeline-section-status.fail { animation: none; }
         }
     </style>
 </head>
@@ -2109,6 +2466,8 @@
                         <span id="forecast-scan-time">Последний скан: —</span>
                         <span id="forecast-regime">Режим: —</span>
                     </div>
+                    <!-- Decision Pipeline: step-by-step order logic -->
+                    <div class="decision-pipeline" id="decision-pipeline"></div>
                 </div>
             </div>
         </div>
@@ -2278,70 +2637,126 @@
             </div>
         </div>
 
-<!-- ── News & Sentiment Panel ── -->
+<!-- ── Новости и настроение рынка ── -->
         <div class="news-panel fade-in" id="news-panel">
             <div class="panel-title">
                 <h3>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 20H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v1"/><path d="M21 12h-8"/><path d="M21 7h-8"/><path d="M21 17h-8"/><path d="M3 10h4"/><path d="M3 14h4"/></svg>
-                    Крипто-новости и влияние на рынок
+                    Новости и настроение рынка
                     <span id="news-direction-badge" class="news-direction-badge neutral" style="margin-left:12px;">—</span>
                 </h3>
             </div>
-            <p class="panel-desc">Новости крипторынка с AI-анализом настроения. Каждая новость получает оценку влияния на цену. <strong>Bullish</strong> = позитив для цены, <strong>Bearish</strong> = негатив.</p>
+            <p class="panel-desc">AI читает крипто-новости и оценивает как они повлияют на цену. Зелёное = рост вероятен. Красное = падение. Стрелка на шкале показывает общий настрой рынка.</p>
 
-            <!-- Sentiment bar -->
-            <div class="news-sentiment-bar" id="news-sentiment-bar">
-                <div class="news-fgi">
-                    <div>
-                        <div class="news-fgi-value" id="news-fgi-value" style="color:var(--accent);">—</div>
-                        <div class="news-fgi-label">Fear &amp; Greed</div>
-                    </div>
+            <!-- Шкала + статистика -->
+            <div class="news-hero">
+                <!-- Шкала страха и жадности -->
+                <div class="news-gauge-wrap">
+                    <svg class="news-gauge-svg" viewBox="0 0 120 66">
+                        <defs>
+                            <linearGradient id="gaugeGrad" x1="0" y1="0" x2="1" y2="0">
+                                <stop offset="0%" stop-color="#ef4444"/>
+                                <stop offset="25%" stop-color="#f59e0b"/>
+                                <stop offset="50%" stop-color="#8892a8"/>
+                                <stop offset="75%" stop-color="#10b981"/>
+                                <stop offset="100%" stop-color="#4ade80"/>
+                            </linearGradient>
+                        </defs>
+                        <path d="M 10 58 A 50 50 0 0 1 110 58" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="8" stroke-linecap="round"/>
+                        <path d="M 10 58 A 50 50 0 0 1 110 58" fill="none" stroke="url(#gaugeGrad)" stroke-width="8" stroke-linecap="round" opacity="0.5"/>
+                        <line id="news-gauge-needle" x1="60" y1="58" x2="60" y2="14" stroke="#f5f7ff" stroke-width="2.5" stroke-linecap="round" transform="rotate(-90 60 58)" style="transition: transform 1s cubic-bezier(0.4,0,0.2,1)"/>
+                        <circle cx="60" cy="58" r="4" fill="#f5f7ff"/>
+                    </svg>
+                    <div class="news-gauge-value" id="news-fgi-value">—</div>
+                    <div class="news-gauge-label-text" id="news-fgi-label">Страх и жадность</div>
                 </div>
-                <div class="news-sentiment-stats">
-                    <div class="news-stat">
-                        <span class="news-stat-val" style="color:var(--green);" id="news-bull-count">0</span>
-                        <span class="news-stat-label">Bullish</span>
+
+                <!-- Сетка показателей 3x2 -->
+                <div class="news-stats-grid">
+                    <div class="news-stat-cell" title="Сколько новостей говорят о росте цены">
+                        <span class="ns-val" style="color:#4ade80;" id="news-bull-count">0</span>
+                        <span class="ns-label">Позитив</span>
                     </div>
-                    <div class="news-stat">
-                        <span class="news-stat-val" style="color:var(--red);" id="news-bear-count">0</span>
-                        <span class="news-stat-label">Bearish</span>
+                    <div class="news-stat-cell" title="Сколько новостей говорят о падении цены">
+                        <span class="ns-val" style="color:#f87171;" id="news-bear-count">0</span>
+                        <span class="ns-label">Негатив</span>
                     </div>
-                    <div class="news-stat">
-                        <span class="news-stat-val" style="color:var(--text-muted);" id="news-neutral-count">0</span>
-                        <span class="news-stat-label">Neutral</span>
+                    <div class="news-stat-cell" title="Новости без явного влияния на цену">
+                        <span class="ns-val" style="color:#b8c0d4;" id="news-neutral-count">0</span>
+                        <span class="ns-label">Нейтрал</span>
                     </div>
-                    <div class="news-stat">
-                        <span class="news-stat-val" style="color:var(--amber);" id="news-avg-impact">0%</span>
-                        <span class="news-stat-label">Avg Impact</span>
+                    <div class="news-stat-cell" title="Средняя сила влияния новостей на цену (%)">
+                        <span class="ns-val" style="color:#22d3ee;" id="news-avg-impact">0%</span>
+                        <span class="ns-label">Сила влияния</span>
                     </div>
-                    <div class="news-stat">
-                        <span class="news-stat-val" id="news-consensus-val">—</span>
-                        <span class="news-stat-label">Consensus</span>
+                    <div class="news-stat-cell" title="Насколько все новости говорят одно и то же (>60% = сильный сигнал)">
+                        <span class="ns-val" style="color:#c084fc;" id="news-consensus-val">—</span>
+                        <span class="ns-label">Согласие</span>
                     </div>
-                    <div class="news-stat">
-                        <span class="news-stat-val" style="color:var(--red);" id="news-critical-count">0</span>
-                        <span class="news-stat-label">Critical</span>
+                    <div class="news-stat-cell" title="Количество срочных новостей, которые могут резко двинуть цену">
+                        <span class="ns-val" style="color:#fbbf24;" id="news-critical-count">0</span>
+                        <span class="ns-label">Срочные</span>
                     </div>
                 </div>
             </div>
 
-            <!-- News signal -->
-            <div class="news-signal-summary" id="news-signal-bar" style="display:none;">
-                <span class="news-signal-label">Signal</span>
-                <span class="news-signal-val" id="news-signal-score">0.000</span>
-                <span class="news-signal-label">Strength</span>
-                <span class="news-signal-val" id="news-signal-strength">0%</span>
-                <span class="news-signal-label">Bias</span>
-                <span class="news-signal-val" id="news-signal-bias">—</span>
-                <span class="news-signal-label">Category</span>
-                <span class="news-signal-val" id="news-signal-category">—</span>
+            <!-- Полоска: зелёное/серое/красное = позитив/нейтрал/негатив -->
+            <div class="news-pulse-bar" id="news-pulse-bar" title="Соотношение позитивных, нейтральных и негативных новостей">
+                <div class="news-pulse-seg bull" id="news-pulse-bull" style="width:33%"></div>
+                <div class="news-pulse-seg neut" id="news-pulse-neut" style="width:34%"></div>
+                <div class="news-pulse-seg bear" id="news-pulse-bear" style="width:33%"></div>
             </div>
 
-            <!-- News list -->
-            <div class="news-list" id="news-list">
-                <div class="news-empty">
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M19 20H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v1"/><path d="M21 12h-8"/><path d="M21 7h-8"/><path d="M21 17h-8"/></svg>
-                    <div style="margin-top:8px;">Загрузка новостей...</div>
+            <!-- Итоговый сигнал от всех новостей -->
+            <div class="news-signal-strip" id="news-signal-bar" style="display:none;">
+                <div class="nss-cell" title="Общая оценка: плюс = рынок оптимистичен, минус = пессимистичен">
+                    <span class="nss-val" id="news-signal-score">0.000</span>
+                    <span class="nss-lbl">Сигнал</span>
+                </div>
+                <div class="nss-cell" title="Сила сигнала: чем выше процент, тем сильнее влияние новостей">
+                    <span class="nss-val" id="news-signal-strength">0%</span>
+                    <span class="nss-lbl">Сила</span>
+                </div>
+                <div class="nss-cell" title="Куда смотрят новости: рост (зелёный) или падение (красный)">
+                    <span class="nss-bias-pill neutral" id="news-signal-bias">—</span>
+                    <span class="nss-lbl">Направление</span>
+                </div>
+                <div class="nss-cell" title="Главная тема новостей (макро, регуляция, технологии и т.д.)">
+                    <span class="nss-val" style="color:#22d3ee;" id="news-signal-category">—</span>
+                    <span class="nss-lbl">Тема</span>
+                </div>
+            </div>
+
+            <!-- Фильтр по категориям -->
+            <div class="news-filter-row" id="news-filter-row"></div>
+
+            <!-- Два столбца: позитив слева, негатив справа -->
+            <div class="news-two-col">
+                <!-- Позитив -->
+                <div class="news-col news-col-bull">
+                    <div class="news-col-header bull-header">
+                        <span class="nsh-icon">&#9650;</span>
+                        <span class="nsh-title">Позитив для цены</span>
+                        <span class="nsh-count" id="news-bull-hdr-count">0</span>
+                    </div>
+                    <div class="news-list" id="news-list-bull">
+                        <div class="news-empty">
+                            <div>Загрузка...</div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Негатив -->
+                <div class="news-col news-col-bear">
+                    <div class="news-col-header bear-header">
+                        <span class="nsh-icon">&#9660;</span>
+                        <span class="nsh-title">Негатив для цены</span>
+                        <span class="nsh-count" id="news-bear-hdr-count">0</span>
+                    </div>
+                    <div class="news-list" id="news-list-bear">
+                        <div class="news-empty">
+                            <div>Загрузка...</div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -3037,10 +3452,10 @@
         updateStrategyLog(data.strategy_log || []);
 
         /* ── Live Forecast Panel ── */
-        updateForecast(data.strategy_log || [], data.indicators || {});
+        updateForecast(data.strategy_log || [], data.indicators || {}, data);
     }
 
-    function updateForecast(entries, indicators) {
+    function updateForecast(entries, indicators, fullData) {
         var pctEl = document.getElementById('forecast-pct');
         var ringFill = document.getElementById('forecast-ring-fill');
         var badgeEl = document.getElementById('forecast-badge');
@@ -3048,240 +3463,261 @@
         var decisionEl = document.getElementById('forecast-decision');
         var scanTimeEl = document.getElementById('forecast-scan-time');
         var regimeEl = document.getElementById('forecast-regime');
+        var pipelineEl = document.getElementById('decision-pipeline');
 
         if (!pctEl || !ringFill) return;
+        var rd = (fullData || {}).risk_details || {};
+        var ml = (fullData || {}).ml_status || {};
+        var limits = rd.limits || {};
+        var riskChecks = rd.risk_checks || {};
 
-        // Find latest scan/signal entry
         var latest = null;
         for (var i = entries.length - 1; i >= 0; i--) {
-            if (entries[i].event === 'scan' || entries[i].event === 'signal') {
-                latest = entries[i];
-                break;
-            }
+            if (entries[i].event === 'scan' || entries[i].event === 'signal') { latest = entries[i]; break; }
         }
 
-        // ── Build factors from indicators ──
+        // ── Build factors ──
         var factors = [];
         var totalScore = 0;
         var maxPossible = 0;
+        var ind = indicators || {};
+        var hasData = ind.rsi_14 !== undefined;
+        var buyC = ind.buy_conditions || {};
+        var confB = ind.confidence_breakdown || {};
+        var news = ind.news || {};
 
-        if (indicators && indicators.rsi_14 !== undefined) {
-            // 1. Trend (EMA 9 vs 21)
-            var trendBull = indicators.trend === 'bullish';
-            var trendBear = indicators.trend === 'bearish';
-            factors.push({
-                name: 'Тренд (EMA 9/21)',
-                icon: trendBull ? '📈' : trendBear ? '📉' : '➡️',
-                sentiment: trendBull ? 'bullish' : trendBear ? 'bearish' : 'neutral',
-                score: trendBull ? '+1' : trendBear ? '-1' : '0',
-                scoreNum: trendBull ? 1 : trendBear ? -1 : 0,
-                detail: trendBull
-                    ? 'EMA 9 > EMA 21 — быстрая средняя выше медленной, восходящий тренд'
-                    : trendBear
-                    ? 'EMA 9 < EMA 21 — нисходящий тренд, бот осторожен'
-                    : 'EMA 9 ≈ EMA 21 — боковик, нет ярко выраженного тренда',
-            });
-            totalScore += trendBull ? 1 : trendBear ? -1 : 0;
-            maxPossible += 1;
+        if (hasData) {
+            var hasCross = !!ind.has_crossover;
+            var crossStrong = !!ind.crossover_strong;
+            var trendBull = ind.trend === 'bullish';
+            var trendBear = ind.trend === 'bearish';
+            var emaSent = hasCross && crossStrong ? 'bullish' : trendBull ? 'bullish' : trendBear ? 'bearish' : 'neutral';
+            factors.push({ name: 'Тренд (EMA 9/21)', icon: hasCross ? '🔀' : trendBull ? '📈' : trendBear ? '📉' : '➡️', sentiment: emaSent, score: hasCross ? (crossStrong ? 'CROSS' : 'weak') : (trendBull ? '+1' : trendBear ? '-1' : '0'), scoreNum: emaSent === 'bullish' ? 1 : emaSent === 'bearish' ? -1 : 0, detail: hasCross ? (crossStrong ? 'EMA9 пересекла EMA21 снизу вверх — ГЛАВНЫЙ сигнал BUY!' : 'Кроссовер есть, но слишком слабый (< ATR*0.1)') : trendBull ? 'EMA9 > EMA21 — тренд вверх, но кроссовера нет (ждём пересечение)' : trendBear ? 'EMA9 < EMA21 — тренд вниз' : 'Боковик' });
+            totalScore += emaSent === 'bullish' ? 1 : emaSent === 'bearish' ? -1 : 0; maxPossible += 1;
 
-            // 2. RSI
-            var rsi = indicators.rsi_14;
-            var rsiBull = rsi < 40;
-            var rsiBear = rsi > 70;
-            factors.push({
-                name: 'RSI (14)',
-                icon: rsiBull ? '🟢' : rsiBear ? '🔴' : '🟡',
-                sentiment: rsiBull ? 'bullish' : rsiBear ? 'bearish' : 'neutral',
-                score: rsi.toFixed(1),
-                scoreNum: rsiBull ? 1 : rsiBear ? -1 : 0,
-                detail: rsiBull
-                    ? 'RSI=' + rsi.toFixed(1) + ' — перепроданность, хороший момент для покупки'
-                    : rsiBear
-                    ? 'RSI=' + rsi.toFixed(1) + ' — перекупленность, риск разворота вниз'
-                    : 'RSI=' + rsi.toFixed(1) + ' — нейтральная зона, ждём экстремума',
-            });
-            totalScore += rsiBull ? 1 : rsiBear ? -1 : 0;
-            maxPossible += 1;
+            var rsi = ind.rsi_14;
+            factors.push({ name: 'RSI (14)', icon: rsi < 30 ? '🟢' : rsi > 70 ? '🔴' : '🟡', sentiment: rsi < 40 ? 'bullish' : rsi > 70 ? 'bearish' : 'neutral', score: rsi.toFixed(1), scoreNum: rsi < 40 ? 1 : rsi > 70 ? -1 : 0, detail: 'RSI=' + rsi.toFixed(1) + (rsi < 70 ? ' < 70 — не перекуплен, вход разрешён' : ' >= 70 — перекуплен, BUY ЗАБЛОКИРОВАН') });
+            totalScore += rsi < 40 ? 1 : rsi > 70 ? -1 : 0; maxPossible += 1;
 
-            // 3. ADX (trend strength)
-            var adx = indicators.adx || 0;
-            var adxStrong = adx >= 25;
-            factors.push({
-                name: 'Сила тренда (ADX)',
-                icon: adxStrong ? '💪' : '😴',
-                sentiment: adxStrong ? 'bullish' : 'neutral',
-                score: adx.toFixed(1),
-                scoreNum: adxStrong ? 1 : 0,
-                detail: adxStrong
-                    ? 'ADX=' + adx.toFixed(1) + ' — тренд сильный, хорошо для входа'
-                    : 'ADX=' + adx.toFixed(1) + ' — тренд слабый, бот ждёт усиления',
-            });
-            totalScore += adxStrong ? 1 : 0;
-            maxPossible += 1;
+            var adx = ind.adx || 0;
+            factors.push({ name: 'Сила тренда (ADX)', icon: adx >= 25 ? '💪' : '😴', sentiment: adx >= 25 ? 'bullish' : 'neutral', score: adx.toFixed(1), scoreNum: adx >= 25 ? 1 : 0, detail: 'ADX=' + adx.toFixed(1) + (adx >= 25 ? ' >= 25 — тренд подтверждён (+0.05 к confidence)' : ' < 25 — тренд слабый, размер позиции уменьшен') });
+            totalScore += adx >= 25 ? 1 : 0; maxPossible += 1;
 
-            // 4. Volume
-            var volR = indicators.volume_ratio || 0;
-            var volHigh = volR > 1.2;
-            factors.push({
-                name: 'Объём торгов',
-                icon: volHigh ? '🔊' : '🔇',
-                sentiment: volHigh ? 'bullish' : 'neutral',
-                score: volR.toFixed(2) + 'x',
-                scoreNum: volHigh ? 1 : 0,
-                detail: volHigh
-                    ? 'Объём ' + volR.toFixed(2) + 'x от средн. — повышенный интерес, подтверждает движение'
-                    : 'Объём ' + volR.toFixed(2) + 'x от средн. — рынок тихий, сигналы менее надёжные',
-            });
-            totalScore += volHigh ? 1 : 0;
-            maxPossible += 1;
+            var volR = ind.volume_ratio || 0;
+            var volOk = volR >= 1.0;
+            factors.push({ name: 'Объём торгов', icon: volOk ? '🔊' : '🔇', sentiment: volOk ? 'bullish' : 'bearish', score: volR.toFixed(2) + 'x', scoreNum: volOk ? 1 : -1, detail: 'Объём ' + volR.toFixed(2) + 'x от средн.' + (volOk ? ' >= 1.0x — достаточный, вход разрешён' : ' < 1.0x — СЛИШКОМ ТИХИЙ, BUY ЗАБЛОКИРОВАН') });
+            totalScore += volOk ? 1 : -1; maxPossible += 1;
 
-            // 5. MACD Histogram
-            var macdH = indicators.macd_histogram || 0;
+            var macdH = ind.macd_histogram || 0;
             var macdBull = macdH > 0;
-            factors.push({
-                name: 'MACD Гистограмма',
-                icon: macdBull ? '🟩' : '🟥',
-                sentiment: macdBull ? 'bullish' : 'bearish',
-                score: macdH > 0 ? '+' + macdH.toFixed(2) : macdH.toFixed(2),
-                scoreNum: macdBull ? 1 : -1,
-                detail: macdBull
-                    ? 'MACD > 0 — бычий импульс, ускорение роста'
-                    : 'MACD < 0 — медвежий импульс, давление продавцов',
-            });
-            totalScore += macdBull ? 1 : -1;
-            maxPossible += 1;
+            factors.push({ name: 'MACD Гистограмма', icon: macdBull ? '🟩' : '🟥', sentiment: macdBull ? 'bullish' : 'bearish', score: (macdH > 0 ? '+' : '') + macdH.toFixed(2), scoreNum: macdBull ? 1 : -1, detail: macdBull ? 'MACD > 0 — бычий импульс (+0.10 к confidence)' : 'MACD < 0 — медвежий импульс (нет бонуса к confidence)' });
+            totalScore += macdBull ? 1 : -1; maxPossible += 1;
 
-            // 6. Bollinger position
-            var bbBw = indicators.bb_bandwidth || 0;
-            var bbSqueezing = bbBw < 0.03;
-            factors.push({
-                name: 'Волатильность (BB)',
-                icon: bbSqueezing ? '🎯' : '📐',
-                sentiment: bbSqueezing ? 'bullish' : 'neutral',
-                score: (bbBw * 100).toFixed(1) + '%',
-                scoreNum: bbSqueezing ? 1 : 0,
-                detail: bbSqueezing
-                    ? 'BB сжатие — полосы сузились, ожидается сильное движение'
-                    : 'BB стандарт — нормальная волатильность рынка',
-            });
-            totalScore += bbSqueezing ? 1 : 0;
-            maxPossible += 1;
-        }
+            var bbBw = ind.bb_bandwidth || 0;
+            var bbSq = bbBw < 0.03;
+            factors.push({ name: 'Волатильность (BB)', icon: bbSq ? '🎯' : '📐', sentiment: bbSq ? 'bullish' : 'neutral', score: (bbBw * 100).toFixed(1) + '%', scoreNum: bbSq ? 1 : 0, detail: bbSq ? 'BB сжатие — полосы сузились, ожидается сильное движение' : 'BB стандарт — нормальная волатильность' });
+            totalScore += bbSq ? 1 : 0; maxPossible += 1;
 
-        // ── Calculate probability ──
-        var probability = 0;
-        if (maxPossible > 0) {
-            probability = Math.max(0, Math.min(100, ((totalScore + maxPossible) / (maxPossible * 2)) * 100));
-        }
+            var ta = ind.trend_alignment;
+            if (ta !== undefined && ta !== null) {
+                var taSent = ta >= 0.8 ? 'bullish' : ta <= 0.2 ? 'bearish' : 'neutral';
+                factors.push({ name: 'Совпадение ТФ', icon: ta >= 0.8 ? '🎯' : ta <= 0.2 ? '⚠️' : '🔄', sentiment: taSent, score: (ta * 100).toFixed(0) + '%', scoreNum: ta >= 0.8 ? 1 : ta <= 0.2 ? -1 : 0, detail: 'Trend Alignment=' + (ta*100).toFixed(0) + '% — ' + (ta >= 0.8 ? 'все ТФ согласны (+0.10)' : ta >= 0.6 ? 'частичное (+0.05)' : ta <= 0.2 ? 'ТФ противоречат (-0.10)' : 'нейтрально') });
+                totalScore += ta >= 0.8 ? 1 : ta <= 0.2 ? -1 : 0; maxPossible += 1;
+            }
 
-        // Override with strategy result if we have a recent signal
-        var isSignal = latest && latest.event === 'signal';
-        var isScanned = latest && latest.event === 'scan';
-        var wasBlocked = false;
-        var blockReason = '';
-
-        if (latest && latest.strategies) {
-            for (var j = 0; j < latest.strategies.length; j++) {
-                var s = latest.strategies[j];
-                if (s.result === 'ml_blocked' || s.result === 'rejected') {
-                    wasBlocked = true;
-                    blockReason = s.detail || '';
-                    break;
-                }
+            if (news.composite_score !== undefined) {
+                var ns = news.composite_score;
+                var nsCrit = news.critical_alert;
+                var nsSent = nsCrit ? 'bearish' : ns > 0.1 ? 'bullish' : ns < -0.1 ? 'bearish' : 'neutral';
+                factors.push({ name: 'Новости / F&G', icon: nsCrit ? '🚨' : ns > 0.1 ? '📰' : ns < -0.1 ? '⚡' : '📋', sentiment: nsSent, score: (ns > 0 ? '+' : '') + ns.toFixed(2), scoreNum: nsCrit ? -2 : ns > 0.1 ? 1 : ns < -0.1 ? -1 : 0, detail: (nsCrit ? 'КРИТИЧЕСКАЯ НОВОСТЬ — вход заблокирован! ' : '') + 'Score=' + ns.toFixed(2) + ', F&G=' + (news.fear_greed_index || 50) + (news.dominant_category ? ', ' + news.dominant_category : '') });
+                totalScore += nsCrit ? -2 : ns > 0.1 ? 1 : ns < -0.1 ? -1 : 0; maxPossible += 1;
             }
         }
 
-        // If signal was found, boost to 85-95%
+        // ── Probability ──
+        var probability = 0;
+        if (maxPossible > 0) probability = Math.max(0, Math.min(100, ((totalScore + maxPossible) / (maxPossible * 2)) * 100));
+        var isSignal = latest && latest.event === 'signal';
+        var isScanned = latest && latest.event === 'scan';
+        var wasBlocked = false, blockReason = '';
+        if (latest && latest.strategies) { for (var j = 0; j < latest.strategies.length; j++) { var s = latest.strategies[j]; if (s.result === 'ml_blocked' || s.result === 'rejected') { wasBlocked = true; blockReason = s.detail || ''; break; } } }
         if (isSignal) probability = Math.max(probability, 85 + Math.random() * 10);
-        // If blocked, cap at 30-40%
         if (wasBlocked) probability = Math.min(probability, 35);
-
         probability = Math.round(probability);
 
-        // ── Update ring gauge ──
+        // ── Ring gauge ──
         var circumference = 376.99;
         var offset = circumference - (probability / 100) * circumference;
         ringFill.setAttribute('stroke-dashoffset', offset.toFixed(2));
-
         var ringColor = probability >= 70 ? 'var(--green-bright)' : probability >= 40 ? 'var(--amber)' : 'var(--red)';
         ringFill.setAttribute('stroke', ringColor);
         pctEl.textContent = probability + '%';
         pctEl.style.color = ringColor;
 
-        // ── Update status badge ──
-        if (isSignal) {
-            badgeEl.className = 'forecast-status-badge ready';
-            badgeEl.textContent = '🚀 ВХОД ВЫПОЛНЕН';
-        } else if (wasBlocked) {
-            badgeEl.className = 'forecast-status-badge blocked';
-            badgeEl.textContent = '⛔ ЗАБЛОКИРОВАНО';
-        } else if (probability >= 65) {
-            badgeEl.className = 'forecast-status-badge ready';
-            badgeEl.textContent = '✅ ГОТОВ К ВХОДУ';
-        } else if (probability >= 35) {
-            badgeEl.className = 'forecast-status-badge wait';
-            badgeEl.textContent = '⏳ ОЖИДАНИЕ';
-        } else {
-            badgeEl.className = 'forecast-status-badge blocked';
-            badgeEl.textContent = '🛑 НЕ ВХОДИТЬ';
-        }
+        // ── Badge ──
+        if (isSignal) { badgeEl.className = 'forecast-status-badge ready'; badgeEl.textContent = '🚀 ВХОД ВЫПОЛНЕН'; }
+        else if (wasBlocked) { badgeEl.className = 'forecast-status-badge blocked'; badgeEl.textContent = '⛔ ЗАБЛОКИРОВАНО'; }
+        else if (probability >= 65) { badgeEl.className = 'forecast-status-badge ready'; badgeEl.textContent = '✅ ГОТОВ К ВХОДУ'; }
+        else if (probability >= 35) { badgeEl.className = 'forecast-status-badge wait'; badgeEl.textContent = '⏳ ОЖИДАНИЕ'; }
+        else { badgeEl.className = 'forecast-status-badge blocked'; badgeEl.textContent = '🛑 НЕ ВХОДИТЬ'; }
 
-        // ── Render factor cards ──
+        // ── Factor cards ──
         if (factors.length > 0) {
             var fhtml = '';
-            for (var k = 0; k < factors.length; k++) {
-                var f = factors[k];
-                fhtml += '<div class="forecast-factor">';
-                fhtml += '  <div class="forecast-factor-icon ' + f.sentiment + '">' + f.icon + '</div>';
-                fhtml += '  <div class="forecast-factor-body">';
-                fhtml += '    <div class="forecast-factor-name">' + escapeHtml(f.name) + '</div>';
-                fhtml += '    <div class="forecast-factor-detail">' + escapeHtml(f.detail) + '</div>';
-                fhtml += '  </div>';
-                fhtml += '  <div class="forecast-factor-score ' + f.sentiment + '">' + f.score + '</div>';
-                fhtml += '</div>';
-            }
+            for (var k = 0; k < factors.length; k++) { var f = factors[k]; fhtml += '<div class="forecast-factor"><div class="forecast-factor-icon ' + f.sentiment + '">' + f.icon + '</div><div class="forecast-factor-body"><div class="forecast-factor-name">' + escapeHtml(f.name) + '</div><div class="forecast-factor-detail">' + escapeHtml(f.detail) + '</div></div><div class="forecast-factor-score ' + f.sentiment + '">' + f.score + '</div></div>'; }
             factorsEl.innerHTML = fhtml;
         }
 
-        // ── Decision explanation ──
-        var decHTML = '<div class="forecast-decision-title">Решение бота</div>';
-        if (isSignal) {
-            var sigStrat = (latest.strategies || []).find(function(s) { return s.result === 'signal'; });
-            decHTML += '<strong class="green">✅ Бот вошёл в сделку</strong> через стратегию <strong>' +
-                escapeHtml((sigStrat || {}).strategy || '—') + '</strong>. ';
-            decHTML += 'Цена входа: <strong>$' + (latest.price || 0).toLocaleString() + '</strong>. ';
-            decHTML += 'Рыночный режим: <strong>' + escapeHtml(latest.regime || '—') + '</strong>.';
-        } else if (wasBlocked) {
-            decHTML += '<strong class="red">⛔ Сигнал заблокирован:</strong> ' + escapeHtml(blockReason) + '. ';
-            decHTML += 'Бот видел возможность, но система безопасности отвергла сделку. ';
-            decHTML += '<span class="amber">Чего ждёт:</span> улучшения ML-оценки или снижения рисков.';
-        } else if (isScanned) {
-            // Check which factors are weak
-            var weakFactors = factors.filter(function(f) { return f.scoreNum <= 0; });
-            var strongFactors = factors.filter(function(f) { return f.scoreNum > 0; });
-            decHTML += '<strong>Просканировано ' + (latest.active_strategies || []).length + ' стратегий</strong> — сигнала нет. ';
-            if (weakFactors.length > 0) {
-                decHTML += '<br><span class="amber">Почему не входит:</span> ';
-                var reasons = weakFactors.map(function(f) { return f.name; });
-                decHTML += reasons.join(', ') + ' не в оптимальной зоне. ';
-            }
-            if (strongFactors.length > 0) {
-                decHTML += '<br><span class="green">Что положительно:</span> ';
-                var goods = strongFactors.map(function(f) { return f.name; });
-                decHTML += goods.join(', ') + '. ';
-            }
-            decHTML += '<br><span class="amber">Чего ждёт:</span> совпадения ≥4 факторов в бычью зону + подтверждение от 1h свечи.';
-        } else {
-            decHTML += 'Бот ещё не завершил первый цикл сканирования. Стратегии запускаются при закрытии каждой 1-часовой свечи.';
-        }
+        // ── Decision ──
+        var decHTML = '<div class="forecast-decision-title">РЕШЕНИЕ БОТА</div>';
+        if (isSignal) { var sigStrat = (latest.strategies || []).find(function(s) { return s.result === 'signal'; }); decHTML += '<strong class="green">✅ Бот вошёл в сделку</strong> через <strong>' + escapeHtml((sigStrat || {}).strategy || '—') + '</strong>. Цена: <strong>$' + (latest.price || 0).toLocaleString() + '</strong>. Режим: <strong>' + escapeHtml(latest.regime || '—') + '</strong>.'; }
+        else if (wasBlocked) { decHTML += '<strong class="red">⛔ Заблокирован:</strong> ' + escapeHtml(blockReason); }
+        else if (isScanned) { var wf = factors.filter(function(f){return f.scoreNum<=0}); var sf = factors.filter(function(f){return f.scoreNum>0}); decHTML += '<strong>Скан ' + (latest.active_strategies||[]).length + ' стратегий</strong> — сигнала нет.'; if(wf.length) decHTML += '<br><span class="amber">Блокирует:</span> ' + wf.map(function(f){return f.name}).join(', ') + '.'; if(sf.length) decHTML += '<br><span class="green">Положительно:</span> ' + sf.map(function(f){return f.name}).join(', ') + '.'; }
+        else { decHTML += 'Бот ещё не завершил первый цикл. Стратегии запускаются при закрытии 1h свечи.'; }
         decisionEl.innerHTML = decHTML;
 
-        // ── Meta line ──
-        if (latest && latest.ts) {
-            scanTimeEl.textContent = 'Последний скан: ' + new Date(latest.ts).toLocaleTimeString();
+        if (latest && latest.ts) scanTimeEl.textContent = 'Последний скан: ' + new Date(latest.ts).toLocaleTimeString();
+        if (latest && latest.regime) regimeEl.textContent = 'Режим: ' + latest.regime;
+
+        // ═══════════════════════════════════════════════════
+        // DECISION PIPELINE — collapsible accordion
+        // ═══════════════════════════════════════════════════
+        if (!pipelineEl || !hasData) return;
+        var ph = '';
+        var chevronSvg = '<svg class="pipeline-chevron" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 0 1 .02-1.06L11.168 10 7.23 6.29a.75.75 0 1 1 1.04-1.08l4.5 4.25a.75.75 0 0 1 0 1.08l-4.5 4.25a.75.75 0 0 1-1.06-.02z" clip-rule="evenodd"/></svg>';
+        function chk(ok){return ok?'✅':'❌'} function cls(ok){return ok?'pass':'fail'} function stCls(ok){return ok?'pass':ok===false?'fail':''} function stLbl(ok){return ok?'ПРОЙДЕН':'БЛОК'}
+        // Helpers for collapsible sections
+        function secOpen(num, title, statusCls, statusText, stepCls) {
+            return '<div class="pipeline-section" onclick="var s=this.parentElement.querySelectorAll(\'.pipeline-section.open\');for(var i=0;i<s.length;i++){if(s[i]!==this)s[i].classList.remove(\'open\');}this.classList.toggle(\'open\')">' +
+                '<div class="pipeline-section-header">' +
+                '<div class="pipeline-step-num ' + (stepCls||'') + '">' + num + '</div>' +
+                chevronSvg +
+                '<div class="pipeline-section-title">' + title + '</div>' +
+                '<div class="pipeline-section-status ' + statusCls + '">' + statusText + '</div>' +
+                '</div><div class="pipeline-content"><div class="pipeline-content-inner">';
         }
-        if (latest && latest.regime) {
-            regimeEl.textContent = 'Режим: ' + latest.regime;
+        function secClose(explainHtml) {
+            return (explainHtml ? '<div class="pipeline-explain">' + explainHtml + '</div>' : '') +
+                '</div></div></div>';
+        }
+
+        // ── STEP 1: Entry conditions ──
+        var allOk = !!ind.all_buy_conditions_met;
+        ph += secOpen('1', 'Условия входа (EMA Crossover RSI)', allOk?'pass':'fail', stLbl(allOk), stCls(allOk));
+        ph += '<div class="pipeline-checks">';
+        var cItems = [
+            {name:'EMA9 пересекла EMA21 снизу вверх', ok:buyC.ema_crossover, ex:'Разница: '+(ind.ema_diff!=null?ind.ema_diff.toFixed(4):'—')+(ind.prev_ema_diff!=null?', пред: '+ind.prev_ema_diff.toFixed(4):'')},
+            {name:'Кроссовер достаточно сильный (>= ATR×0.1)', ok:buyC.crossover_strong, ex:'Порог: '+(ind.min_cross_threshold!=null?ind.min_cross_threshold.toFixed(4):'—')},
+            {name:'RSI < 70 (не перекуплен)', ok:buyC.rsi_below_70, ex:'RSI = '+(ind.rsi_14!=null?ind.rsi_14.toFixed(1):'—')},
+            {name:'Объём >= 1.0x среднего', ok:buyC.volume_above_1x, ex:'Volume = '+(ind.volume_ratio!=null?ind.volume_ratio.toFixed(2):'—')+'x'},
+            {name:'Цена > EMA50 (глобальный тренд)', ok:buyC.price_above_ema50, ex:'$'+(ind.close||0).toLocaleString()+' vs EMA50=$'+(ind.ema_50||0).toLocaleString()},
+            {name:'Нет критических новостей', ok:buyC.no_critical_news, ex:'Score='+(news.composite_score||0).toFixed(2)+', critical='+(news.critical_alert?'ДА':'нет')},
+            {name:'Confidence >= 0.60', ok:buyC.confidence_above_min, ex:'Confidence = '+(confB.total!=null?confB.total.toFixed(3):'—')},
+        ];
+        for(var ci=0;ci<cItems.length;ci++){var c=cItems[ci];var cOk=!!c.ok;ph+='<div class="pipeline-check"><div class="pipeline-check-icon">'+chk(cOk)+'</div><div class="pipeline-check-name">'+escapeHtml(c.name)+'<br><small style="color:var(--text-dim)">'+escapeHtml(c.ex)+'</small></div><div class="pipeline-check-value '+cls(cOk)+'">'+(cOk?'ДА':'НЕТ')+'</div></div>';}
+        ph += '</div>';
+        ph += secClose('<strong>Как работает:</strong> Все 7 условий должны быть ✅ одновременно. Если хоть одно ❌ — ордер НЕ создаётся, бот ждёт следующую 1h свечу.');
+
+        // ── STEP 2: Confidence formula ──
+        var confTotal = confB.total || 0;
+        var confOk = confTotal >= 0.60;
+        ph += secOpen('2', 'Расчёт Confidence (уверенность)', confOk?'pass':'fail', (confTotal*100).toFixed(0)+'% '+(confOk?'>= 60%':'< 60%'), stCls(confOk));
+        ph += '<div class="pipeline-formula">';
+        ph += '<span class="label">base</span>                    <span class="op">=</span> <span class="val">0.50</span>\n';
+        ph += '<span class="label">RSI '+((ind.rsi_14||0).toFixed(1))+'</span>';
+        ph += (confB.rsi_bonus>0?' <span class="op">+</span> <span class="pass">'+confB.rsi_bonus.toFixed(2)+'</span>  <span class="label">'+(ind.rsi_14<50?'(< 50)':'(50-60)')+'</span>':' <span class="op">+</span> <span class="fail">0.00</span>  <span class="label">(>= 60)</span>')+'\n';
+        ph += '<span class="label">Volume '+((ind.volume_ratio||0).toFixed(2))+'x</span>';
+        ph += (confB.volume_bonus>0?' <span class="op">+</span> <span class="pass">'+confB.volume_bonus.toFixed(2)+'</span>  <span class="label">'+(ind.volume_ratio>2?'(> 2x)':'(> 1.5x)')+'</span>':' <span class="op">+</span> <span class="fail">0.00</span>  <span class="label">(< 1.5x)</span>')+'\n';
+        ph += '<span class="label">EMA50</span>              '+(confB.ema50_bonus>0?'<span class="op">+</span> <span class="pass">0.10</span>  <span class="label">(цена > EMA50)</span>':'<span class="op">+</span> <span class="fail">0.00</span>  <span class="label">(цена <= EMA50)</span>')+'\n';
+        ph += '<span class="label">MACD '+((ind.macd_histogram||0).toFixed(2))+'</span>     '+(confB.macd_bonus>0?'<span class="op">+</span> <span class="pass">0.10</span>  <span class="label">(> 0)</span>':'<span class="op">+</span> <span class="fail">0.00</span>  <span class="label">(< 0)</span>')+'\n';
+        ph += '<span class="label">ADX '+((ind.adx||0).toFixed(1))+'</span>        '+(confB.adx_bonus>0?'<span class="op">+</span> <span class="pass">0.05</span>  <span class="label">(> 25)</span>':'<span class="op">+</span> <span class="fail">0.00</span>  <span class="label">(<= 25)</span>')+'\n';
+        var taB=confB.trend_align_bonus||0;
+        ph += '<span class="label">Trend Align '+((ind.trend_alignment||0)*100).toFixed(0)+'%</span> '+(taB>0?'<span class="op">+</span> <span class="pass">'+taB.toFixed(2)+'</span>':taB<0?'<span class="op">-</span> <span class="fail">'+Math.abs(taB).toFixed(2)+'</span>':'<span class="op">+</span> <span class="fail">0.00</span>')+'\n';
+        ph += '<span class="label">──────────────────────────────────</span>\n';
+        ph += '<span class="label">ИТОГО</span>               <span class="op">=</span> <span class="result">'+confTotal.toFixed(3)+' ('+(confTotal*100).toFixed(1)+'%)</span>  '+(confOk?'<span class="pass">>= 60%</span>':'<span class="fail">< 60%</span>');
+        ph += '</div>';
+        ph += secClose('<strong>Как для чайника:</strong> Бот начинает с 50% уверенности. Каждый хороший фактор добавляет очки. Набрал >= 60% — сигнал создаётся. Нет — ждёт лучших условий. Максимум 95%.');
+
+        // ── STEP 3: ML Filter ──
+        var mlEnabled = !!ml.enabled, mlReady = !!ml.is_ready, mlMode = ml.mode||'off';
+        ph += secOpen('3', 'ML Фильтр (RF + LightGBM + XGBoost)', mlEnabled?(mlReady?'pass':'wait'):'wait', mlEnabled?(mlReady?'АКТИВЕН ('+mlMode+')':'Обучается...'):'ВЫКЛЮЧЕН', mlEnabled&&mlReady?'':'wait');
+        ph += '<div class="pipeline-checks">';
+        ph += '<div class="pipeline-check"><div class="pipeline-check-icon">'+(mlEnabled?'✅':'⏸️')+'</div><div class="pipeline-check-name">ML модуль включён</div><div class="pipeline-check-value '+(mlEnabled?'pass':'neutral')+'">'+(mlEnabled?'ДА':'НЕТ')+'</div></div>';
+        ph += '<div class="pipeline-check"><div class="pipeline-check-icon">'+(mlReady?'✅':'⏳')+'</div><div class="pipeline-check-name">Модель обучена и готова</div><div class="pipeline-check-value '+(mlReady?'pass':'neutral')+'">'+(mlReady?'ДА':'НЕТ')+'</div></div>';
+        ph += '<div class="pipeline-check"><div class="pipeline-check-icon">🎚️</div><div class="pipeline-check-name">Режим</div><div class="pipeline-check-value neutral">'+mlMode+'</div></div>';
+        ph += '<div class="pipeline-check"><div class="pipeline-check-icon">🚫</div><div class="pipeline-check-name">Порог блокировки</div><div class="pipeline-check-value neutral">'+((ml.block_threshold||0.55)*100).toFixed(0)+'%</div></div>';
+        ph += '<div class="pipeline-check"><div class="pipeline-check-icon">📉</div><div class="pipeline-check-name">Порог уменьшения размера</div><div class="pipeline-check-value neutral">'+((ml.reduce_threshold||0.65)*100).toFixed(0)+'%</div></div>';
+        ph += '</div><div class="pipeline-formula">';
+        ph += '<span class="label">ML решение:</span>\n';
+        ph += '  prob <span class="op"><</span> <span class="val">'+((ml.block_threshold||0.55)*100).toFixed(0)+'%</span>   <span class="op">→</span> <span class="fail">БЛОК (ордер отменён)</span>\n';
+        ph += '  <span class="val">'+((ml.block_threshold||0.55)*100).toFixed(0)+'%</span> <span class="op">≤</span> prob <span class="op"><</span> <span class="val">'+((ml.reduce_threshold||0.65)*100).toFixed(0)+'%</span> <span class="op">→</span> <span class="result">REDUCE (размер уменьшен)</span>\n';
+        ph += '  prob <span class="op">≥</span> <span class="val">'+((ml.reduce_threshold||0.65)*100).toFixed(0)+'%</span>  <span class="op">→</span> <span class="pass">ALLOW (пропускаем)</span>';
+        ph += '</div>';
+        ph += secClose('<strong>Как для чайника:</strong> ML смотрит 31 параметр и предсказывает шанс прибыли. Если < '+((ml.block_threshold||0.55)*100).toFixed(0)+'% — блокирует. Режим "shadow" = только логирует, не блокирует.');
+
+        // ── STEP 4: Risk Sentinel ──
+        var allRiskOk = riskChecks.state_ok!==false && riskChecks.daily_loss_ok!==false && riskChecks.positions_ok!==false && riskChecks.exposure_ok!==false && riskChecks.daily_trades_ok!==false && riskChecks.hourly_trades_ok!==false && riskChecks.cooldown_ok!==false;
+        ph += secOpen('4', 'Risk Sentinel (7 проверок безопасности)', allRiskOk?'pass':'fail', allRiskOk?'ВСЕ ОК':'ЕСТЬ БЛОКИ', stCls(allRiskOk));
+        ph += '<div class="pipeline-checks">';
+        var rItems = [
+            {name:'Risk State != STOP', ok:riskChecks.state_ok, ex:'Состояние: '+((fullData||{}).risk_state||'NORMAL')},
+            {name:'Дневной убыток < $'+(limits.max_daily_loss_usd||50).toFixed(0), ok:riskChecks.daily_loss_ok, ex:'Текущий: $'+Math.abs(rd.daily_loss||0).toFixed(2)},
+            {name:'Позиций < '+(limits.max_open_positions||2), ok:riskChecks.positions_ok, ex:'Открыто: '+((fullData||{}).open_positions||0)},
+            {name:'Экспозиция < '+(limits.max_total_exposure_pct||60)+'%', ok:riskChecks.exposure_ok, ex:'Текущая: '+((rd.exposure||0)*100).toFixed(1)+'%'},
+            {name:'Сделок/день < '+(limits.max_daily_trades||6), ok:riskChecks.daily_trades_ok, ex:'Сегодня: '+(rd.daily_trades||(fullData||{}).trades_today||0)},
+            {name:'Сделок/час < '+(limits.max_trades_per_hour||2), ok:riskChecks.hourly_trades_ok, ex:'За час: '+(rd.trade_freq||0)},
+            {name:'Cooldown (мин. '+((limits.min_trade_interval_sec||1800)/60).toFixed(0)+' мин)', ok:riskChecks.cooldown_ok, ex:(rd.cooldown_remaining_sec>0?'Ждём '+rd.cooldown_remaining_sec+'с':'Готов')},
+        ];
+        for(var ri=0;ri<rItems.length;ri++){var r=rItems[ri];var rOk=r.ok!==false;ph+='<div class="pipeline-check"><div class="pipeline-check-icon">'+chk(rOk)+'</div><div class="pipeline-check-name">'+escapeHtml(r.name)+'<br><small style="color:var(--text-dim)">'+escapeHtml(r.ex)+'</small></div><div class="pipeline-check-value '+cls(rOk)+'">'+(rOk?'ОК':'БЛОК')+'</div></div>';}
+        ph += '</div>';
+        ph += secClose('<strong>Как для чайника:</strong> Даже если стратегия хочет купить — Risk Sentinel может запретить. Проверяет: не потеряли слишком много, не слишком часто торгуем, не слишком много денег в рынке. SELL никогда не блокируется.');
+
+        // ── STEP 5: Position Sizing ──
+        var atr=ind.atr||0, price=ind.close||1, adxV=ind.adx||0;
+        var atrPct=price>0?(atr/price*100):0;
+        var volFactor=atrPct>0?Math.max(0.3,Math.min(1.5/atrPct,1.5)):1.0;
+        var regDamp=adxV>=30?1.0:(adxV>=20?(0.6+(adxV-20)/10*0.4):0.5);
+        var balance=(fullData||{}).balance||500;
+        var estBudgetUsd=Math.min(balance*Math.max(2,Math.min(8*volFactor*regDamp,20))/100, limits.max_order_usd||100);
+
+        ph += secOpen('5', 'Размер позиции (Kelly + ATR + Regime)', 'pass', '~$'+estBudgetUsd.toFixed(0), '');
+        ph += '<div class="pipeline-formula">';
+        ph += '<span class="label">1. Kelly (половинный):</span>\n';
+        ph += '   f <span class="op">=</span> (win_rate<span class="op">×</span>b <span class="op">-</span> q) <span class="op">/</span> b <span class="op">×</span> 0.5\n\n';
+        ph += '<span class="label">2. Волатильность:</span>\n';
+        ph += '   ATR% <span class="op">=</span> <span class="val">'+atr.toFixed(2)+'</span> / <span class="val">'+price.toFixed(2)+'</span> × 100 <span class="op">=</span> <span class="result">'+atrPct.toFixed(2)+'%</span>\n';
+        ph += '   vol_factor <span class="op">=</span> 1.5 / '+atrPct.toFixed(2)+' <span class="op">=</span> <span class="result">'+volFactor.toFixed(2)+'</span> <span class="label">(0.3-1.5)</span>\n\n';
+        ph += '<span class="label">3. Режим (ADX='+adxV.toFixed(1)+'):</span>\n';
+        ph += '   dampener <span class="op">=</span> <span class="result">'+regDamp.toFixed(2)+'</span> <span class="label">('+(adxV>=30?'≥30=100%':adxV>=20?'20-30=60-100%':'<20=50%')+')</span>\n\n';
+        ph += '<span class="label">4. Итог:</span> budget$ <span class="op">=</span> min(баланс × kelly × vol × damp, <span class="val">$'+(limits.max_order_usd||100).toFixed(0)+'</span>)\n';
+        ph += '   <span class="label">Лимиты: $'+(limits.min_order_usd||10).toFixed(0)+' — $'+(limits.max_order_usd||100).toFixed(0)+', позиция 2-20%</span>';
+        ph += '</div>';
+        ph += secClose('<strong>Как для чайника:</strong> Бот не ставит всё на одну сделку. Оптимальная ставка считается по Kelly. Волатильный рынок — ставка меньше. Слабый тренд — вдвое меньше. Максимум $'+(limits.max_order_usd||100).toFixed(0)+'.');
+
+        // ── STEP 6: SL/TP ──
+        var slPct=atrPct>0?Math.max(1,Math.min(atrPct*2,2.9)):2.5;
+        var tpPct=Math.max(1.5,Math.min(slPct*2,15));
+        var slPrice=price*(1-slPct/100), tpPrice=price*(1+tpPct/100);
+        ph += secOpen('6', 'Stop-Loss / Take-Profit (ATR)', 'pass', 'SL '+slPct.toFixed(1)+'% / TP '+tpPct.toFixed(1)+'%', '');
+        ph += '<div class="pipeline-formula">';
+        ph += '<span class="label">SL%</span> <span class="op">=</span> ATR% × 2.0 <span class="op">=</span> <span class="val">'+(atrPct*2).toFixed(2)+'%</span> <span class="op">→</span> clamp(1%, 2.9%) <span class="op">=</span> <span class="fail">'+slPct.toFixed(2)+'%</span>\n';
+        ph += '<span class="label">TP%</span> <span class="op">=</span> SL% × 2.0 (R:R 1:2) <span class="op">=</span> <span class="pass">'+tpPct.toFixed(2)+'%</span>\n\n';
+        ph += '<span class="label">При цене $'+price.toLocaleString()+':</span>\n';
+        ph += '  SL <span class="op">=</span> <span class="fail">$'+slPrice.toFixed(2)+'</span>  <span class="label">(макс. убыток)</span>\n';
+        ph += '  TP <span class="op">=</span> <span class="pass">$'+tpPrice.toFixed(2)+'</span>  <span class="label">(целевая прибыль)</span>';
+        ph += '</div>';
+        ph += secClose('<strong>Как для чайника:</strong> SL = максимальный убыток, при котором бот автоматически продаёт. TP = цель прибыли. R:R 1:2 = рискуем $1 чтобы заработать $2. SL ограничен 2.9% — иначе Risk Sentinel отклонит.');
+
+        // Preserve which section is open across re-renders
+        var openIdx = -1;
+        var oldSections = pipelineEl.querySelectorAll('.pipeline-section');
+        for (var oi = 0; oi < oldSections.length; oi++) {
+            if (oldSections[oi].classList.contains('open')) { openIdx = oi; break; }
+        }
+        pipelineEl.innerHTML = ph;
+        if (openIdx >= 0) {
+            var newSections = pipelineEl.querySelectorAll('.pipeline-section');
+            if (newSections[openIdx]) newSections[openIdx].classList.add('open');
         }
     }
 
@@ -3625,21 +4061,159 @@
 
     async function fetchConfig() {}
 
-    /* ── News & Sentiment ────────────────────── */
+    /* ── News & Sentiment — PRO MAX ────────────────────── */
     function fgiColor(val) {
-        if (val <= 25) return 'var(--red)';
-        if (val <= 45) return 'var(--amber)';
-        if (val <= 55) return 'var(--text-muted)';
-        if (val <= 75) return 'var(--green)';
-        return '#22c55e';
+        if (val <= 20) return '#ef4444';
+        if (val <= 40) return '#f59e0b';
+        if (val <= 60) return '#8892a8';
+        if (val <= 80) return '#10b981';
+        return '#4ade80';
     }
-
+    function fgiLabel(val) {
+        if (val <= 20) return 'Сильный страх';
+        if (val <= 40) return 'Страх';
+        if (val <= 60) return 'Нейтрально';
+        if (val <= 80) return 'Жадность';
+        return 'Сильная жадность';
+    }
     function timeAgo(ts) {
         var diff = Math.floor(Date.now() / 1000) - ts;
-        if (diff < 60) return 'just now';
-        if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-        if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-        return Math.floor(diff / 86400) + 'd ago';
+        if (diff < 60) return 'now';
+        if (diff < 3600) return Math.floor(diff / 60) + 'm';
+        if (diff < 86400) return Math.floor(diff / 3600) + 'h';
+        return Math.floor(diff / 86400) + 'd';
+    }
+
+    var _newsActiveFilter = 'all';
+    var _newsData = [];
+
+    function _renderOneCard(n) {
+        var eff = n.effective_impact || 0;
+        var abs = Math.abs(eff);
+        var cls = eff > 0.05 ? 'bull' : eff < -0.05 ? 'bear' : 'flat';
+        var icCls = eff > 0.05 ? 'ic-bull' : eff < -0.05 ? 'ic-bear' : 'ic-flat';
+        var arrow = eff > 0.05 ? '&#9650;' : eff < -0.05 ? '&#9660;' : '';
+        var sign = eff >= 0 ? '+' : '';
+
+        var titleHtml = n.url
+            ? '<a href="' + escapeHtml(n.url) + '" target="_blank" rel="noopener">' + escapeHtml(n.title) + '</a>'
+            : escapeHtml(n.title);
+
+        var reasonHtml = n.llm_reasoning
+            ? '<div class="news-reasoning">' + escapeHtml(n.llm_reasoning) + '</div>' : '';
+
+        var modeTag = n.analysis_mode === 'llm'
+            ? '<span class="news-mode-tag llm">AI</span>'
+            : '<span class="news-mode-tag kw">KW</span>';
+
+        var urgHtml = '';
+        if (n.urgency && n.urgency !== 'low') {
+            urgHtml = '<span class="news-urgency-badge ' + escapeHtml(n.urgency) + '">' + escapeHtml(n.urgency) + '</span>';
+        }
+
+        var catHtml = '';
+        if (n.category && n.category !== 'other') {
+            catHtml = '<span class="news-cat-tag">' + escapeHtml(n.category) + '</span>';
+        }
+
+        var coinsHtml = '';
+        if (n.coins_mentioned && n.coins_mentioned.length) {
+            coinsHtml = n.coins_mentioned.slice(0, 3).map(function(c) {
+                return '<span class="news-coin-tag">' + escapeHtml(c) + '</span>';
+            }).join('');
+        }
+
+        var conf = n.confidence || 0;
+        var confColor = conf > 0.7 ? 'var(--green)' : conf > 0.4 ? 'var(--amber)' : 'var(--red)';
+        var confHtml = n.analysis_mode === 'llm'
+            ? '<span class="news-conf-inline"><span class="news-conf-track"><span class="news-conf-fill" style="width:' + (conf*100) + '%;background:' + confColor + '"></span></span><span class="news-conf-pct" style="color:' + confColor + '">' + (conf*100).toFixed(0) + '%</span></span>'
+            : '';
+
+        return '<div class="news-card">' +
+            '<div class="news-card-stripe s-' + cls + '"></div>' +
+            '<div class="news-card-body">' +
+                '<div class="news-card-top">' +
+                    '<span class="news-impact-chip ' + icCls + '">' + arrow + ' ' + sign + abs.toFixed(2) + '%</span>' +
+                    '<div class="news-card-title">' + titleHtml + '</div>' +
+                '</div>' +
+                reasonHtml +
+                '<div class="news-card-meta">' +
+                    modeTag + urgHtml + catHtml +
+                    '<span class="news-src">' + escapeHtml(n.source || '') + '</span>' +
+                    '<span class="news-dot">&middot;</span>' +
+                    '<span class="news-time">' + timeAgo(n.published_at || 0) + '</span>' +
+                    confHtml + coinsHtml +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    function renderNewsCards(news, filter) {
+        var filtered = filter === 'all' ? news : news.filter(function(n) {
+            return (n.category || 'other') === filter;
+        });
+
+        // Разделяем: позитив и негатив (нейтрал ~0 — скрыт)
+        var bullish = filtered.filter(function(n) { return (n.effective_impact || 0) > 0.05; });
+        var bearish = filtered.filter(function(n) { return (n.effective_impact || 0) < -0.05; });
+
+        // Сортируем по силе влияния (самые сильные сверху)
+        bullish.sort(function(a, b) { return (b.effective_impact || 0) - (a.effective_impact || 0); });
+        bearish.sort(function(a, b) { return (a.effective_impact || 0) - (b.effective_impact || 0); });
+
+        // Счётчики в заголовках
+        document.getElementById('news-bull-hdr-count').textContent = bullish.length;
+        document.getElementById('news-bear-hdr-count').textContent = bearish.length;
+
+        // Левая колонка — позитив
+        var bullEl = document.getElementById('news-list-bull');
+        if (bullish.length) {
+            bullEl.innerHTML = bullish.map(_renderOneCard).join('');
+        } else {
+            bullEl.innerHTML = '<div class="news-empty"><div>Нет позитивных новостей</div></div>';
+        }
+
+        // Правая колонка — негатив
+        var bearEl = document.getElementById('news-list-bear');
+        if (bearish.length) {
+            bearEl.innerHTML = bearish.map(_renderOneCard).join('');
+        } else {
+            bearEl.innerHTML = '<div class="news-empty"><div>Нет негативных новостей</div></div>';
+        }
+    }
+
+    var _catNames = {
+        'all': 'Все', 'macro': 'Макро', 'regulation': 'Регуляция',
+        'adoption': 'Принятие', 'technology': 'Технологии', 'market': 'Рынок',
+        'defi': 'DeFi', 'security': 'Безопасн.', 'mining': 'Майнинг',
+        'nft': 'NFT', 'other': 'Другое', 'institutional': 'Институц.',
+        'exchange': 'Биржи', 'stablecoin': 'Стейблкоины', 'legal': 'Право',
+    };
+    function buildFilterTabs(news) {
+        var counts = { all: news.length };
+        news.forEach(function(n) {
+            var cat = n.category || 'other';
+            counts[cat] = (counts[cat] || 0) + 1;
+        });
+        var row = document.getElementById('news-filter-row');
+        var cats = Object.keys(counts).sort(function(a, b) {
+            if (a === 'all') return -1; if (b === 'all') return 1;
+            return counts[b] - counts[a];
+        });
+        row.innerHTML = cats.slice(0, 8).map(function(cat) {
+            var active = cat === _newsActiveFilter ? ' active' : '';
+            var label = _catNames[cat] || cat;
+            return '<button class="news-filter-btn' + active + '" data-cat="' + escapeHtml(cat) + '">' +
+                escapeHtml(label) + '<span class="news-filter-count">' + counts[cat] + '</span></button>';
+        }).join('');
+        row.querySelectorAll('.news-filter-btn').forEach(function(btn) {
+            btn.onclick = function() {
+                _newsActiveFilter = btn.dataset.cat;
+                row.querySelectorAll('.news-filter-btn').forEach(function(b) { b.classList.remove('active'); });
+                btn.classList.add('active');
+                renderNewsCards(_newsData, _newsActiveFilter);
+            };
+        });
     }
 
     async function fetchNews() {
@@ -3650,130 +4224,89 @@
             var impact = data.impact || {};
             var news = data.news || [];
             var signal = data.signal || {};
+            _newsData = news;
 
-            // Fear & Greed
+            // ── Gauge ──
             var fgi = sentiment.fear_greed_index || 50;
             var fgiEl = document.getElementById('news-fgi-value');
             fgiEl.textContent = fgi;
             fgiEl.style.color = fgiColor(fgi);
+            document.getElementById('news-fgi-label').textContent = fgiLabel(fgi);
 
-            // Counts
-            document.getElementById('news-bull-count').textContent = sentiment.bullish_count || 0;
-            document.getElementById('news-bear-count').textContent = sentiment.bearish_count || 0;
-            document.getElementById('news-neutral-count').textContent = sentiment.neutral_count || 0;
+            // Needle rotation: 0→-90deg, 100→+90deg
+            var needle = document.getElementById('news-gauge-needle');
+            if (needle) {
+                var angle = -90 + (fgi / 100) * 180;
+                needle.setAttribute('transform', 'rotate(' + angle + ' 60 58)');
+            }
 
-            // Avg impact
+            // ── Stats ──
+            var bull = sentiment.bullish_count || 0;
+            var bear = sentiment.bearish_count || 0;
+            var neut = sentiment.neutral_count || 0;
+            document.getElementById('news-bull-count').textContent = bull;
+            document.getElementById('news-bear-count').textContent = bear;
+            document.getElementById('news-neutral-count').textContent = neut;
+
             var avgImpact = impact.avg_effective_impact || impact.avg_impact_pct || 0;
             var avgEl = document.getElementById('news-avg-impact');
             avgEl.textContent = (avgImpact >= 0 ? '+' : '') + avgImpact.toFixed(2) + '%';
-            avgEl.style.color = avgImpact > 0.15 ? 'var(--green)' : avgImpact < -0.15 ? 'var(--red)' : 'var(--amber)';
+            avgEl.style.color = avgImpact > 0.15 ? 'var(--green)' : avgImpact < -0.15 ? '#f87171' : 'var(--cyan)';
 
-            // Consensus
+            var conVal = impact.consensus_strength || 0;
             var consensusEl = document.getElementById('news-consensus-val');
-            var conStr = (impact.consensus_strength || 0).toFixed(0) + '%';
-            consensusEl.textContent = conStr;
-            consensusEl.style.color = (impact.consensus_strength || 0) > 60 ? 'var(--green)' : 'var(--text-muted)';
+            consensusEl.textContent = conVal.toFixed(0) + '%';
+            consensusEl.style.color = conVal > 60 ? 'var(--green)' : 'var(--purple)';
 
-            // Critical count
             document.getElementById('news-critical-count').textContent = impact.critical_count || 0;
 
-            // Direction badge
+            // ── Pulse bar ──
+            var total = bull + bear + neut || 1;
+            document.getElementById('news-pulse-bull').style.width = (bull / total * 100) + '%';
+            document.getElementById('news-pulse-neut').style.width = (neut / total * 100) + '%';
+            document.getElementById('news-pulse-bear').style.width = (bear / total * 100) + '%';
+
+            // ── Direction badge ──
             var dir = impact.overall_direction || 'neutral';
             var badge = document.getElementById('news-direction-badge');
             badge.className = 'news-direction-badge ' + dir;
-            var dirLabels = { bullish: '↑ BULLISH', bearish: '↓ BEARISH', neutral: '→ NEUTRAL' };
-            badge.textContent = dirLabels[dir] || '→ NEUTRAL';
+            badge.textContent = dir === 'bullish' ? 'РОСТ' : dir === 'bearish' ? 'ПАДЕНИЕ' : 'НЕЙТРАЛ';
 
-            // News signal bar
+            // ── Signal strip ──
             var sigBar = document.getElementById('news-signal-bar');
             if (signal.composite_score !== undefined) {
                 sigBar.style.display = 'flex';
                 var sc = signal.composite_score || 0;
                 var scoreEl = document.getElementById('news-signal-score');
                 scoreEl.textContent = (sc >= 0 ? '+' : '') + sc.toFixed(3);
-                scoreEl.style.color = sc > 0.1 ? 'var(--green)' : sc < -0.1 ? 'var(--red)' : 'var(--text-muted)';
-                var strEl = document.getElementById('news-signal-strength');
-                strEl.textContent = ((signal.signal_strength || 0) * 100).toFixed(0) + '%';
+                scoreEl.style.color = sc > 0.1 ? 'var(--green-bright)' : sc < -0.1 ? '#f87171' : 'var(--text-muted)';
+
+                document.getElementById('news-signal-strength').textContent = ((signal.signal_strength || 0) * 100).toFixed(0) + '%';
+                document.getElementById('news-signal-strength').style.color = (signal.signal_strength || 0) > 0.5 ? 'var(--green)' : 'var(--text-secondary)';
+
                 var biasEl = document.getElementById('news-signal-bias');
-                biasEl.textContent = (signal.bias || 'neutral').toUpperCase();
-                biasEl.style.color = signal.bias === 'bullish' ? 'var(--green)' : signal.bias === 'bearish' ? 'var(--red)' : 'var(--text-muted)';
+                var bias = signal.bias || 'neutral';
+                var biasLabels = { bullish: 'РОСТ', bearish: 'ПАДЕНИЕ', neutral: 'НЕЙТРАЛ' };
+                biasEl.textContent = biasLabels[bias] || bias.toUpperCase();
+                biasEl.className = 'nss-bias-pill ' + bias;
+
                 document.getElementById('news-signal-category').textContent = (signal.dominant_category || '—').toUpperCase();
-                if (signal.critical_alert) {
-                    sigBar.style.borderColor = '#ef444480';
-                } else {
-                    sigBar.style.borderColor = '';
-                }
+
+                sigBar.className = 'news-signal-strip' + (signal.critical_alert ? ' critical-glow' : '');
             }
 
-            // News list
-            var listEl = document.getElementById('news-list');
+            // ── Filters + cards ──
             if (!news.length) {
-                listEl.innerHTML = '<div class="news-empty"><div>Нет новостей</div></div>';
+                document.getElementById('news-filter-row').innerHTML = '';
+                document.getElementById('news-list-bull').innerHTML = '<div class="news-empty"><div>Нет новостей</div></div>';
+                document.getElementById('news-list-bear').innerHTML = '<div class="news-empty"><div>Нет новостей</div></div>';
+                document.getElementById('news-bull-hdr-count').textContent = '0';
+                document.getElementById('news-bear-hdr-count').textContent = '0';
                 return;
             }
 
-            listEl.innerHTML = news.map(function(n) {
-                var effImpact = n.effective_impact || 0;
-                var absImpact = Math.abs(effImpact);
-                var impactClass = effImpact > 0.1 ? 'positive' : effImpact < -0.1 ? 'negative' : 'flat';
-                var arrow = effImpact > 0.1 ? '▲' : effImpact < -0.1 ? '▼' : '—';
-                var sign = effImpact >= 0 ? '+' : '';
-
-                var coinsHtml = '';
-                if (n.coins_mentioned && n.coins_mentioned.length) {
-                    coinsHtml = '<span class="news-coins">' + n.coins_mentioned.map(function(c) {
-                        return '<span class="news-coin-tag">' + escapeHtml(c) + '</span>';
-                    }).join('') + '</span>';
-                }
-
-                var modeTag = n.analysis_mode === 'llm'
-                    ? '<span class="news-mode-tag llm" title="Analyzed by AI">🧠 AI</span>'
-                    : '<span class="news-mode-tag kw" title="Pending analysis">⏳</span>';
-
-                // Urgency badge
-                var urgHtml = '';
-                if (n.urgency && n.urgency !== 'low') {
-                    urgHtml = '<span class="news-urgency-badge ' + n.urgency + '">' + n.urgency + '</span>';
-                }
-
-                // Category tag
-                var catHtml = '';
-                if (n.category && n.category !== 'other') {
-                    catHtml = '<span class="news-category-tag">' + n.category + '</span>';
-                }
-
-                // Confidence bar
-                var conf = n.confidence || 0;
-                var confColor = conf > 0.7 ? 'var(--green)' : conf > 0.4 ? 'var(--amber)' : 'var(--red)';
-                var confHtml = n.analysis_mode === 'llm'
-                    ? '<span class="news-confidence-bar"><span class="news-confidence-fill"><span class="news-confidence-fill-inner" style="width:' + (conf*100) + '%;background:' + confColor + '"></span></span>' + (conf*100).toFixed(0) + '%</span>'
-                    : '';
-
-                var reasoningHtml = '';
-                if (n.llm_reasoning) {
-                    reasoningHtml = '<div class="news-reasoning">' + escapeHtml(n.llm_reasoning) + '</div>';
-                }
-
-                var titleHtml = n.url ? '<a href="' + escapeHtml(n.url) + '" target="_blank" rel="noopener">' + escapeHtml(n.title) + '</a>' : escapeHtml(n.title);
-
-                return '<div class="news-item">' +
-                    '<div class="news-impact-badge ' + impactClass + '">' +
-                        '<span class="news-impact-arrow">' + arrow + '</span>' +
-                        '<span>' + sign + absImpact.toFixed(2) + '%</span>' +
-                    '</div>' +
-                    '<div class="news-content">' +
-                        '<div class="news-title">' + titleHtml + '</div>' +
-                        reasoningHtml +
-                        '<div class="news-meta">' +
-                            modeTag + urgHtml + catHtml +
-                            '<span class="news-source">' + escapeHtml(n.source || 'Unknown') + '</span>' +
-                            '<span>·</span>' +
-                            '<span>' + timeAgo(n.published_at || 0) + '</span>' +
-                            confHtml + coinsHtml +
-                        '</div>' +
-                    '</div>' +
-                '</div>';
-            }).join('');
+            buildFilterTabs(news);
+            renderNewsCards(news, _newsActiveFilter);
         } catch(e) { /* silent */ }
     }
 
