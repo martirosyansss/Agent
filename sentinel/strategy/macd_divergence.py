@@ -31,7 +31,7 @@ class MACDDivConfig:
     macd_fast: int = 12
     macd_slow: int = 26
     macd_signal_period: int = 9
-    lookback_candles: int = 50
+    lookback_candles: int = 60            # wider window for more reliable divergences
     min_divergence_bars: int = 10        # min distance between swing points
     swing_window: int = 3                # window for swing point detection
     require_rsi_confirm: bool = True
@@ -247,7 +247,7 @@ class MACDDivergence(BaseStrategy):
         if cfg.require_vol_confirm and features.volume_ratio < cfg.min_volume_ratio:
             return None
 
-        confidence = 0.55
+        confidence = 0.60  # raised base — swing point detection is reliable
         if features.rsi_14 < cfg.rsi_oversold:
             confidence += 0.10
         if features.volume_ratio > cfg.min_volume_ratio:
@@ -255,6 +255,16 @@ class MACDDivergence(BaseStrategy):
         mh = self._macd_history.get(sym, [])
         if len(mh) >= 2 and mh[-2] < 0 <= mh[-1]:
             confidence += 0.05
+
+        # Williams %R oversold confirmation
+        if hasattr(features, 'williams_r') and features.williams_r < -85:
+            confidence += 0.04
+
+        # Ichimoku: price near/above cloud = stronger reversal potential
+        if features.ichimoku_senkou_a > 0 and features.ichimoku_senkou_b > 0:
+            cloud_bottom = min(features.ichimoku_senkou_a, features.ichimoku_senkou_b)
+            if features.close >= cloud_bottom:
+                confidence += 0.04
 
         blocked, block_reason = news_should_block_entry(features)
         if blocked:

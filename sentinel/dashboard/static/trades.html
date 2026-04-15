@@ -488,6 +488,53 @@
             .accent-bar { animation: none; }
             body::before { animation: none; }
         }
+
+        /* ═══ Sidebar ═══ */
+        .sidebar-nav {
+            position: fixed; left: 0; top: 58px; bottom: 0; z-index: 90;
+            width: 56px; display: flex; flex-direction: column;
+            background: rgba(6, 10, 20, 0.88);
+            backdrop-filter: blur(20px) saturate(1.4);
+            border-right: 1px solid var(--glass-border);
+            padding: 16px 0; gap: 4px; align-items: center;
+            transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+            overflow: hidden;
+        }
+        .sidebar-nav:hover { width: 200px; }
+        .sidebar-link {
+            display: flex; align-items: center; gap: 12px;
+            width: calc(100% - 16px); margin: 0 8px;
+            padding: 10px 14px; border-radius: var(--radius-sm);
+            color: var(--text-muted); text-decoration: none;
+            font-size: 13px; font-weight: 500; white-space: nowrap;
+            transition: all 0.2s; position: relative;
+        }
+        .sidebar-link svg { width: 20px; height: 20px; flex-shrink: 0; }
+        .sidebar-link span { opacity: 0; transition: opacity 0.2s; }
+        .sidebar-nav:hover .sidebar-link span { opacity: 1; }
+        .sidebar-link:hover { color: var(--text-primary); background: var(--bg-hover); }
+        .sidebar-link.active {
+            color: var(--accent-light); background: var(--accent-dim);
+            border: 1px solid rgba(99,102,241,0.2);
+        }
+        .sidebar-link.active::before {
+            content: ''; position: absolute; left: -8px; top: 50%; transform: translateY(-50%);
+            width: 3px; height: 20px; border-radius: 0 3px 3px 0; background: var(--accent);
+        }
+        .sidebar-divider { width: 32px; height: 1px; background: var(--border); margin: 8px auto; transition: width 0.2s; }
+        .sidebar-nav:hover .sidebar-divider { width: calc(100% - 24px); }
+        .sidebar-section {
+            font-size: 9px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 1.2px; color: var(--text-dim);
+            padding: 8px 14px 4px; width: 100%;
+            opacity: 0; transition: opacity 0.2s;
+        }
+        .sidebar-nav:hover .sidebar-section { opacity: 1; }
+        .app-layout { padding-left: 56px; }
+        @media (max-width: 768px) {
+            .sidebar-nav { display: none; }
+            .app-layout { padding-left: 0; }
+        }
     </style>
 </head>
 <body>
@@ -525,7 +572,24 @@
         </div>
     </header>
 
-    <!-- ═══ Main Content ═══ -->
+    <nav class="sidebar-nav" role="navigation">
+        <a href="/" class="sidebar-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            <span>Dashboard</span>
+        </a>
+        <a href="/trades" class="sidebar-link active">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>История сделок</span>
+        </a>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-section">Система</div>
+        <a href="/settings" class="sidebar-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <span>Настройки</span>
+        </a>
+    </nav>
+
+    <div class="app-layout">
     <main class="container" role="main">
 
         <!-- Page Title -->
@@ -627,6 +691,7 @@
         </div>
 
     </main>
+    </div><!-- /app-layout -->
 
 <script>
 (function() {

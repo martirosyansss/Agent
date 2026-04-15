@@ -30,13 +30,13 @@ class MeanRevConfig:
     rsi_oversold: float = 25.0
     rsi_overbought: float = 75.0
     stop_loss_pct: float = 3.0
-    take_profit_pct: float = 8.0
-    trailing_activate_pct: float = 4.0
-    trailing_stop_pct: float = 2.0
+    take_profit_pct: float = 5.0          # realistic for mean reversion
+    trailing_activate_pct: float = 3.0
+    trailing_stop_pct: float = 1.5
     min_volume_ratio: float = 1.8
     min_confidence: float = 0.65
     max_position_pct: float = 15.0
-    max_hold_hours: int = 96
+    max_hold_hours: int = 48              # if no revert in 48h, thesis is invalid
 
     def __post_init__(self):
         if self.stop_loss_pct <= 0 or self.stop_loss_pct > 50:
@@ -53,6 +53,7 @@ class MeanReversion(BaseStrategy):
         self._cfg = config or MeanRevConfig()
         self._max_price: dict[str, float] = {}
         self._entry_ts: dict[str, int] = {}
+        self._rsi_history: dict[str, list[float]] = {}  # RSI divergence detection
 
     def _cleanup(self, sym: str) -> None:
         self._max_price.pop(sym, None)
@@ -108,6 +109,12 @@ class MeanReversion(BaseStrategy):
         if has_open_position:
             return None
 
+        # Track RSI for divergence detection
+        rsi_hist = self._rsi_history.setdefault(sym, [])
+        rsi_hist.append(features.rsi_14)
+        if len(rsi_hist) > 30:
+            self._rsi_history[sym] = rsi_hist[-30:]
+
         if features.rsi_14 >= cfg.rsi_oversold:
             return None
         if features.bb_lower > 0 and features.close >= features.bb_lower:
@@ -122,6 +129,16 @@ class MeanReversion(BaseStrategy):
         if dmi_spread is not None and dmi_spread < -20:
             return None
 
+        # RSI divergence check: if RSI keeps making lower lows without any bounce,
+        # this is a continuation, not mean reversion. Require at least a subtle
+        # RSI uptick vs previous low (bullish divergence hint).
+        rsi_hist = self._rsi_history.get(sym, [])
+        if len(rsi_hist) >= 5:
+            recent_rsi_min = min(rsi_hist[-5:-1])  # previous 4 bars
+            if features.rsi_14 < recent_rsi_min and recent_rsi_min < cfg.rsi_oversold:
+                # RSI still making lower lows — continuation, not reversal
+                return None
+
         confidence = 0.65
         if features.rsi_14 < 20:
             confidence += 0.10
@@ -129,6 +146,16 @@ class MeanReversion(BaseStrategy):
             confidence += 0.08
         if features.ema_50 > 0 and features.close > features.ema_50 * 0.95:
             confidence += 0.07
+
+        # Williams %R extreme oversold confirmation
+        if hasattr(features, 'williams_r') and features.williams_r < -90:
+            confidence += 0.05
+
+        # Ichimoku: if price is above cloud even when RSI oversold, stronger reversion
+        if features.ichimoku_senkou_a > 0 and features.ichimoku_senkou_b > 0:
+            cloud_bottom = min(features.ichimoku_senkou_a, features.ichimoku_senkou_b)
+            if features.close > cloud_bottom:
+                confidence += 0.05  # still in uptrend structure despite oversold
 
         blocked, block_reason = news_should_block_entry(features)
         if blocked:

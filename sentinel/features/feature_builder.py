@@ -105,9 +105,22 @@ class FeatureBuilder:
         vroc_val = ind.vroc(volumes_1h, 12)
         cmf_val = ind.cmf(highs_1h, lows_1h, closes_1h, volumes_1h, 20)
         bb_pct_b_val = ind.bollinger_pct_b(closes_4h, 20, 2.0)
-        vwap_val = ind.vwap(closes_1h, volumes_1h, 20)
+        vwap_val = ind.vwap(highs_1h, lows_1h, closes_1h, volumes_1h, 20)
         hvol_val = ind.historical_volatility(closes_1h, 20)
         dmi_val = ind.dmi_spread(highs_4h, lows_4h, closes_4h, 14)
+
+        # ── Ichimoku Cloud (4h) ──
+        ichimoku_result = ind.ichimoku(highs_4h, lows_4h, closes_4h, 9, 26, 52)
+        ichi_tenkan = ichimoku_result[0] if ichimoku_result else 0.0
+        ichi_kijun = ichimoku_result[1] if ichimoku_result else 0.0
+        ichi_senkou_a = ichimoku_result[2] if ichimoku_result else 0.0
+        ichi_senkou_b = ichimoku_result[3] if ichimoku_result else 0.0
+
+        # ── Williams %R (1h) ──
+        williams_r_val = ind.williams_r(highs_1h, lows_1h, closes_1h, 14)
+
+        # ── Price change 5h (real, not proxy) ──
+        pc_5h = ind.price_change_pct(closes_1h, 5)
 
         # ── Daily timeframe (если есть) ──
         ema_50_daily = None
@@ -171,6 +184,15 @@ class FeatureBuilder:
             # Daily timeframe
             ema_50_daily=safe_value(ema_50_daily),
             rsi_14_daily=safe_value(rsi_14_daily),
+            # Ichimoku Cloud (4h)
+            ichimoku_tenkan=ichi_tenkan,
+            ichimoku_kijun=ichi_kijun,
+            ichimoku_senkou_a=ichi_senkou_a,
+            ichimoku_senkou_b=ichi_senkou_b,
+            # Williams %R (1h)
+            williams_r=safe_value(williams_r_val) if williams_r_val is not None else -50.0,
+            # Price change 5h (real calculation)
+            price_change_5h=safe_value(pc_5h),
         )
         return fv
 

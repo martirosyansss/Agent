@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RiskLimits:
     """Настраиваемые лимиты (зажаты absolute_limits в config)."""
-    max_daily_loss_usd: float = 50.0
-    max_daily_loss_pct: float = 10.0
+    max_daily_loss_usd: float = 25.0      # $25 = 5% of $500 (safer for paper testing)
+    max_daily_loss_pct: float = 5.0       # professional standard: max 5% daily drawdown
     max_daily_trades: int = 6
     max_position_pct: float = 20.0
     max_total_exposure_pct: float = 60.0

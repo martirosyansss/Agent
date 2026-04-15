@@ -2,13 +2,14 @@
 Market Regime Detection with Hysteresis.
 
 Определяет текущий режим рынка каждые 4 часа по 4h свечам:
-  - trending_up:   EMA9 > EMA21 > EMA50 + ADX > 25
-  - trending_down:  EMA9 < EMA21 < EMA50 + ADX > 25
+  - trending_up:   EMA9 > EMA21 AND close > EMA50 + ADX > 25
+  - trending_down:  EMA9 < EMA21 AND close < EMA50 + ADX > 25
   - sideways:       ADX < 20 + цена внутри Bollinger Bands
-  - volatile:       ATR > 2× среднего
+  - volatile:       ATR/close > 4%
+  - transitioning:  между режимами (EMA partially aligned, 20 < ADX < 25)
   - unknown:        не определено
 
-Гистерезис: для смены режима нужно 3 подряд подтверждения нового режима.
+Гистерезис: для смены режима нужно 2 подряд подтверждения нового режима.
 """
 
 from __future__ import annotations
@@ -44,18 +45,27 @@ def detect_regime(
 
     adx = features.adx
     atr = features.atr
-    bb_mid = features.bb_middle
-    atr_ratio = (atr / bb_mid) if bb_mid > 0 else 0.0
+    close = features.close
+    # Use ATR/close instead of ATR/bb_middle — more stable metric
+    atr_ratio = (atr / close) if close > 0 else 0.0
 
-    # Raw regime detection — check trend BEFORE volatile to avoid masking
-    if features.ema_9 > features.ema_21 > features.ema_50 > 0 and adx > adx_trending:
+    # Raw regime detection — relaxed EMA alignment for trending
+    # Trending: EMA9 vs EMA21 determines direction, close vs EMA50 confirms structure
+    ema_bullish = features.ema_9 > features.ema_21 and close > features.ema_50 > 0
+    ema_bearish = features.ema_9 < features.ema_21 and close < features.ema_50 and features.ema_50 > 0
+
+    if ema_bullish and adx > adx_trending:
         raw_regime = MarketRegimeType.TRENDING_UP
-    elif features.ema_9 < features.ema_21 < features.ema_50 and adx > adx_trending:
+    elif ema_bearish and adx > adx_trending:
         raw_regime = MarketRegimeType.TRENDING_DOWN
     elif atr_ratio > 0.04:
         raw_regime = MarketRegimeType.VOLATILE
-    elif adx < adx_sideways and features.bb_lower < features.close < features.bb_upper:
+    elif adx < adx_sideways and features.bb_lower < close < features.bb_upper:
         raw_regime = MarketRegimeType.SIDEWAYS
+    elif adx_sideways <= adx <= adx_trending:
+        # TRANSITIONING: ADX between sideways and trending thresholds
+        # This is the most dangerous zone — trend is forming or fading
+        raw_regime = MarketRegimeType.TRANSITIONING
     else:
         raw_regime = MarketRegimeType.UNKNOWN
 

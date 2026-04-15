@@ -1874,18 +1874,36 @@
             margin-bottom: 12px;
         }
 
-        /* ── Chart Help Legend ── */
+        /* ── Chart Inline Legend ── */
         .chart-legend-row {
-            display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
-            padding: 8px 0; margin-top: 8px;
+            display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+            padding: 6px 12px; margin-top: 6px;
             border-top: 1px solid var(--border-dark);
             font-size: 11px; color: var(--text-muted);
+            font-family: 'Inter', sans-serif;
+            letter-spacing: 0.02em;
+            user-select: none;
         }
         .chart-legend-item {
-            display: flex; align-items: center; gap: 6px;
+            display: inline-flex; align-items: center; gap: 6px;
+            cursor: pointer; padding: 2px 6px; border-radius: 4px;
+            transition: background 0.15s ease, opacity 0.15s ease;
         }
+        .chart-legend-item:hover { background: rgba(255,255,255,0.04); }
+        .chart-legend-item.dimmed { opacity: 0.35; }
+        .chart-legend-item.dimmed .chart-legend-line { opacity: 0.4; }
+        .chart-legend-line {
+            width: 18px; height: 0; flex-shrink: 0;
+            border-top: 2px solid currentColor; border-radius: 1px;
+        }
+        .chart-legend-line.dashed { border-top-style: dashed; }
         .chart-legend-dot {
             width: 10px; height: 3px; border-radius: 2px; flex-shrink: 0;
+        }
+        .chart-legend-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px; font-weight: 500;
+            color: var(--text-secondary); min-width: 60px;
         }
 
         /* ── Accessible Focus Rings ── */
@@ -2408,6 +2426,54 @@
             .pipeline-step-num.pass, .pipeline-step-num.fail,
             .pipeline-section-status.pass, .pipeline-section-status.fail { animation: none; }
         }
+
+        /* ═══ SIDEBAR NAV ═══ */
+        .sidebar {
+            position: fixed; left: 0; top: 58px; bottom: 0; z-index: 90;
+            width: 56px; display: flex; flex-direction: column;
+            background: rgba(6, 10, 20, 0.88);
+            backdrop-filter: blur(20px) saturate(1.4);
+            border-right: 1px solid var(--glass-border);
+            padding: 16px 0; gap: 4px; align-items: center;
+            transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+            overflow: hidden;
+        }
+        .sidebar:hover { width: 200px; }
+        .sidebar-link {
+            display: flex; align-items: center; gap: 12px;
+            width: calc(100% - 16px); margin: 0 8px;
+            padding: 10px 14px; border-radius: var(--radius-sm);
+            color: var(--text-muted); text-decoration: none;
+            font-size: 13px; font-weight: 500; white-space: nowrap;
+            transition: all 0.2s; position: relative;
+        }
+        .sidebar-link svg { width: 20px; height: 20px; flex-shrink: 0; }
+        .sidebar-link span { opacity: 0; transition: opacity 0.2s; }
+        .sidebar:hover .sidebar-link span { opacity: 1; }
+        .sidebar-link:hover { color: var(--text-primary); background: var(--bg-hover); }
+        .sidebar-link.active {
+            color: var(--accent-light); background: var(--accent-dim);
+            border: 1px solid rgba(99,102,241,0.2);
+        }
+        .sidebar-link.active::before {
+            content: ''; position: absolute; left: -8px; top: 50%; transform: translateY(-50%);
+            width: 3px; height: 20px; border-radius: 0 3px 3px 0;
+            background: var(--accent);
+        }
+        .sidebar-divider { width: 32px; height: 1px; background: var(--border); margin: 8px auto; transition: width 0.2s; }
+        .sidebar:hover .sidebar-divider { width: calc(100% - 24px); }
+        .sidebar-section {
+            font-size: 9px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 1.2px; color: var(--text-dim);
+            padding: 8px 14px 4px; width: 100%;
+            opacity: 0; transition: opacity 0.2s;
+        }
+        .sidebar:hover .sidebar-section { opacity: 1; }
+        .app-layout { padding-left: 56px; }
+        @media (max-width: 768px) {
+            .sidebar { display: none; }
+            .app-layout { padding-left: 0; }
+        }
     </style>
 </head>
 <body>
@@ -2450,7 +2516,26 @@
         </div>
     </header>
 
+    <!-- ═══ Sidebar ═══ -->
+    <nav class="sidebar" role="navigation" aria-label="Main navigation">
+        <a href="/" class="sidebar-link active">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            <span>Dashboard</span>
+        </a>
+        <a href="/trades" class="sidebar-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>История сделок</span>
+        </a>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-section">Система</div>
+        <a href="/settings" class="sidebar-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <span>Настройки</span>
+        </a>
+    </nav>
+
     <!-- ═══ Main Content ═══ -->
+    <div class="app-layout">
     <main class="container" role="main">
 
         <!-- ── Key Metrics ── -->
@@ -2674,7 +2759,20 @@
                 <canvas id="pnlChart" aria-label="PnL history chart" role="img"></canvas>
                 <div id="pnlNoData" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;pointer-events:none;">Collecting data…</div>
             </div>
-            <div id="pnlChartNote" style="margin-top:12px;color:var(--text-secondary);font-size:12px;min-height:18px;">&nbsp;</div>
+            <div class="chart-legend-row" id="emaLegendRow" style="display:none;">
+                <span style="color:var(--text-dim);font-size:10px;text-transform:uppercase;letter-spacing:0.06em;margin-right:2px;">Indicators</span>
+                <div class="chart-legend-item" id="legendEma9" onclick="toggleEmaLine(2)" title="Toggle EMA 9">
+                    <span class="chart-legend-line" style="color:#e2a72f;"></span>
+                    <span>EMA 9</span>
+                    <span class="chart-legend-value" id="legendEma9Val">&mdash;</span>
+                </div>
+                <div class="chart-legend-item" id="legendEma21" onclick="toggleEmaLine(3)" title="Toggle EMA 21">
+                    <span class="chart-legend-line dashed" style="color:#c084fc;"></span>
+                    <span>EMA 21</span>
+                    <span class="chart-legend-value" id="legendEma21Val">&mdash;</span>
+                </div>
+            </div>
+            <div id="pnlChartNote" style="margin-top:8px;color:var(--text-secondary);font-size:12px;min-height:18px;">&nbsp;</div>
         </div>
 
         <div class="dashboard-row" style="margin-top: 20px;">
@@ -3271,6 +3369,7 @@
             </div>
         </div>
     </main>
+    </div><!-- /app-layout -->
 
     <!-- ═══ Footer ═══ -->
     <footer class="footer" role="contentinfo">
@@ -3505,6 +3604,44 @@
                 categoryPercentage: 0.9,
                 maxBarThickness: 48,
                 hidden: true,
+            },
+            {
+                label: 'EMA 9',
+                data: [],
+                type: 'line',
+                borderColor: 'rgba(226, 167, 47, 0.75)',
+                backgroundColor: 'transparent',
+                borderWidth: 1.3,
+                borderDash: [],
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                pointHoverBackgroundColor: '#e2a72f',
+                pointHoverBorderColor: 'rgba(226, 167, 47, 0.3)',
+                pointHoverBorderWidth: 6,
+                tension: 0.35,
+                fill: false,
+                hidden: false,
+                order: 0,
+                spanGaps: true,
+            },
+            {
+                label: 'EMA 21',
+                data: [],
+                type: 'line',
+                borderColor: 'rgba(192, 132, 252, 0.65)',
+                backgroundColor: 'transparent',
+                borderWidth: 1.3,
+                borderDash: [6, 3],
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                pointHoverBackgroundColor: '#c084fc',
+                pointHoverBorderColor: 'rgba(192, 132, 252, 0.3)',
+                pointHoverBorderWidth: 6,
+                tension: 0.35,
+                fill: false,
+                hidden: false,
+                order: 0,
+                spanGaps: true,
             }]
         },
         plugins: [crosshairPlugin, candleWickPlugin],
@@ -3535,7 +3672,7 @@
                     cornerRadius: 8,
                     displayColors: false,
                     titleFont: { family: 'Inter', size: 11, weight: '500' },
-                    bodyFont: { family: 'JetBrains Mono', size: 13, weight: '700' },
+                    bodyFont: { family: 'JetBrains Mono', size: 12, weight: '600' },
                     callbacks: {
                         title: function(items) {
                             if (!items.length) return '';
@@ -3543,6 +3680,12 @@
                         },
                         label: function(c) {
                             if (c.datasetIndex === 1) return null;
+                            if (c.datasetIndex === 2) {
+                                return c.parsed.y != null ? '\u25CF EMA 9:  ' + formatUsd(c.parsed.y) : null;
+                            }
+                            if (c.datasetIndex === 3) {
+                                return c.parsed.y != null ? '\u25CB EMA 21: ' + formatUsd(c.parsed.y) : null;
+                            }
                             if (chartSeriesMode === 'market') {
                                 var ohlc = window._chartOhlcData && window._chartOhlcData[c.dataIndex];
                                 if (ohlc) {
@@ -3558,6 +3701,11 @@
                                 return formatUsd(c.parsed.y);
                             }
                             return formatPnl(c.parsed.y);
+                        },
+                        labelTextColor: function(c) {
+                            if (c.datasetIndex === 2) return 'rgba(226, 167, 47, 0.9)';
+                            if (c.datasetIndex === 3) return 'rgba(192, 132, 252, 0.85)';
+                            return '#edf0f7';
                         }
                     }
                 }
@@ -3602,6 +3750,30 @@
     /* Store OHLC data for tooltip */
     window._chartOhlcData = null;
 
+    /* ── EMA Legend Toggle ── */
+    window.toggleEmaLine = function(dsIndex) {
+        var ds = pnlChart.data.datasets[dsIndex];
+        if (!ds) return;
+        ds.hidden = !ds.hidden;
+        var legendId = dsIndex === 2 ? 'legendEma9' : 'legendEma21';
+        var el = document.getElementById(legendId);
+        if (el) el.classList.toggle('dimmed', ds.hidden);
+        pnlChart.update('none');
+    };
+
+    function updateEmaLegend(candles) {
+        var legendRow = document.getElementById('emaLegendRow');
+        var v9El = document.getElementById('legendEma9Val');
+        var v21El = document.getElementById('legendEma21Val');
+        if (!legendRow) return;
+        if (!candles || !candles.length) { legendRow.style.display = 'none'; return; }
+        var last = candles[candles.length - 1];
+        var hasEma = (last.ema9 != null) || (last.ema21 != null);
+        legendRow.style.display = hasEma ? 'flex' : 'none';
+        if (v9El) v9El.textContent = last.ema9 != null ? formatUsd(last.ema9) : '\u2014';
+        if (v21El) v21El.textContent = last.ema21 != null ? formatUsd(last.ema21) : '\u2014';
+    }
+
     function setChartTitle(text) {
         var el = document.getElementById('pnlChartTitle');
         if (el) el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>' + escapeHtml(text);
@@ -3639,9 +3811,13 @@
         delete pnlChart.options.scales.y.max;
 
         pnlChart.data.labels = labels;
-        /* Hide volume bars for PnL mode */
+        /* Hide volume bars & EMA lines for PnL mode */
         pnlChart.data.datasets[1].data = [];
         pnlChart.data.datasets[1].hidden = true;
+        if (pnlChart.data.datasets[2]) { pnlChart.data.datasets[2].data = []; pnlChart.data.datasets[2].hidden = true; }
+        if (pnlChart.data.datasets[3]) { pnlChart.data.datasets[3].data = []; pnlChart.data.datasets[3].hidden = true; }
+        var _emaLeg = document.getElementById('emaLegendRow');
+        if (_emaLeg) _emaLeg.style.display = 'none';
         setChartTitle('PnL History');
         document.getElementById('chartLastPrice').style.display = 'none';
         if (chartNoteEl) {
@@ -3752,6 +3928,30 @@
         pnlChart.data.datasets[1].data = hasVolume ? volumes : [];
         pnlChart.data.datasets[1].backgroundColor = hasVolume ? volColors : 'rgba(99, 102, 241, 0.10)';
         pnlChart.data.datasets[1].hidden = !hasVolume;
+
+        /* ── EMA 9 & EMA 21 overlays ── */
+        var ema9Data = candles.map(function(c) { return c.ema9 !== undefined ? c.ema9 : null; });
+        var ema21Data = candles.map(function(c) { return c.ema21 !== undefined ? c.ema21 : null; });
+        var hasEMA9 = ema9Data.some(function(v) { return v !== null; });
+        var hasEMA21 = ema21Data.some(function(v) { return v !== null; });
+
+        var ds2 = pnlChart.data.datasets[2];
+        var ds3 = pnlChart.data.datasets[3];
+        if (ds2) {
+            ds2.data = hasEMA9 ? ema9Data : [];
+            if (!hasEMA9) ds2.hidden = true;
+        }
+        if (ds3) {
+            ds3.data = hasEMA21 ? ema21Data : [];
+            if (!hasEMA21) ds3.hidden = true;
+        }
+
+        /* Sync legend dimmed state & update live values */
+        var el9 = document.getElementById('legendEma9');
+        var el21 = document.getElementById('legendEma21');
+        if (el9 && ds2) el9.classList.toggle('dimmed', ds2.hidden);
+        if (el21 && ds3) el21.classList.toggle('dimmed', ds3.hidden);
+        updateEmaLegend(candles);
 
         var sym = market.symbol || 'BTCUSDT';
         var ivl = market.interval || interval;

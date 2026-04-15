@@ -56,6 +56,7 @@ class MarketRegimeType(str, Enum):
     TRENDING_DOWN = "trending_down"
     SIDEWAYS = "sideways"
     VOLATILE = "volatile"
+    TRANSITIONING = "transitioning"
     UNKNOWN = "unknown"
 
 
@@ -159,6 +160,18 @@ class FeatureVector:
     # Daily timeframe
     ema_50_daily: float = 0.0          # EMA 50 на дневном TF
     rsi_14_daily: float = 0.0          # RSI 14 на дневном TF
+
+    # Ichimoku Cloud (4h)
+    ichimoku_tenkan: float = 0.0       # Tenkan-sen (conversion line, 9-period)
+    ichimoku_kijun: float = 0.0        # Kijun-sen (base line, 26-period)
+    ichimoku_senkou_a: float = 0.0     # Senkou Span A (leading span A)
+    ichimoku_senkou_b: float = 0.0     # Senkou Span B (leading span B)
+
+    # Williams %R (1h)
+    williams_r: float = -50.0          # Williams %R (-100..0)
+
+    # Price change 5h (real, not proxy)
+    price_change_5h: float = 0.0       # 5-hour price change %
 
 
 # ──────────────────────────────────────────────
@@ -333,7 +346,7 @@ class StrategyTrade:
             hist_volatility_at_entry=fv.hist_volatility,
             dmi_spread_at_entry=fv.dmi_spread,
             stoch_rsi_at_entry=fv.stoch_rsi,
-            price_change_5h_at_entry=fv.price_change_5m,  # best proxy
+            price_change_5h_at_entry=fv.price_change_5h,
             momentum_at_entry=fv.momentum,
             rsi_daily_at_entry=fv.rsi_14_daily,
         )

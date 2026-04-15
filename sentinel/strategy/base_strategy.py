@@ -7,10 +7,41 @@
 from __future__ import annotations
 
 import threading
+import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
 from core.models import FeatureVector, Signal
+
+
+# ──────────────────────────────────────────────
+# News time decay tracking
+# ──────────────────────────────────────────────
+_last_news_update_ts: float = 0.0
+_NEWS_DECAY_HALF_LIFE_SEC: float = 7200.0  # 2 hours: impact halves every 2h
+_NEWS_MAX_AGE_SEC: float = 14400.0         # 4 hours: ignore news older than 4h
+
+
+def update_news_timestamp() -> None:
+    """Call when fresh news data is received from NewsCollector."""
+    global _last_news_update_ts
+    _last_news_update_ts = time.time()
+
+
+def _news_decay_factor() -> float:
+    """Exponential decay factor for news impact based on age.
+
+    Returns 1.0 for fresh news, decays toward 0 as news ages.
+    After 4h (MAX_AGE), returns 0 — news is stale.
+    """
+    if _last_news_update_ts <= 0:
+        return 0.5  # no timestamp = assume moderately stale
+    age = time.time() - _last_news_update_ts
+    if age >= _NEWS_MAX_AGE_SEC:
+        return 0.0  # completely stale
+    # Exponential decay: factor = 2^(-age / half_life)
+    import math
+    return math.pow(2.0, -age / _NEWS_DECAY_HALF_LIFE_SEC)
 
 
 def news_confidence_adjustment(
@@ -19,7 +50,7 @@ def news_confidence_adjustment(
     strategy_type: str = "trend",
 ) -> tuple[float, str]:
     """
-    Professional news-based confidence adjustment.
+    Professional news-based confidence adjustment with time decay.
 
     Uses composite_score, signal_strength, urgency, category, and Fear&Greed
     to compute a confidence delta for trading signals.
@@ -33,7 +64,7 @@ def news_confidence_adjustment(
             - mean_reversion: contrarian — moderate bearish = buy opportunity
 
     Returns:
-        (delta, reason) where delta is confidence adjustment (-0.20 .. +0.15)
+        (delta, reason) where delta is confidence adjustment (-0.30 .. +0.15)
         and reason is a string for signal logging.
     """
     delta = 0.0
@@ -41,6 +72,13 @@ def news_confidence_adjustment(
 
     score = f.news_composite_score
     strength = f.news_signal_strength
+
+    # Apply time decay to news impact (except Fear & Greed which is always current)
+    decay = _news_decay_factor()
+    score *= decay
+    strength *= decay
+    if decay < 0.1:
+        parts.append("stale")
 
     # If news not actionable — only Fear & Greed extremes matter
     if not f.news_actionable:
@@ -110,8 +148,8 @@ def news_confidence_adjustment(
     if fgi_delta != 0:
         parts.append(f"F&G={f.fear_greed_index}")
 
-    # Clamp
-    delta = max(-0.20, min(0.15, delta))
+    # Clamp — wider range for critical events (black swan protection)
+    delta = max(-0.30, min(0.15, delta))
 
     reason = f"news={score:+.2f}(str={strength:.0%})"
     if parts:

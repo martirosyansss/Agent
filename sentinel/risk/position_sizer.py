@@ -26,6 +26,8 @@ class SizingInput:
     regime_adx: float = 25.0            # current ADX
     max_position_pct: float = 20.0      # hard cap from config
     max_order_usd: float = 100.0        # hard cap from config
+    symbol: str = ""                    # trading symbol
+    open_symbols: list[str] | None = None  # already open positions' symbols
 
 
 @dataclass(slots=True)
@@ -84,8 +86,30 @@ def regime_dampener(adx: float) -> float:
     return 0.5
 
 
+# BTC/ETH correlation ~0.85 — reduce size when both are held
+_CORRELATED_PAIRS: dict[str, set[str]] = {
+    "BTCUSDT": {"ETHUSDT"},
+    "ETHUSDT": {"BTCUSDT"},
+}
+_CORRELATION_PENALTY: float = 0.70  # reduce to 70% of calculated size
+
+
+def correlation_factor(symbol: str, open_symbols: list[str] | None) -> float:
+    """Reduce position size when correlated assets are already held.
+
+    BTC and ETH have ~0.85 correlation — holding both is not true diversification.
+    """
+    if not open_symbols:
+        return 1.0
+    correlated = _CORRELATED_PAIRS.get(symbol, set())
+    for s in open_symbols:
+        if s in correlated:
+            return _CORRELATION_PENALTY
+    return 1.0
+
+
 def calculate_position_size(inp: SizingInput) -> SizingResult:
-    """Calculate position size using Kelly + ATR + regime.
+    """Calculate position size using Kelly + ATR + regime + correlation.
 
     Falls back to fixed sizing if insufficient data (win_rate near 50%).
     """
@@ -103,14 +127,17 @@ def calculate_position_size(inp: SizingInput) -> SizingResult:
     # 3. Regime dampener
     rd = regime_dampener(inp.regime_adx)
 
-    # Combine: kelly-based pct, scaled by vol and regime
+    # 4. Correlation factor (reduce when correlated assets already held)
+    cf = correlation_factor(inp.symbol, inp.open_symbols)
+
+    # Combine: kelly-based pct, scaled by vol, regime, and correlation
     if kf > 0.01:
         base_pct = kf * 100  # kelly as percentage
-        adjusted_pct = base_pct * vf * rd
+        adjusted_pct = base_pct * vf * rd * cf
         method = "kelly_atr"
     else:
         # Insufficient edge, use minimum fixed size
-        adjusted_pct = 5.0 * vf * rd
+        adjusted_pct = 5.0 * vf * rd * cf
         method = "fixed"
 
     # Clamp to hard limits

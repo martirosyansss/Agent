@@ -33,8 +33,8 @@ class BBBreakoutConfig:
     squeeze_threshold: float = 0.05
     stop_loss_pct: float = 3.0
     take_profit_pct: float = 6.0
-    trailing_stop_pct: float = 3.0
-    trailing_activate_pct: float = 2.0   # was 5.0 — lowered so trailing actually activates
+    trailing_stop_pct: float = 1.5       # tighter trail to lock in breakout profits
+    trailing_activate_pct: float = 3.0   # activate after meaningful move
     min_confidence: float = 0.70
     max_position_pct: float = 15.0
     max_hold_hours: int = 72
@@ -57,11 +57,13 @@ class BollingerBreakout(BaseStrategy):
         self._max_price: dict[str, float] = {}
         self._entry_ts: dict[str, int] = {}
         self._bars_inside_bands: dict[str, int] = {}
+        self._squeeze_bars: dict[str, int] = {}      # track squeeze duration
 
     def _cleanup(self, sym: str) -> None:
         self._max_price.pop(sym, None)
         self._entry_ts.pop(sym, None)
         self._bars_inside_bands.pop(sym, None)
+        # Don't clear squeeze_bars — it's pre-entry tracking
 
     def generate_signal(
         self,
@@ -192,18 +194,29 @@ class BollingerBreakout(BaseStrategy):
         if features.adx < 20:
             return None
 
-        # Squeeze detection
+        # Squeeze detection with duration tracking
         if hasattr(features, 'hist_volatility') and features.hist_volatility > 0:
             is_squeeze = features.bb_bandwidth < features.hist_volatility * 0.5
         else:
             is_squeeze = features.bb_bandwidth < cfg.squeeze_threshold
 
+        # Track squeeze duration (min 5 bars for reliable breakout)
+        if is_squeeze:
+            self._squeeze_bars[sym] = self._squeeze_bars.get(sym, 0) + 1
+        else:
+            self._squeeze_bars[sym] = 0
+
+        squeeze_duration = self._squeeze_bars.get(sym, 0)
+        long_squeeze = squeeze_duration >= 5  # 5+ bars of squeeze = high energy
+
         # Confidence
         confidence = 0.60
         if features.volume_ratio > 2.0:
             confidence += 0.10
-        if is_squeeze:
-            confidence += 0.10
+        if long_squeeze:
+            confidence += 0.12  # long squeeze = higher energy breakout
+        elif is_squeeze:
+            confidence += 0.06  # short squeeze = weaker signal
         if features.adx > 30:
             confidence += 0.05
         if features.ema_9 > features.ema_21:

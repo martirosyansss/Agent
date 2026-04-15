@@ -40,9 +40,9 @@ class EMAConfig:
     rsi_oversold: float = 30.0
     min_volume_ratio: float = 1.0
     stop_loss_pct: float = 2.5
-    take_profit_pct: float = 5.0
-    trailing_stop_pct: float = 2.0
-    trailing_activate_pct: float = 1.5    # lowered from 2.5 so trailing actually activates
+    take_profit_pct: float = 6.25         # R:R = 2.5 (SL 2.5% × 2.5)
+    trailing_stop_pct: float = 1.5
+    trailing_activate_pct: float = 2.5    # realistic for BTC/ETH 1h volatility
     max_hold_hours: int = 72
     min_confidence: float = 0.70          # tightened from 0.60
     max_position_pct: float = 20.0
@@ -150,6 +150,25 @@ class EMACrossoverRSI(BaseStrategy):
             log.debug("{} BUY skip: ADX {:.1f} < 20 (sideways)", f.symbol, f.adx)
             return None
 
+        # Fresh crossover check: price shouldn't be too far from EMA crossing point
+        # If price already moved >1.5× ATR beyond the crossover, R:R is degraded
+        if f.atr > 0:
+            ema_mid = (f.ema_9 + f.ema_21) / 2
+            distance_from_cross = abs(f.close - ema_mid)
+            if distance_from_cross > f.atr * 1.5:
+                log.debug("{} BUY skip: stale crossover, price {:.1f}× ATR from EMA mid",
+                          f.symbol, distance_from_cross / f.atr)
+                return None
+
+        # Ichimoku Cloud filter: price above cloud = bullish confirmation
+        if f.ichimoku_senkou_a > 0 and f.ichimoku_senkou_b > 0:
+            cloud_top = max(f.ichimoku_senkou_a, f.ichimoku_senkou_b)
+            cloud_bottom = min(f.ichimoku_senkou_a, f.ichimoku_senkou_b)
+            # Price inside or below cloud = weak trend, skip
+            if f.close < cloud_bottom:
+                log.debug("{} BUY skip: price below Ichimoku cloud", f.symbol)
+                return None
+
         # ── Расчёт confidence ──
         confidence = 0.50  # base
 
@@ -185,6 +204,19 @@ class EMACrossoverRSI(BaseStrategy):
                 confidence += 0.05
             elif f.trend_alignment <= 0.2:
                 confidence -= 0.10
+
+        # Ichimoku Cloud confirmation (+0.08 above cloud, -0.05 inside)
+        if f.ichimoku_senkou_a > 0 and f.ichimoku_senkou_b > 0:
+            cloud_top = max(f.ichimoku_senkou_a, f.ichimoku_senkou_b)
+            cloud_bottom = min(f.ichimoku_senkou_a, f.ichimoku_senkou_b)
+            if f.close > cloud_top:
+                confidence += 0.08
+            elif f.close >= cloud_bottom:
+                confidence -= 0.05  # inside cloud = uncertainty
+
+        # Williams %R confirmation (+0.05 if not overbought)
+        if hasattr(f, 'williams_r') and f.williams_r < -20:
+            confidence += 0.05  # room to run
 
         # Penalty factors for marginal conditions
         if 60 <= f.rsi_14 < 70:

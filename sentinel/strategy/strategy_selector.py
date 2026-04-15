@@ -27,7 +27,8 @@ ALLOCATION_TABLE: dict[str, dict[str, float]] = {
     },
     "trending_down": {
         "ema_crossover_rsi": 0, "grid_trading": 0, "mean_reversion": 5,
-        "bollinger_breakout": 0, "dca_bot": 10, "macd_divergence": 5,
+        "bollinger_breakout": 0, "dca_bot": 10, "macd_divergence": 0,
+        # MACD divergence removed from trending_down — catching knives is too risky
     },
     "sideways": {
         "ema_crossover_rsi": 5, "grid_trading": 25, "mean_reversion": 10,
@@ -36,6 +37,12 @@ ALLOCATION_TABLE: dict[str, dict[str, float]] = {
     "volatile": {
         "ema_crossover_rsi": 5, "grid_trading": 0, "mean_reversion": 5,
         "bollinger_breakout": 10, "dca_bot": 5, "macd_divergence": 5,
+    },
+    "transitioning": {
+        # TRANSITIONING = dangerous zone. Only high-conviction strategies.
+        # Reduced exposure, DCA for dollar-cost averaging, small mean reversion.
+        "ema_crossover_rsi": 5, "grid_trading": 0, "mean_reversion": 5,
+        "bollinger_breakout": 5, "dca_bot": 10, "macd_divergence": 0,
     },
     "unknown": {
         "ema_crossover_rsi": 5, "grid_trading": 0, "mean_reversion": 0,

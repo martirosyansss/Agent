@@ -183,7 +183,7 @@ def bollinger_bands(
 
     window = closes[-period:]
     middle = sum(window) / period
-    variance = sum((x - middle) ** 2 for x in window) / period
+    variance = sum((x - middle) ** 2 for x in window) / (period - 1)
     sd = math.sqrt(variance)
     upper = middle + std_dev * sd
     lower = middle - std_dev * sd
@@ -409,17 +409,26 @@ def bollinger_pct_b(closes: list[float], period: int = 20, std_dev: float = 2.0)
 # VWAP — Volume Weighted Average Price (simplified intraday)
 # ──────────────────────────────────────────────
 
-def vwap(closes: list[float], volumes: list[float], period: int = 20) -> Optional[float]:
-    """Simplified VWAP за последних period свечей."""
-    n = min(len(closes), len(volumes))
+def vwap(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    volumes: list[float],
+    period: int = 20,
+) -> Optional[float]:
+    """VWAP using typical price (H+L+C)/3 за последних period свечей."""
+    n = min(len(highs), len(lows), len(closes), len(volumes))
     if n < period:
         return None
-    p_slice = closes[-period:]
+    h_slice = highs[-period:]
+    l_slice = lows[-period:]
+    c_slice = closes[-period:]
     v_slice = volumes[-period:]
     total_vol = sum(v_slice)
     if total_vol == 0:
         return None
-    return safe_value(sum(p * v for p, v in zip(p_slice, v_slice)) / total_vol)
+    tp_vol = sum((h + l + c) / 3.0 * v for h, l, c, v in zip(h_slice, l_slice, c_slice, v_slice))
+    return safe_value(tp_vol / total_vol)
 
 
 # ──────────────────────────────────────────────
@@ -486,6 +495,86 @@ def dmi_spread(
 # ──────────────────────────────────────────────
 # Trend Alignment (multi-timeframe)
 # ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
+# Ichimoku Cloud
+# ──────────────────────────────────────────────
+
+def _donchian_mid(data: list[float], period: int) -> Optional[float]:
+    """Среднее между max и min за period (для Ichimoku)."""
+    if len(data) < period:
+        return None
+    window = data[-period:]
+    return (max(window) + min(window)) / 2.0
+
+
+def ichimoku(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    tenkan_period: int = 9,
+    kijun_period: int = 26,
+    senkou_b_period: int = 52,
+) -> Optional[tuple[float, float, float, float]]:
+    """Ichimoku Cloud → (tenkan, kijun, senkou_a, senkou_b) или None.
+
+    tenkan = (highest high + lowest low) / 2 за tenkan_period
+    kijun  = (highest high + lowest low) / 2 за kijun_period
+    senkou_a = (tenkan + kijun) / 2
+    senkou_b = (highest high + lowest low) / 2 за senkou_b_period
+    """
+    n = min(len(highs), len(lows), len(closes))
+    if n < senkou_b_period:
+        return None
+
+    tenkan = _donchian_mid(highs, tenkan_period)
+    kijun = _donchian_mid(lows, kijun_period)
+    if tenkan is None or kijun is None:
+        return None
+
+    # Пересчитаем правильно — и high и low для каждого
+    h_tenkan = highs[-tenkan_period:]
+    l_tenkan = lows[-tenkan_period:]
+    tenkan = (max(h_tenkan) + min(l_tenkan)) / 2.0
+
+    h_kijun = highs[-kijun_period:]
+    l_kijun = lows[-kijun_period:]
+    kijun = (max(h_kijun) + min(l_kijun)) / 2.0
+
+    senkou_a = (tenkan + kijun) / 2.0
+
+    h_senkou_b = highs[-senkou_b_period:]
+    l_senkou_b = lows[-senkou_b_period:]
+    senkou_b = (max(h_senkou_b) + min(l_senkou_b)) / 2.0
+
+    return (
+        safe_value(tenkan),
+        safe_value(kijun),
+        safe_value(senkou_a),
+        safe_value(senkou_b),
+    )
+
+
+# ──────────────────────────────────────────────
+# Williams %R
+# ──────────────────────────────────────────────
+
+def williams_r(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 14,
+) -> Optional[float]:
+    """Williams %R (-100..0). -100 = oversold, 0 = overbought."""
+    n = min(len(highs), len(lows), len(closes))
+    if n < period:
+        return None
+    highest = max(highs[-period:])
+    lowest = min(lows[-period:])
+    if highest == lowest:
+        return -50.0
+    return safe_value((highest - closes[-1]) / (highest - lowest) * -100.0)
+
 
 def trend_alignment(ema_fast: Optional[float], ema_slow: Optional[float],
                     close: float, ema_daily: Optional[float] = None) -> float:

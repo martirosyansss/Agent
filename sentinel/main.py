@@ -1479,22 +1479,46 @@ async def run() -> None:
                 candles = aggregated
 
         if len(candles) >= 2:
+            # ── Calculate EMA 9 & EMA 21 overlays ──
+            closes = [float(c["close"]) for c in candles]
+
+            def _ema(data, period):
+                if len(data) < period:
+                    return [None] * len(data)
+                k = 2.0 / (period + 1)
+                result = [None] * (period - 1)
+                sma = sum(data[:period]) / period
+                result.append(round(sma, 6))
+                for i in range(period, len(data)):
+                    val = data[i] * k + result[-1] * (1 - k)
+                    result.append(round(val, 6))
+                return result
+
+            ema9_vals = _ema(closes, 9)
+            ema21_vals = _ema(closes, 21)
+
+            built = []
+            for i, c in enumerate(candles):
+                entry = {
+                    "t": c["timestamp"],
+                    "label": time.strftime(time_fmt, time.localtime(c["timestamp"] / 1000)),
+                    "o": float(c["open"]),
+                    "h": float(c["high"]),
+                    "l": float(c["low"]),
+                    "c": float(c["close"]),
+                    "v": float(c.get("volume", 0)),
+                }
+                if ema9_vals[i] is not None:
+                    entry["ema9"] = ema9_vals[i]
+                if ema21_vals[i] is not None:
+                    entry["ema21"] = ema21_vals[i]
+                built.append(entry)
+
             return {
                 "symbol": primary_symbol,
                 "interval": interval,
                 "source": f"candles_{interval}",
-                "candles": [
-                    {
-                        "t": c["timestamp"],
-                        "label": time.strftime(time_fmt, time.localtime(c["timestamp"] / 1000)),
-                        "o": float(c["open"]),
-                        "h": float(c["high"]),
-                        "l": float(c["low"]),
-                        "c": float(c["close"]),
-                        "v": float(c.get("volume", 0)),
-                    }
-                    for c in candles
-                ],
+                "candles": built,
             }
 
         # Fallback to trades for 1m only
