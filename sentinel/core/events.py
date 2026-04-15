@@ -50,6 +50,11 @@ class EventBus:
         except ValueError:
             logger.debug("Handler %s was not subscribed to '%s'", handler.__qualname__, event)
 
+    # Events where handler failures must be surfaced (not silently swallowed)
+    CRITICAL_EVENTS = frozenset({
+        "order_filled", "position_opened", "position_closed",
+    })
+
     async def emit(self, event: str, *args: Any, **kwargs: Any) -> None:
         """Отправить событие всем подписчикам (параллельно)."""
         import time
@@ -63,11 +68,20 @@ class EventBus:
             *(h(*args, **kwargs) for h in handlers),
             return_exceptions=True,
         )
+        critical_failures: list[tuple[str, Exception]] = []
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
+                handler_name = handlers[idx].__qualname__
                 logger.error(
                     "Event handler %s for '%s' raised: %s",
-                    handlers[idx].__qualname__,
+                    handler_name,
                     event,
                     result,
                 )
+                if event in self.CRITICAL_EVENTS:
+                    critical_failures.append((handler_name, result))
+        if critical_failures:
+            raise RuntimeError(
+                f"Critical handler(s) failed for '{event}': "
+                + ", ".join(f"{name}: {err}" for name, err in critical_failures)
+            )

@@ -358,6 +358,32 @@
             background: var(--green-dim); color: var(--green-bright);
             border: 1px solid rgba(16,185,129,0.15);
         }
+        .symbol-bar {
+            display: flex; gap: 3px;
+            background: var(--bg-inset); border-radius: 10px; padding: 3px;
+            border: 1px solid var(--border-dark);
+        }
+        .symbol-btn {
+            font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+            padding: 5px 14px; border-radius: 7px;
+            background: transparent; border: none;
+            color: var(--text-muted); cursor: pointer;
+            transition: all 0.25s; display: flex; align-items: center; gap: 6px;
+            white-space: nowrap; letter-spacing: 0.02em;
+        }
+        .symbol-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+        .symbol-btn.active {
+            background: var(--accent-dim); color: var(--accent-light);
+            box-shadow: 0 0 8px rgba(99,102,241,0.12);
+        }
+        .symbol-btn.active:hover { background: var(--accent-dim); color: var(--accent-light); }
+        .symbol-btn .symbol-dot {
+            width: 6px; height: 6px; border-radius: 50%;
+            display: inline-block;
+        }
+        .symbol-btn .symbol-dot.btc { background: #f7931a; }
+        .symbol-btn .symbol-dot.eth { background: #627eea; }
+
         .chart-type-bar, .interval-bar {
             display: flex; gap: 3px;
             background: var(--bg-inset); border-radius: 10px; padding: 3px;
@@ -496,6 +522,236 @@
         .trend-badge-bearish { background: var(--red-dim); color: var(--red); border: 1px solid rgba(239,68,68,0.12); }
         .trend-badge-neutral { background: var(--accent-dim); color: var(--text-secondary); border: 1px solid rgba(99,102,241,0.1); }
 
+        /* ═══════════════════ OPEN POSITIONS (Pro Cards) ═══════════════════ */
+        .positions-panel { position: relative; }
+        .positions-panel .panel-title { margin-bottom: 8px; }
+        .positions-header-row {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 16px; position: relative; z-index: 1;
+        }
+        .positions-header-left { display: flex; align-items: center; gap: 12px; }
+        .positions-count-badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px; font-weight: 700;
+            padding: 3px 10px; border-radius: 20px;
+            background: var(--accent-dim); color: var(--accent-light);
+            border: 1px solid rgba(99,102,241,0.18);
+        }
+        .positions-total-pnl {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px; font-weight: 700;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .positions-total-pnl .pnl-label {
+            font-family: 'Inter', sans-serif;
+            font-size: 10px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 0.06em; color: var(--text-dim);
+        }
+        .positions-grid {
+            display: flex; flex-direction: column; gap: 10px;
+            position: relative; z-index: 1;
+        }
+        /* ── Position Card ── */
+        .pos-card {
+            background: var(--bg-inset);
+            border: 1px solid var(--border-dark);
+            border-radius: var(--radius-md);
+            padding: 16px 20px;
+            transition: border-color 0.3s, background 0.3s, transform 0.2s;
+            position: relative;
+            overflow: hidden;
+        }
+        .pos-card:hover {
+            border-color: var(--border);
+            background: var(--bg-elevated);
+            transform: translateY(-1px);
+        }
+        .pos-card::before {
+            content: '';
+            position: absolute; top: 0; left: 0; width: 3px; height: 100%;
+            border-radius: 3px 0 0 3px;
+        }
+        .pos-card.pos-long::before {
+            background: linear-gradient(180deg, var(--green-bright), var(--green));
+            box-shadow: 0 0 8px var(--green-glow);
+        }
+        .pos-card.pos-short::before {
+            background: linear-gradient(180deg, var(--red), #f97316);
+            box-shadow: 0 0 8px rgba(239,68,68,0.15);
+        }
+        /* Row 1: Symbol + Side + Strategy + Duration + PnL */
+        .pos-card-top {
+            display: flex; align-items: center; gap: 10px;
+            margin-bottom: 12px;
+        }
+        .pos-symbol {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px; font-weight: 700; color: var(--text-primary);
+            letter-spacing: 0.01em;
+        }
+        .pos-side-badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px; font-weight: 800; letter-spacing: 0.08em;
+            padding: 4px 12px; border-radius: 6px;
+            text-transform: uppercase;
+            display: inline-flex; align-items: center; gap: 5px;
+        }
+        .pos-side-badge.long {
+            background: rgba(16,185,129,0.18); color: var(--green-bright);
+            border: 1px solid rgba(16,185,129,0.35);
+            box-shadow: 0 0 10px rgba(16,185,129,0.12);
+        }
+        .pos-side-badge.short {
+            background: rgba(239,68,68,0.18); color: #fca5a5;
+            border: 1px solid rgba(239,68,68,0.35);
+            box-shadow: 0 0 10px rgba(239,68,68,0.12);
+        }
+        .pos-strategy {
+            font-size: 11px; color: var(--text-muted); font-weight: 500;
+        }
+        .pos-meta-right {
+            margin-left: auto; display: flex; align-items: center; gap: 14px;
+        }
+        .pos-duration {
+            font-size: 10px; color: var(--text-dim); font-weight: 500;
+            display: flex; align-items: center; gap: 4px;
+        }
+        .pos-duration svg { width: 12px; height: 12px; opacity: 0.5; }
+        .pos-pnl-group { text-align: right; }
+        .pos-pnl-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 15px; font-weight: 700; line-height: 1.1;
+        }
+        .pos-pnl-pct {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px; font-weight: 600; margin-top: 1px;
+        }
+        /* Row 2: Price data grid */
+        .pos-data-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 0;
+            background: rgba(0,0,0,0.15);
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.02);
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+        .pos-data-cell {
+            padding: 10px 14px;
+            border-right: 1px solid rgba(255,255,255,0.03);
+        }
+        .pos-data-cell:last-child { border-right: none; }
+        .pos-data-label {
+            font-size: 9px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.08em; color: var(--text-dim);
+            margin-bottom: 4px;
+        }
+        .pos-data-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px; font-weight: 600; color: var(--text-secondary);
+        }
+        .pos-data-value.highlight { color: var(--text-primary); }
+        /* Row 3: SL/TP Progress Bar */
+        .pos-progress-row {
+            display: flex; align-items: center; gap: 10px;
+        }
+        .pos-progress-labels {
+            display: flex; justify-content: space-between; align-items: center;
+            width: 100%;
+        }
+        .pos-sl-label, .pos-tp-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px; font-weight: 700; letter-spacing: 0.04em;
+        }
+        .pos-sl-label { color: var(--red); }
+        .pos-tp-label { color: var(--green-bright); }
+        .pos-rr-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px; font-weight: 600; color: var(--text-dim);
+        }
+        .pos-progress-track {
+            flex: 1;
+            height: 4px;
+            background: rgba(255,255,255,0.04);
+            border-radius: 2px;
+            position: relative;
+            overflow: hidden;
+        }
+        .pos-progress-fill {
+            position: absolute; top: 0; left: 50%; height: 100%;
+            border-radius: 2px;
+            transition: width 0.6s cubic-bezier(0.4,0,0.2,1), left 0.6s cubic-bezier(0.4,0,0.2,1);
+        }
+        .pos-progress-fill.profit {
+            background: linear-gradient(90deg, var(--green), var(--green-bright));
+            box-shadow: 0 0 6px var(--green-glow);
+        }
+        .pos-progress-fill.loss {
+            background: linear-gradient(270deg, var(--red), #f97316);
+            box-shadow: 0 0 6px rgba(239,68,68,0.15);
+        }
+        .pos-progress-center {
+            position: absolute; top: -3px; left: 50%;
+            width: 2px; height: 10px;
+            background: var(--text-dim); border-radius: 1px;
+            transform: translateX(-50%);
+            opacity: 0.4;
+        }
+        /* Signal reason tag */
+        .pos-signal-tag {
+            display: inline-flex; align-items: center; gap: 4px;
+            font-size: 10px; color: var(--text-dim); font-weight: 500;
+            margin-top: 8px;
+            padding: 3px 8px;
+            background: rgba(99,102,241,0.05);
+            border: 1px solid rgba(99,102,241,0.08);
+            border-radius: 6px;
+            max-width: 100%;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .pos-signal-tag svg { width: 10px; height: 10px; opacity: 0.5; flex-shrink: 0; }
+        /* Paper badge */
+        .pos-paper-badge {
+            font-size: 8px; font-weight: 700; letter-spacing: 0.08em;
+            padding: 1px 6px; border-radius: 3px;
+            background: var(--amber-dim); color: var(--amber);
+            border: 1px solid rgba(245,158,11,0.15);
+            text-transform: uppercase;
+        }
+        /* Empty state for positions */
+        .positions-empty {
+            display: flex; flex-direction: column; align-items: center;
+            justify-content: center; padding: 48px 20px;
+            gap: 12px; position: relative; z-index: 1;
+        }
+        .positions-empty-icon {
+            width: 48px; height: 48px;
+            background: var(--bg-inset);
+            border: 1px solid var(--border-dark);
+            border-radius: 14px;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .positions-empty-icon svg { width: 22px; height: 22px; color: var(--text-dim); opacity: 0.4; }
+        .positions-empty-title {
+            font-size: 13px; font-weight: 600; color: var(--text-secondary);
+        }
+        .positions-empty-sub {
+            font-size: 11px; color: var(--text-dim); line-height: 1.5;
+            text-align: center; max-width: 260px;
+        }
+        /* Responsive */
+        @media (max-width: 900px) {
+            .pos-data-grid { grid-template-columns: repeat(3, 1fr); }
+            .pos-data-cell:nth-child(4),
+            .pos-data-cell:nth-child(5) { border-top: 1px solid rgba(255,255,255,0.03); }
+        }
+        @media (max-width: 600px) {
+            .pos-data-grid { grid-template-columns: repeat(2, 1fr); }
+            .pos-card-top { flex-wrap: wrap; }
+            .pos-meta-right { margin-left: 0; width: 100%; justify-content: space-between; margin-top: 8px; }
+        }
+
         /* ═══════════════════ TABLES ═══════════════════ */
         .data-table { width: 100%; border-collapse: collapse; position: relative; z-index: 1; }
         .data-table thead th {
@@ -623,6 +879,232 @@
             background: var(--accent-dim); color: var(--accent-light);
             border: 1px solid rgba(99,102,241,0.1);
         }
+
+        /* ═══════════════════ STRATEGY LOG ENTRIES ═══════════════════ */
+        .strat-log-entry {
+            padding: 14px 16px; border-radius: var(--radius-md);
+            background: var(--bg-inset);
+            border: 1px solid var(--border-dark);
+            border-left: 3px solid var(--border);
+            margin-bottom: 8px;
+            transition: all 0.25s;
+        }
+        .strat-log-entry:hover { background: var(--bg-elevated); border-color: var(--border); }
+        .strat-log-entry.log-signal { border-left-color: var(--green); }
+        .strat-log-entry.log-scan { border-left-color: var(--accent); }
+        .strat-log-entry.log-skip { border-left-color: var(--text-dim); }
+        .strat-log-entry.log-error { border-left-color: var(--red); }
+
+        .strat-log-header {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 6px; flex-wrap: wrap; gap: 6px;
+        }
+        .strat-log-symbol {
+            font-family: 'JetBrains Mono', monospace; font-size: 13px;
+            font-weight: 700; color: var(--text-primary);
+        }
+        .strat-log-price {
+            font-family: 'JetBrains Mono', monospace; font-size: 12px;
+            color: var(--green-bright); font-weight: 600;
+        }
+        .strat-log-regime {
+            font-size: 9px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.06em; padding: 2px 8px; border-radius: 4px;
+            background: var(--bg-hover); color: var(--text-muted);
+        }
+        .strat-log-meta {
+            display: flex; align-items: center; gap: 8px;
+        }
+        .strat-log-time {
+            font-size: 11px; color: var(--text-dim);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .strat-log-msg {
+            font-size: 13px; color: var(--text-secondary); line-height: 1.5;
+        }
+        .strat-log-strategies {
+            display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;
+        }
+        .strat-tag-signal {
+            background: rgba(16,185,129,0.12); color: var(--green-bright);
+            border: 1px solid rgba(16,185,129,0.2);
+        }
+        .strat-tag-no_signal {
+            background: rgba(90,100,120,0.12); color: var(--text-muted);
+            border: 1px solid var(--border-dark);
+        }
+        .strat-tag-skip {
+            background: rgba(245,158,11,0.1); color: var(--amber);
+            border: 1px solid rgba(245,158,11,0.15);
+        }
+        .strat-tag-error {
+            background: rgba(239,68,68,0.1); color: var(--red);
+            border: 1px solid rgba(239,68,68,0.15);
+        }
+
+        /* ═══════════════════ STRATEGY PERFORMANCE CARDS ═══════════════════ */
+        .sp-name {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .sp-name > span:first-child {
+            font-size: 13px; font-weight: 700; color: var(--text-primary);
+        }
+        .sp-pnl {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px; font-weight: 800;
+        }
+        .sp-stats {
+            display: grid; grid-template-columns: repeat(5, 1fr); gap: 0;
+            background: rgba(0,0,0,0.15); border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.03);
+            overflow: hidden; margin-bottom: 10px;
+        }
+        .sp-stats > span {
+            display: flex; flex-direction: column; gap: 3px;
+            padding: 8px 10px; font-size: 9px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.06em;
+            color: var(--text-dim); border-right: 1px solid rgba(255,255,255,0.03);
+        }
+        .sp-stats > span:last-child { border-right: none; }
+        .sp-val {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px; font-weight: 700; color: var(--text-primary);
+            letter-spacing: -0.01em; display: block; margin-top: 2px;
+        }
+        .sp-bar {
+            height: 5px; background: rgba(255,255,255,0.04);
+            border-radius: 3px; overflow: hidden;
+        }
+        .sp-bar-fill {
+            height: 100%; border-radius: 3px;
+            transition: width 0.6s cubic-bezier(0.4,0,0.2,1);
+            box-shadow: 0 0 8px rgba(255,255,255,0.08);
+        }
+
+        /* ═══════════════════ TRADE TABLE ENHANCEMENTS ═══════════════════ */
+        .td-mono {
+            font-family: 'JetBrains Mono', monospace;
+            font-variant-numeric: tabular-nums;
+        }
+        .table-cell-meta {
+            font-size: 11px; color: var(--text-muted); font-weight: 500;
+            max-width: 180px; display: inline-block;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            font-family: 'Inter', sans-serif;
+        }
+        .badge-stop {
+            background: rgba(239,68,68,0.18); color: #fca5a5;
+            border: 1px solid rgba(239,68,68,0.3);
+            box-shadow: 0 0 8px rgba(239,68,68,0.08);
+        }
+        .badge-stop .badge-dot { background: var(--red); box-shadow: 0 0 6px var(--red); }
+        .badge-sell { /* alias for SELL side */
+            background: rgba(239,68,68,0.18); color: #fca5a5;
+            border: 1px solid rgba(239,68,68,0.3);
+        }
+
+        /* ═══════════════════ SYMBOL BADGES ═══════════════════ */
+        .sym-badge {
+            display: inline-flex; align-items: center; gap: 5px;
+            font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 800;
+            padding: 3px 10px; border-radius: 6px;
+            letter-spacing: 0.04em; white-space: nowrap;
+        }
+        .sym-badge-dot {
+            width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+            box-shadow: 0 0 6px currentColor;
+        }
+        /* Symbol filter bar inside panels */
+        .sym-filter-bar {
+            display: flex; align-items: center; gap: 4px;
+            margin-bottom: 14px; position: relative; z-index: 1;
+            background: var(--bg-inset); border-radius: 10px; padding: 3px;
+            border: 1px solid var(--border-dark);
+            width: fit-content;
+        }
+        .sym-filter-btn {
+            font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+            padding: 4px 14px; border-radius: 7px;
+            background: transparent; border: none;
+            color: var(--text-muted); cursor: pointer;
+            transition: all 0.25s; display: flex; align-items: center; gap: 5px;
+            white-space: nowrap;
+        }
+        .sym-filter-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+        .sym-filter-btn.active {
+            background: var(--accent-dim); color: var(--accent-light);
+            box-shadow: 0 0 8px rgba(99,102,241,0.12);
+        }
+        .sym-filter-dot {
+            width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+        }
+        .sym-group-header {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 0 10px; margin-top: 4px;
+            font-size: 12px; font-weight: 700; color: var(--text-muted);
+            letter-spacing: 0.06em; text-transform: uppercase;
+            border-top: 1px solid var(--border-dark);
+        }
+        .sym-group-header:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+        .sym-group-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+        }
+
+        /* ═══════════════════ TRADING ACTIVITY SECTION ═══════════════════ */
+        .trading-activity-header {
+            display: flex; align-items: center; gap: 14px;
+            padding: 20px 0 8px;
+        }
+        .trading-activity-header h2 {
+            font-size: 15px; font-weight: 800; color: var(--text-primary);
+            letter-spacing: 0.08em; text-transform: uppercase;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .trading-activity-header h2 svg {
+            width: 20px; height: 20px; color: var(--accent-light); opacity: 0.7;
+        }
+        .trading-activity-desc {
+            font-size: 13px; color: var(--text-secondary); line-height: 1.6;
+            margin: -4px 0 20px; padding: 0 0 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .trading-activity-desc strong { color: var(--text-primary); font-weight: 600; }
+        .tag-hl {
+            font-family: 'JetBrains Mono', monospace; font-size: 11px;
+            font-weight: 700; padding: 1px 6px; border-radius: 4px;
+            background: var(--accent-dim); color: var(--accent-light);
+            border: 1px solid rgba(99,102,241,0.12);
+            white-space: nowrap;
+        }
+        .trading-row {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+        }
+        @media (max-width: 1200px) {
+            .trading-row { grid-template-columns: 1fr; }
+            .sp-stats { grid-template-columns: repeat(3, 1fr); }
+            .sp-stats > span:nth-child(3) { border-right: none; }
+            .sp-stats > span:nth-child(4),
+            .sp-stats > span:nth-child(5) { border-top: 1px solid rgba(255,255,255,0.03); }
+        }
+        @media (max-width: 600px) {
+            .sp-stats { grid-template-columns: repeat(2, 1fr); }
+            .sp-stats > span:nth-child(2n) { border-right: none; }
+            .sp-stats > span:nth-child(n+3) { border-top: 1px solid rgba(255,255,255,0.03); }
+        }
+
+        /* ── CSV Export Button (SVG) ── */
+        .csv-btn {
+            font-size: 12px; font-weight: 600; padding: 5px 14px;
+            border-radius: var(--radius-sm);
+            background: var(--accent-dim); color: var(--accent-light);
+            border: 1px solid rgba(99,102,241,0.15);
+            cursor: pointer; transition: all 0.25s;
+            display: inline-flex; align-items: center; gap: 6px;
+            text-decoration: none;
+        }
+        .csv-btn:hover { background: var(--accent); color: #fff; }
+        .csv-btn svg { width: 14px; height: 14px; }
 
         /* ═══════════════════ LIVE ACTIVITY ═══════════════════ */
         .activity-panel { }
@@ -1633,6 +2115,14 @@
             0%, 100% { opacity: 1; box-shadow: 0 0 4px var(--green-bright); }
             50% { opacity: 0.4; box-shadow: 0 0 8px var(--green-bright); }
         }
+        .forecast-direction-badge {
+            display: inline-flex; align-items: center; gap: 5px;
+            font-size: 12px; font-weight: 700; letter-spacing: 0.08em;
+            padding: 3px 10px; border-radius: 6px; margin-left: auto;
+        }
+        .forecast-direction-badge.buy { background: var(--green-dim); color: var(--green-bright); border: 1px solid rgba(16,185,129,0.25); }
+        .forecast-direction-badge.sell { background: var(--red-dim); color: var(--red); border: 1px solid rgba(239,68,68,0.25); }
+        .forecast-direction-badge.hold { background: rgba(99,102,241,0.1); color: var(--text-muted); border: 1px solid rgba(99,102,241,0.2); }
         .forecast-body { display: grid; grid-template-columns: 200px 1fr; gap: 24px; align-items: start; }
         @media (max-width: 768px) { .forecast-body { grid-template-columns: 1fr; } }
 
@@ -2152,6 +2642,10 @@
                 </h3>
                 <div class="chart-toolbar">
                     <span class="chart-price-tag" id="chartLastPrice" style="display:none;"></span>
+                    <div class="symbol-bar" id="symbolBar" role="radiogroup" aria-label="Trading pair">
+                        <button class="symbol-btn active" data-symbol="BTCUSDT" role="radio" aria-checked="true"><span class="symbol-dot btc"></span>BTC</button>
+                        <button class="symbol-btn" data-symbol="ETHUSDT" role="radio" aria-checked="false"><span class="symbol-dot eth"></span>ETH</button>
+                    </div>
                     <button class="interval-btn" style="margin-right: 12px; padding: 4px 8px; display: flex; align-items: center; gap: 4px; font-size: 10px;" onclick="if(window.pnlChart) window.pnlChart.resetZoom()" aria-label="Reset zoom">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                         Reset Zoom
@@ -2423,9 +2917,10 @@
             <div class="forecast-header">
                 <h3>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                    Прогноз входа в сделку
+                    Прогноз входа в сделку — <span id="forecast-symbol">...</span>
                     <span class="forecast-live-dot"></span>
                 </h3>
+                <span class="forecast-direction-badge" id="forecast-direction" style="display:none"></span>
             </div>
             <p class="panel-desc">Показывает в реальном времени, насколько рынок готов для входа. Бот анализирует тренд, RSI, объём, новости и другие факторы. Когда вероятность высокая — бот входит. Если нет — показывает почему и чего ждёт.</p>
 
@@ -2472,47 +2967,53 @@
             </div>
         </div>
 
-        <div class="section-divider"><h2>📊 Торговая активность</h2></div>
-        <p style="font-size:12px;color:var(--text-dim);margin:-12px 0 20px;line-height:1.5;">
-            Текущие позиции и история закрытых сделок. <strong>BUY</strong> = купил актив, ждём роста. <strong>SELL</strong> = продал, ждём падения. <strong>SL</strong> = Stop–Loss (макс. убыток), <strong>TP</strong> = Take–Profit (целевая прибыль).
+        <div class="section-divider">
+            <h2>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;vertical-align:-2px;margin-right:4px;opacity:0.6;"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                Торговая активность
+            </h2>
+        </div>
+        <p class="trading-activity-desc">
+            Текущие позиции и история закрытых сделок.
+            <span class="tag-hl">BUY</span> = купил актив, ждём роста.
+            <span class="tag-hl">SELL</span> = продал, ждём падения.
+            <span class="tag-hl">SL</span> = Stop-Loss (макс. убыток),
+            <span class="tag-hl">TP</span> = Take-Profit (целевая прибыль).
         </p>
 
-        <div class="dashboard-row">
-            <div style="flex: 1;">
-<!-- ── Open Positions ── -->
-        <div class="table-panel fade-in fade-in-delay-3">
+        <div class="trading-row">
+            <div>
+<!-- ── Open Positions (Redesigned) ── -->
+        <div class="table-panel positions-panel fade-in fade-in-delay-3" id="positions-panel-wrap">
             <div class="panel-title">
                 <h3>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                     Открытые позиции
                 </h3>
             </div>
-            <p class="panel-desc">Активные сделки сейчас. Пока позиция открыта — результат незафиксирован и меняется в реальном времени.</p>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Символ</th>
-                        <th>Стратегия</th>
-                        <th>Направл.</th>
-                        <th>Вход</th>
-                        <th>Текущая</th>
-                        <th>SL / TP</th>
-                        <th>Объём</th>
-                        <th>PnL</th>
-                    </tr>
-                </thead>
-                <tbody id="positions-table">
-                    <tr><td colspan="8" class="empty-state">
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
-                        <div class="empty-state-text">Нет открытых позиций</div>
-                    </td></tr>
-                </tbody>
-            </table>
+            <div class="positions-header-row">
+                <div class="positions-header-left">
+                    <span class="positions-count-badge" id="positions-count">0 позиций</span>
+                    <div class="positions-total-pnl" id="positions-total-pnl">
+                        <span class="pnl-label">Общий PnL</span>
+                        <span class="neutral">$0.00</span>
+                    </div>
+                </div>
+            </div>
+            <div class="positions-grid" id="positions-container">
+                <div class="positions-empty">
+                    <div class="positions-empty-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    </div>
+                    <div class="positions-empty-title">Нет открытых позиций</div>
+                    <div class="positions-empty-sub">Когда бот откроет сделку, здесь появится карточка с ценами, PnL и прогрессом до TP/SL</div>
+                </div>
+            </div>
         </div>
             </div>
-            <div style="flex: 1;">
+            <div>
 <!-- ── Recent Trades ── -->
-        <div class="table-panel fade-in fade-in-delay-3">
+        <div class="table-panel fade-in fade-in-delay-3" id="trades-panel-wrap">
             <div class="panel-title">
                 <h3>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -2542,8 +3043,8 @@
             </div>
         </div>
 
-        <div class="dashboard-row" style="margin-top: 20px;">
-            <div style="flex: 1;">
+        <div class="trading-row" style="margin-top: 20px;">
+            <div>
 <!-- ── Strategy Log ── -->
         <div class="strategy-log-panel fade-in" id="strategy-log-panel">
             <div class="panel-title">
@@ -2551,31 +3052,35 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                     Решения стратегий
                 </h3>
-                <span style="font-size:11px;color:var(--text-muted);">50 последних циклов</span>
+                <span class="badge badge-paper" style="font-size:10px;">50 последних</span>
             </div>
-            <p class="panel-desc">Журнал мышления бота: почему зашёл пользователь, почему пропустил. HOLD = нет сигнала. BUY/SELL = открывает позицию.</p>
+            <p class="panel-desc">Журнал мышления бота: почему зашёл, почему пропустил. <span class="tag-hl">HOLD</span> = нет сигнала. <span class="tag-hl">BUY/SELL</span> = открывает позицию.</p>
             <div class="strat-log-list" id="strat-log-list">
                 <div class="strat-log-empty">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                     <div>Ожидание первого торгового цикла...</div>
                     <div style="margin-top:4px;font-size:12px;color:var(--text-muted);">Стратегии запускаются при закрытии 1h свечи</div>
                 </div>
             </div>
         </div>
             </div>
-            <div style="flex: 1;">
+            <div>
 <!-- ── Strategy Performance ── -->
         <div class="strategy-log-panel fade-in" id="strat-perf-panel">
             <div class="panel-title">
                 <h3>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
                     Эффективность стратегий
                 </h3>
-                <a href="/api/trades/export" download style="font-size:12px;color:var(--cyan);text-decoration:none;">📥 Экспорт CSV</a>
+                <a href="/api/trades/export" download class="csv-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Экспорт CSV
+                </a>
             </div>
-            <p class="panel-desc">Сравнение стратегий по прибыли. Видно какая стратегия зарабатывает, а какая сливает. Кликни «Экспорт» для анализа в Excel.</p>
+            <p class="panel-desc">Сравнение стратегий по прибыли. Видно какая стратегия зарабатывает, а какая сливает. Нажмите «Экспорт CSV» для анализа в Excel.</p>
             <div class="strat-perf-grid" id="strat-perf-grid">
                 <div class="strat-log-empty">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:32px;height:32px;opacity:0.2;" aria-hidden="true"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
                     <div>Данных по стратегиям пока нет</div>
                 </div>
             </div>
@@ -2583,9 +3088,14 @@
             </div>
         </div>
 
-        <div class="section-divider"><h2>⚙️ СИСТЕМНЫЙ МОНИТОР</h2></div>
+        <div class="section-divider">
+            <h2>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;vertical-align:-2px;margin-right:4px;opacity:0.6;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                СИСТЕМНЫЙ МОНИТОР
+            </h2>
+        </div>
 
-        <div class="activity-panel fade-in" style="margin-bottom: 20px; padding: 18px 16px; border-radius: var(--radius-lg); background: var(--glass-1); backdrop-filter: blur(16px); border: 1px solid var(--glass-border);">
+        <div class="activity-panel fade-in" style="margin-bottom: 20px;">
             <div class="panel-title">
                 <h3>
                     <span class="pulse-dot" id="activity-dot"></span>
@@ -2872,7 +3382,33 @@
     var chartSeriesMode = 'pnl';
     var activeInterval = '1m';
     var chartType = 'candle';     /* 'line' or 'candle' */
+    var activeSymbol = 'BTCUSDT'; /* selected trading pair */
+    var _indicatorsPerSymbol = {}; /* cached per-symbol indicators from WS */
+    var _tradingSymbols = [];     /* available symbols from backend */
     var _forceMarketChart = false; /* true when user clicked interval/type button */
+    var _posTradeFilter = '';     /* '' = all symbols, or 'BTCUSDT' etc. */
+
+    /* Symbol color mapping for visual distinction */
+    var _symbolColors = {
+        BTC: { dot: '#f7931a', bg: 'rgba(247,147,26,0.15)', border: 'rgba(247,147,26,0.3)', text: '#f7931a', label: 'BTC' },
+        ETH: { dot: '#627eea', bg: 'rgba(98,126,234,0.15)', border: 'rgba(98,126,234,0.3)', text: '#8b9fef', label: 'ETH' },
+        SOL: { dot: '#9945ff', bg: 'rgba(153,69,255,0.15)', border: 'rgba(153,69,255,0.3)', text: '#b77dff', label: 'SOL' },
+        BNB: { dot: '#f3ba2f', bg: 'rgba(243,186,47,0.15)', border: 'rgba(243,186,47,0.3)', text: '#f3ba2f', label: 'BNB' },
+        XRP: { dot: '#00aae4', bg: 'rgba(0,170,228,0.15)', border: 'rgba(0,170,228,0.3)', text: '#4dc4ed', label: 'XRP' },
+    };
+    var _defaultSymColor = { dot: '#8892a8', bg: 'rgba(136,146,168,0.12)', border: 'rgba(136,146,168,0.25)', text: '#b8c0d4', label: '?' };
+
+    function _getSymColor(symbol) {
+        var short = (symbol || '').replace('USDT', '').replace('BUSD', '');
+        return _symbolColors[short] || _defaultSymColor;
+    }
+
+    function _symBadgeHtml(symbol) {
+        var c = _getSymColor(symbol);
+        var short = (symbol || '').replace('USDT', '');
+        return '<span class="sym-badge" style="background:' + c.bg + ';border:1px solid ' + c.border + ';color:' + c.text + ';">' +
+            '<span class="sym-badge-dot" style="background:' + c.dot + ';"></span>' + escapeHtml(short) + '</span>';
+    }
 
     /* ── Crosshair plugin ── */
     var crosshairPlugin = {
@@ -3119,7 +3655,7 @@
 
     async function renderMarketSeries(interval) {
         interval = interval || activeInterval;
-        var r = await fetch('/api/market-chart?interval=' + encodeURIComponent(interval));
+        var r = await fetch('/api/market-chart?interval=' + encodeURIComponent(interval) + '&symbol=' + encodeURIComponent(activeSymbol));
         var market = await r.json();
         var noDataEl = document.getElementById('pnlNoData');
         var chartNoteEl = document.getElementById('pnlChartNote');
@@ -3261,6 +3797,126 @@
             renderMarketSeries(interval);
         });
     })();
+
+    /* ── Symbol Selector Buttons ────────────── */
+    (function initSymbolBar() {
+        var bar = document.getElementById('symbolBar');
+        if (!bar) return;
+        bar.addEventListener('click', function(e) {
+            var btn = e.target.closest('.symbol-btn');
+            if (!btn) return;
+            var sym = btn.getAttribute('data-symbol');
+            if (!sym || sym === activeSymbol) return;
+
+            bar.querySelectorAll('.symbol-btn').forEach(function(b) {
+                b.classList.remove('active');
+                b.setAttribute('aria-checked', 'false');
+            });
+            btn.classList.add('active');
+            btn.setAttribute('aria-checked', 'true');
+            activeSymbol = sym;
+            _forceMarketChart = true;
+
+            /* Re-fetch chart for new symbol */
+            renderMarketSeries(activeInterval);
+            /* Update indicators immediately from cached data */
+            var symInd = _indicatorsPerSymbol[activeSymbol];
+            if (symInd && symInd.symbol) {
+                var symWr = (typeof _winRatePerSymbol[activeSymbol] === 'number') ? _winRatePerSymbol[activeSymbol] : (_lastWinRate || 0);
+                updateIndicators(symInd, symWr, _lastTradesToday || 0);
+            }
+            /* Update positions & trades symbol filter to match */
+            _posTradeFilter = sym;
+            _updateSymFilterBars();
+            fetchPositions();
+            fetchTrades();
+        });
+    })();
+
+    /* Build symbol bar dynamically from backend config */
+    function _rebuildSymbolBar(symbols) {
+        if (!symbols || !symbols.length) return;
+        if (JSON.stringify(symbols) === JSON.stringify(_tradingSymbols)) return;
+        _tradingSymbols = symbols;
+
+        var bar = document.getElementById('symbolBar');
+        if (!bar) return;
+
+        var dotColors = { BTC: 'btc', ETH: 'eth' };
+        bar.innerHTML = symbols.map(function(sym) {
+            var short = sym.replace('USDT', '');
+            var dotClass = dotColors[short] || '';
+            var isActive = sym === activeSymbol;
+            return '<button class="symbol-btn' + (isActive ? ' active' : '') + '" data-symbol="' + escapeHtml(sym) + '" role="radio" aria-checked="' + isActive + '">' +
+                (dotClass ? '<span class="symbol-dot ' + dotClass + '"></span>' : '') +
+                escapeHtml(short) + '</button>';
+        }).join('');
+
+        // If activeSymbol not in list, select first
+        if (symbols.indexOf(activeSymbol) === -1) {
+            activeSymbol = symbols[0];
+            var firstBtn = bar.querySelector('.symbol-btn');
+            if (firstBtn) { firstBtn.classList.add('active'); firstBtn.setAttribute('aria-checked', 'true'); }
+        }
+    }
+
+    var _lastWinRate = 0;
+    var _lastTradesToday = 0;
+    var _winRatePerSymbol = {};
+
+    /* ── Symbol Filter Bars for Positions & Trades ── */
+    function _buildSymFilterBar(containerId) {
+        var container = document.getElementById(containerId);
+        if (!container) return;
+        var existing = container.querySelector('.sym-filter-bar');
+        if (existing) existing.remove();
+
+        if (_tradingSymbols.length < 2) return; /* No filter needed for single symbol */
+
+        var bar = document.createElement('div');
+        bar.className = 'sym-filter-bar';
+
+        /* "All" button */
+        var allBtn = document.createElement('button');
+        allBtn.className = 'sym-filter-btn' + (!_posTradeFilter ? ' active' : '');
+        allBtn.textContent = 'Все';
+        allBtn.onclick = function() {
+            _posTradeFilter = '';
+            _updateSymFilterBars();
+            fetchPositions();
+            fetchTrades();
+        };
+        bar.appendChild(allBtn);
+
+        /* Per-symbol buttons */
+        _tradingSymbols.forEach(function(sym) {
+            var c = _getSymColor(sym);
+            var short = sym.replace('USDT', '');
+            var btn = document.createElement('button');
+            btn.className = 'sym-filter-btn' + (_posTradeFilter === sym ? ' active' : '');
+            btn.innerHTML = '<span class="sym-filter-dot" style="background:' + c.dot + ';box-shadow:0 0 6px ' + c.dot + ';"></span>' + escapeHtml(short);
+            btn.onclick = function() {
+                _posTradeFilter = sym;
+                _updateSymFilterBars();
+                fetchPositions();
+                fetchTrades();
+            };
+            bar.appendChild(btn);
+        });
+
+        /* Insert before the first child (after panel-title, but before content) */
+        var insertRef = container.querySelector('.positions-header-row') || container.querySelector('.panel-desc') || container.querySelector('table');
+        if (insertRef) {
+            insertRef.parentNode.insertBefore(bar, insertRef);
+        } else {
+            container.appendChild(bar);
+        }
+    }
+
+    function _updateSymFilterBars() {
+        _buildSymFilterBar('positions-panel-wrap');
+        _buildSymFilterBar('trades-panel-wrap');
+    }
 
     /* ── Chart Type Buttons ──────────────────── */
     (function initChartTypeBar() {
@@ -3442,8 +4098,23 @@
             btnStop.style.opacity = '1';
         }
 
-        /* ── Indicators panel update ── */
-        updateIndicators(data.indicators || {}, data.win_rate || 0, data.trades_today || 0);
+        /* ── Per-symbol indicators + symbol bar rebuild ── */
+        if (data.indicators_per_symbol) {
+            _indicatorsPerSymbol = data.indicators_per_symbol;
+        }
+        if (data.trading_symbols) {
+            _rebuildSymbolBar(data.trading_symbols);
+        }
+        _lastWinRate = data.win_rate || 0;
+        _lastTradesToday = data.trades_today || 0;
+        if (data.win_rate_per_symbol) {
+            _winRatePerSymbol = data.win_rate_per_symbol;
+        }
+        var selectedInd = (_indicatorsPerSymbol[activeSymbol] && _indicatorsPerSymbol[activeSymbol].symbol)
+            ? _indicatorsPerSymbol[activeSymbol]
+            : (data.indicators || {});
+        var symWinRate = (typeof _winRatePerSymbol[activeSymbol] === 'number') ? _winRatePerSymbol[activeSymbol] : (data.win_rate || 0);
+        updateIndicators(selectedInd, symWinRate, data.trades_today || 0);
 
         /* ── Readiness Progress panel ── */
         updateReadiness(data.readiness || {});
@@ -3451,8 +4122,8 @@
         /* ── Strategy Decision Log ── */
         updateStrategyLog(data.strategy_log || []);
 
-        /* ── Live Forecast Panel ── */
-        updateForecast(data.strategy_log || [], data.indicators || {}, data);
+        /* ── Live Forecast Panel (use per-symbol indicators if available) ── */
+        updateForecast(data.strategy_log || [], selectedInd, data);
     }
 
     function updateForecast(entries, indicators, fullData) {
@@ -3464,8 +4135,32 @@
         var scanTimeEl = document.getElementById('forecast-scan-time');
         var regimeEl = document.getElementById('forecast-regime');
         var pipelineEl = document.getElementById('decision-pipeline');
+        var symEl = document.getElementById('forecast-symbol');
+        var dirEl = document.getElementById('forecast-direction');
 
         if (!pctEl || !ringFill) return;
+
+        // ── Show active symbol ──
+        if (symEl) { symEl.textContent = activeSymbol.replace('USDT', ''); }
+
+        // ── Determine and show direction ──
+        var forecastDir = 'HOLD';
+        var latestForDir = null;
+        for (var di = entries.length - 1; di >= 0; di--) {
+            if (entries[di].symbol === activeSymbol && (entries[di].event === 'scan' || entries[di].event === 'signal')) { latestForDir = entries[di]; break; }
+        }
+        if (latestForDir && latestForDir.event === 'signal') {
+            var sigS = (latestForDir.strategies || []).find(function(s) { return s.result === 'signal'; });
+            forecastDir = (sigS && sigS.direction) ? sigS.direction.toUpperCase() : 'BUY';
+        } else if (latestForDir && latestForDir.event === 'scan') {
+            forecastDir = 'HOLD';
+        }
+        if (dirEl) {
+            dirEl.style.display = 'inline-flex';
+            if (forecastDir === 'BUY') { dirEl.className = 'forecast-direction-badge buy'; dirEl.textContent = 'BUY (LONG)'; }
+            else if (forecastDir === 'SELL') { dirEl.className = 'forecast-direction-badge sell'; dirEl.textContent = 'SELL (SHORT)'; }
+            else { dirEl.className = 'forecast-direction-badge hold'; dirEl.textContent = 'HOLD — нет сигнала'; }
+        }
         var rd = (fullData || {}).risk_details || {};
         var ml = (fullData || {}).ml_status || {};
         var limits = rd.limits || {};
@@ -3473,7 +4168,7 @@
 
         var latest = null;
         for (var i = entries.length - 1; i >= 0; i--) {
-            if (entries[i].event === 'scan' || entries[i].event === 'signal') { latest = entries[i]; break; }
+            if ((entries[i].event === 'scan' || entries[i].event === 'signal') && (!entries[i].symbol || entries[i].symbol === activeSymbol)) { latest = entries[i]; break; }
         }
 
         // ── Build factors ──
@@ -3570,9 +4265,9 @@
 
         // ── Decision ──
         var decHTML = '<div class="forecast-decision-title">РЕШЕНИЕ БОТА</div>';
-        if (isSignal) { var sigStrat = (latest.strategies || []).find(function(s) { return s.result === 'signal'; }); decHTML += '<strong class="green">✅ Бот вошёл в сделку</strong> через <strong>' + escapeHtml((sigStrat || {}).strategy || '—') + '</strong>. Цена: <strong>$' + (latest.price || 0).toLocaleString() + '</strong>. Режим: <strong>' + escapeHtml(latest.regime || '—') + '</strong>.'; }
+        if (isSignal) { var sigStrat = (latest.strategies || []).find(function(s) { return s.result === 'signal'; }); var sigDir = (sigStrat && sigStrat.direction) ? sigStrat.direction.toUpperCase() : 'BUY'; var dirLabel = sigDir === 'SELL' ? 'SELL (SHORT)' : 'BUY (LONG)'; decHTML += '<strong class="green">✅ Бот вошёл в сделку ' + escapeHtml(activeSymbol) + ' ' + dirLabel + '</strong> через <strong>' + escapeHtml((sigStrat || {}).strategy || '—') + '</strong>. Цена: <strong>$' + (latest.price || 0).toLocaleString() + '</strong>. Режим: <strong>' + escapeHtml(latest.regime || '—') + '</strong>.'; }
         else if (wasBlocked) { decHTML += '<strong class="red">⛔ Заблокирован:</strong> ' + escapeHtml(blockReason); }
-        else if (isScanned) { var wf = factors.filter(function(f){return f.scoreNum<=0}); var sf = factors.filter(function(f){return f.scoreNum>0}); decHTML += '<strong>Скан ' + (latest.active_strategies||[]).length + ' стратегий</strong> — сигнала нет.'; if(wf.length) decHTML += '<br><span class="amber">Блокирует:</span> ' + wf.map(function(f){return f.name}).join(', ') + '.'; if(sf.length) decHTML += '<br><span class="green">Положительно:</span> ' + sf.map(function(f){return f.name}).join(', ') + '.'; }
+        else if (isScanned) { var wf = factors.filter(function(f){return f.scoreNum<=0}); var sf = factors.filter(function(f){return f.scoreNum>0}); decHTML += '<strong>' + escapeHtml(activeSymbol) + ' — скан ' + (latest.active_strategies||[]).length + ' стратегий</strong> — сигнала нет (HOLD).'; if(wf.length) decHTML += '<br><span class="amber">Блокирует:</span> ' + wf.map(function(f){return f.name}).join(', ') + '.'; if(sf.length) decHTML += '<br><span class="green">Положительно:</span> ' + sf.map(function(f){return f.name}).join(', ') + '.'; }
         else { decHTML += 'Бот ещё не завершил первый цикл. Стратегии запускаются при закрытии 1h свечи.'; }
         decisionEl.innerHTML = decHTML;
 
@@ -3987,50 +4682,198 @@
         }
     }
 
+    function parseOpenedAt(val) {
+        if (!val) return null;
+        // Unix ms as string (e.g. "1713180000000")
+        if (/^\d{10,13}$/.test(val)) return new Date(Number(val));
+        // ISO or datetime string
+        var d = new Date(val);
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    function formatDuration(val) {
+        var opened = parseOpenedAt(val);
+        if (!opened) return '';
+        var diff = Math.max(0, Math.floor((Date.now() - opened.getTime()) / 1000));
+        if (diff < 60) return diff + 'с';
+        if (diff < 3600) return Math.floor(diff / 60) + 'м ' + (diff % 60) + 'с';
+        var h = Math.floor(diff / 3600);
+        var m = Math.floor((diff % 3600) / 60);
+        if (h < 24) return h + 'ч ' + m + 'м';
+        var d = Math.floor(h / 24);
+        return d + 'д ' + (h % 24) + 'ч';
+    }
+
+    function formatOpenTime(val) {
+        var d = parseOpenedAt(val);
+        if (!d) return '';
+        var dd = String(d.getDate()).padStart(2, '0');
+        var mon = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'][d.getMonth()];
+        var hh = String(d.getHours()).padStart(2, '0');
+        var mm = String(d.getMinutes()).padStart(2, '0');
+        return dd + ' ' + mon + ' ' + hh + ':' + mm;
+    }
+
+    function buildPositionCard(p) {
+        var pnl = p.unrealized_pnl || 0;
+        var pnlPct = p.pnl_pct || 0;
+        var isLong = (p.side === 'BUY' || p.side === 'LONG');
+        var sideClass = isLong ? 'long' : 'short';
+        var sideLabel = isLong ? 'BUY (LONG)' : 'SELL (SHORT)';
+        var sl = p.stop_loss_price > 0 ? formatUsd(p.stop_loss_price) : '\u2014';
+        var tp = p.take_profit_price > 0 ? formatUsd(p.take_profit_price) : '\u2014';
+        var rr = p.rr_ratio > 0 ? ('1:' + p.rr_ratio) : '\u2014';
+        var progress = p.sl_tp_progress || 0;
+        var progressClamped = Math.max(-100, Math.min(100, progress));
+        var duration = formatDuration(p.opened_at);
+        var openTime = formatOpenTime(p.opened_at);
+        var notional = p.notional || 0;
+
+        // Progress bar positioning: center = entry, right = TP, left = SL
+        var barWidth = Math.abs(progressClamped) / 2; // max 50% (half of track)
+        var barClass = progressClamped >= 0 ? 'profit' : 'loss';
+        var barStyle = '';
+        if (progressClamped >= 0) {
+            barStyle = 'left:50%;width:' + barWidth + '%';
+        } else {
+            barStyle = 'left:' + (50 - barWidth) + '%;width:' + barWidth + '%';
+        }
+
+        var signalHtml = '';
+        if (p.signal_reason) {
+            signalHtml = '<div class="pos-signal-tag">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>' +
+                escapeHtml(p.signal_reason) + '</div>';
+        }
+
+        var paperBadge = p.is_paper ? '<span class="pos-paper-badge">PAPER</span>' : '';
+
+        var sideArrowSvg = isLong
+            ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;"><polyline points="18 15 12 9 6 15"/></svg>'
+            : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;"><polyline points="6 9 12 15 18 9"/></svg>';
+
+        return '<div class="pos-card pos-' + sideClass + '">' +
+            '<div class="pos-card-top">' +
+                _symBadgeHtml(p.symbol) +
+                '<span class="pos-side-badge ' + sideClass + '">' + sideArrowSvg + sideLabel + '</span>' +
+                '<span class="pos-strategy">' + escapeHtml(p.strategy_name || '\u2014') + '</span>' +
+                paperBadge +
+                '<div class="pos-meta-right">' +
+                    (duration || openTime ? '<span class="pos-duration" title="Открыта: ' + openTime + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' + (openTime ? openTime + (duration ? ' (' + duration + ')' : '') : duration) + '</span>' : '') +
+                    '<div class="pos-pnl-group">' +
+                        '<div class="pos-pnl-value ' + pnlClass(pnl) + '">' + formatPnl(pnl) + '</div>' +
+                        '<div class="pos-pnl-pct ' + pnlClass(pnl) + '">' + (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(2) + '%</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+            '<div class="pos-data-grid">' +
+                '<div class="pos-data-cell"><div class="pos-data-label">Вход</div><div class="pos-data-value highlight">' + formatUsd(p.entry_price || 0) + '</div></div>' +
+                '<div class="pos-data-cell"><div class="pos-data-label">Текущая</div><div class="pos-data-value ' + pnlClass(pnl) + '">' + formatUsd(p.current_price || 0) + '</div></div>' +
+                '<div class="pos-data-cell"><div class="pos-data-label">Stop Loss</div><div class="pos-data-value" style="color:var(--red);">' + sl + '</div></div>' +
+                '<div class="pos-data-cell"><div class="pos-data-label">Take Profit</div><div class="pos-data-value" style="color:var(--green-bright);">' + tp + '</div></div>' +
+                '<div class="pos-data-cell"><div class="pos-data-label">Объём / Нотион.</div><div class="pos-data-value">' + Number(p.quantity || 0).toFixed(6) + '<span style="color:var(--text-dim);font-size:10px;margin-left:4px;">$' + notional.toFixed(0) + '</span></div></div>' +
+            '</div>' +
+            '<div class="pos-progress-row">' +
+                '<div style="flex:1">' +
+                    '<div class="pos-progress-labels">' +
+                        '<span class="pos-sl-label">SL ' + sl + '</span>' +
+                        '<span class="pos-rr-label">R:R ' + rr + '</span>' +
+                        '<span class="pos-tp-label">TP ' + tp + '</span>' +
+                    '</div>' +
+                    '<div class="pos-progress-track" style="margin-top:4px;">' +
+                        '<div class="pos-progress-center"></div>' +
+                        '<div class="pos-progress-fill ' + barClass + '" style="' + barStyle + '"></div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+            signalHtml +
+        '</div>';
+    }
+
+    var _fetchingPositions = false;
     async function fetchPositions() {
+        if (_fetchingPositions) return;
+        _fetchingPositions = true;
         try {
             var r = await fetch('/api/positions');
-            var data = await r.json();
-            var tbody = document.getElementById('positions-table');
-            if (!data.length) {
-                tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg><div class="empty-state-text">Нет открытых позиций</div></td></tr>';
+            var allPositions = await r.json();
+            /* Apply symbol filter */
+            var data = _posTradeFilter ? allPositions.filter(function(p) { return p.symbol === _posTradeFilter; }) : allPositions;
+            var container = document.getElementById('positions-container');
+            var countBadge = document.getElementById('positions-count');
+            var totalPnlEl = document.getElementById('positions-total-pnl');
+
+            /* Build symbol filter bar if multiple symbols */
+            _buildSymFilterBar('positions-panel-wrap');
+
+            // Update count badge
+            var cnt = data.length;
+            var totalAll = allPositions.length;
+            var countText = cnt + ' ' + (cnt === 1 ? 'позиция' : cnt < 5 ? 'позиции' : 'позиций');
+            if (_posTradeFilter && totalAll !== cnt) countText += ' из ' + totalAll;
+            countBadge.textContent = countText;
+
+            if (!cnt) {
+                var emptyTitle = _posTradeFilter
+                    ? 'Нет позиций по ' + _posTradeFilter.replace('USDT', '')
+                    : 'Нет открытых позиций';
+                var emptySub = _posTradeFilter
+                    ? 'Выберите «Все» чтобы увидеть позиции по всем парам'
+                    : 'Когда бот откроет сделку, здесь появится карточка с ценами, PnL и прогрессом до TP/SL';
+                container.innerHTML =
+                    '<div class="positions-empty">' +
+                        '<div class="positions-empty-icon">' +
+                            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>' +
+                        '</div>' +
+                        '<div class="positions-empty-title">' + escapeHtml(emptyTitle) + '</div>' +
+                        '<div class="positions-empty-sub">' + escapeHtml(emptySub) + '</div>' +
+                    '</div>';
+                totalPnlEl.innerHTML = '<span class="pnl-label">Общий PnL</span><span class="neutral">$0.00</span>';
                 return;
             }
-            tbody.innerHTML = data.map(function(p) {
-                var pnl = p.unrealized_pnl || 0;
-                var sl = p.stop_loss_price > 0 ? formatUsd(p.stop_loss_price) : '\u2014';
-                var tp = p.take_profit_price > 0 ? formatUsd(p.take_profit_price) : '\u2014';
-                return '<tr>' +
-                    '<td class="td-mono" style="color:var(--text-primary);font-weight:600;">' + escapeHtml(p.symbol) + '</td>' +
-                    '<td>' + escapeHtml(p.strategy_name || '-') + '</td>' +
-                    '<td><span class="badge ' + (p.side === 'BUY' ? 'badge-live' : 'badge-stop') + '" style="font-size:10px;padding:2px 8px;">' + escapeHtml(p.side) + '</span></td>' +
-                    '<td class="td-mono">' + formatUsd(p.entry_price || 0) + '</td>' +
-                    '<td class="td-mono">' + formatUsd(p.current_price || 0) + '</td>' +
-                    '<td class="td-mono">' + sl + ' / ' + tp + '</td>' +
-                    '<td class="td-mono">' + Number(p.quantity || 0).toFixed(6) + '</td>' +
-                    '<td class="td-mono ' + pnlClass(pnl) + '" style="font-weight:600;">' + formatPnl(pnl) + '</td></tr>';
-            }).join('');
-        } catch(e) {}
+
+            // Total PnL
+            var totalPnl = data.reduce(function(s, p) { return s + (p.unrealized_pnl || 0); }, 0);
+            totalPnlEl.innerHTML = '<span class="pnl-label">Общий PnL</span><span class="' + pnlClass(totalPnl) + '">' + formatPnl(totalPnl) + '</span>';
+
+            // Render cards
+            container.innerHTML = data.map(buildPositionCard).join('');
+        } catch(e) {
+        } finally {
+            _fetchingPositions = false;
+        }
     }
 
     async function fetchTrades() {
         try {
             var r = await fetch('/api/trades');
-            var data = await r.json();
+            var allTrades = await r.json();
+            /* Apply symbol filter */
+            var data = _posTradeFilter ? allTrades.filter(function(t) { return t.symbol === _posTradeFilter; }) : allTrades;
             var tbody = document.getElementById('trades-table');
+
+            /* Build symbol filter bar */
+            _buildSymFilterBar('trades-panel-wrap');
+
             if (!data.length) {
-                tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg><div class="empty-state-text">Сделок пока нет</div></td></tr>';
+                var msg = _posTradeFilter ? ('Нет сделок по ' + _posTradeFilter.replace('USDT', '')) : 'Сделок пока нет';
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg><div class="empty-state-text">' + escapeHtml(msg) + '</div></td></tr>';
                 return;
             }
             tbody.innerHTML = data.slice(0, 20).map(function(t) {
                 var pnl = t.pnl || 0;
+                var isBuy = t.side === 'BUY';
+                var sideClass = isBuy ? 'badge-live' : 'badge-stop';
+                var sideArrow = isBuy
+                    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;"><polyline points="18 15 12 9 6 15"/></svg>'
+                    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;"><polyline points="6 9 12 15 18 9"/></svg>';
                 return '<tr>' +
                     '<td class="td-mono">' + escapeHtml(t.time || '-') + '</td>' +
-                    '<td class="td-mono" style="color:var(--text-primary);font-weight:600;">' + escapeHtml(t.symbol || '-') + '</td>' +
-                    '<td><span class="badge ' + (t.side === 'BUY' ? 'badge-live' : 'badge-stop') + '" style="font-size:10px;padding:2px 8px;">' + escapeHtml(t.side || '-') + '</span></td>' +
+                    '<td>' + _symBadgeHtml(t.symbol) + '</td>' +
+                    '<td><span class="badge ' + sideClass + '" style="font-size:11px;padding:3px 10px;gap:4px;">' + sideArrow + escapeHtml(t.side || '-') + '</span></td>' +
                     '<td class="td-mono">' + formatUsd(t.price || 0) + '</td>' +
-                    '<td><span class="table-cell-meta">' + escapeHtml(t.signal_reason || '-') + '</span></td>' +
-                    '<td class="td-mono ' + pnlClass(pnl) + '" style="font-weight:600;">' + (t.pnl != null ? formatPnl(pnl) : '\u2014') + '</td></tr>';
+                    '<td><span class="table-cell-meta" title="' + escapeHtml(t.signal_reason || '') + '">' + escapeHtml(t.signal_reason || '-') + '</span></td>' +
+                    '<td class="td-mono ' + pnlClass(pnl) + '" style="font-weight:700;">' + (t.pnl != null ? formatPnl(pnl) : '\u2014') + '</td></tr>';
             }).join('');
         } catch(e) {}
     }
@@ -4354,7 +5197,7 @@
             const data = await res.json();
             const grid = document.getElementById('strat-perf-grid');
             if (!data || !data.length) {
-                grid.innerHTML = '<div class="strat-log-empty"><div>Данных по стратегиям пока нет</div></div>';
+                grid.innerHTML = '<div class="strat-log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:32px;height:32px;opacity:0.2;"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg><div>Данных по стратегиям пока нет</div></div>';
                 return;
             }
             grid.innerHTML = data.map(s => {

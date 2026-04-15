@@ -272,6 +272,9 @@ class Dashboard:
                 "risk_details": state.get("risk_details", {}),
                 "activity": state.get("activity", {}),
                 "indicators": state.get("indicators", {}),
+                "indicators_per_symbol": state.get("indicators_per_symbol", {}),
+                "trading_symbols": state.get("trading_symbols", []),
+                "win_rate_per_symbol": state.get("win_rate_per_symbol", {}),
                 "readiness": state.get("readiness", {}),
                 "strategy_log": state.get("strategy_log", []),
                 "ml_status": state.get("ml_status", {}),
@@ -285,16 +288,48 @@ class Dashboard:
             result = []
             for p in pos_list:
                 if hasattr(p, "symbol"):
+                    entry = p.entry_price or 0.0
+                    current = p.current_price or 0.0
+                    qty = p.quantity or 0.0
+                    pnl = p.unrealized_pnl or 0.0
+                    notional = abs(entry * qty) if entry and qty else 0.0
+                    pnl_pct = (pnl / notional * 100) if notional > 0 else 0.0
+                    sl = getattr(p, "stop_loss_price", 0.0) or 0.0
+                    tp = getattr(p, "take_profit_price", 0.0) or 0.0
+                    # Risk:Reward ratio
+                    side = p.side
+                    if side == "BUY" or side == "LONG":
+                        risk = abs(entry - sl) if sl > 0 else 0.0
+                        reward = abs(tp - entry) if tp > 0 else 0.0
+                    else:
+                        risk = abs(sl - entry) if sl > 0 else 0.0
+                        reward = abs(entry - tp) if tp > 0 else 0.0
+                    rr_ratio = round(reward / risk, 2) if risk > 0 else 0.0
+                    # SL/TP progress: how far price moved toward TP (0-100) or SL (negative)
+                    if side in ("BUY", "LONG") and tp > 0 and sl > 0 and tp != entry and tp != sl:
+                        sl_tp_progress = round((current - entry) / (tp - entry) * 100, 1)
+                    elif side in ("SELL", "SHORT") and tp > 0 and sl > 0 and entry != tp and tp != sl:
+                        sl_tp_progress = round((entry - current) / (entry - tp) * 100, 1)
+                    else:
+                        sl_tp_progress = 0.0
                     result.append({
                         "symbol": p.symbol,
-                        "side": p.side,
+                        "side": side,
                         "strategy_name": getattr(p, "strategy_name", ""),
-                        "entry_price": p.entry_price,
-                        "current_price": p.current_price,
-                        "quantity": p.quantity,
-                        "stop_loss_price": getattr(p, "stop_loss_price", 0.0),
-                        "take_profit_price": getattr(p, "take_profit_price", 0.0),
-                        "unrealized_pnl": p.unrealized_pnl,
+                        "entry_price": entry,
+                        "current_price": current,
+                        "quantity": qty,
+                        "stop_loss_price": sl,
+                        "take_profit_price": tp,
+                        "unrealized_pnl": pnl,
+                        "pnl_pct": round(pnl_pct, 2),
+                        "notional": round(notional, 2),
+                        "rr_ratio": rr_ratio,
+                        "sl_tp_progress": sl_tp_progress,
+                        "opened_at": getattr(p, "opened_at", ""),
+                        "signal_reason": getattr(p, "signal_reason", ""),
+                        "position_id": getattr(p, "position_id", ""),
+                        "is_paper": getattr(p, "is_paper", True),
                     })
                 elif isinstance(p, dict):
                     result.append(p)
@@ -311,9 +346,9 @@ class Dashboard:
             return JSONResponse(content=state.get("pnl_history", []))
 
         @app.get("/api/market-chart")
-        async def market_chart(interval: str = "1m"):
+        async def market_chart(interval: str = "1m", symbol: str = ""):
             if self.market_chart_provider:
-                return JSONResponse(content=self.market_chart_provider(interval))
+                return JSONResponse(content=self.market_chart_provider(interval, symbol))
             state = self._get_state()
             return JSONResponse(content=state.get("market_chart", {"candles": []}))
 
@@ -391,6 +426,8 @@ class Dashboard:
                     "test_samples": m.test_samples if m else 0,
                 } if m else None,
                 "threshold": predictor._cfg.block_threshold,
+                "block_threshold": predictor._cfg.block_threshold,
+                "reduce_threshold": getattr(predictor._cfg, "reduce_threshold", 0.65),
             })
 
         @app.post("/api/ml/retrain")
@@ -499,6 +536,9 @@ class Dashboard:
                             "risk_details": state.get("risk_details", {}),
                             "activity": state.get("activity", {}),
                             "indicators": state.get("indicators", {}),
+                            "indicators_per_symbol": state.get("indicators_per_symbol", {}),
+                            "trading_symbols": state.get("trading_symbols", []),
+                            "win_rate_per_symbol": state.get("win_rate_per_symbol", {}),
                             "readiness": state.get("readiness", {}),
                             "strategy_log": state.get("strategy_log", []),
                             "ml_status": state.get("ml_status", {}),

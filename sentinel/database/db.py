@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS orders (
 -- positions — текущие позиции
 CREATE TABLE IF NOT EXISTS positions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id TEXT,
     symbol TEXT NOT NULL,
     side TEXT NOT NULL,
     entry_price REAL NOT NULL,
@@ -87,6 +88,11 @@ CREATE TABLE IF NOT EXISTS positions (
     current_price REAL,
     unrealized_pnl REAL DEFAULT 0,
     realized_pnl REAL DEFAULT 0,
+    stop_loss_price REAL DEFAULT 0,
+    take_profit_price REAL DEFAULT 0,
+    strategy_name TEXT DEFAULT '',
+    signal_id TEXT DEFAULT '',
+    signal_reason TEXT DEFAULT '',
     status TEXT DEFAULT 'OPEN',
     opened_at TEXT DEFAULT (datetime('now')),
     closed_at TEXT,
@@ -263,14 +269,23 @@ class Database:
         migrations = [
             ("strategy_trades", "news_sentiment", "REAL DEFAULT 0"),
             ("strategy_trades", "fear_greed_index", "INTEGER DEFAULT 50"),
+            ("positions", "position_id", "TEXT"),
+            ("positions", "stop_loss_price", "REAL DEFAULT 0"),
+            ("positions", "take_profit_price", "REAL DEFAULT 0"),
+            ("positions", "strategy_name", "TEXT DEFAULT ''"),
+            ("positions", "signal_id", "TEXT DEFAULT ''"),
+            ("positions", "signal_reason", "TEXT DEFAULT ''"),
         ]
         for table, column, col_type in migrations:
             try:
-                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                self.conn.execute(f"ALTER TABLE [{table}] ADD COLUMN [{column}] {col_type}")
                 self.conn.commit()
                 log.info("Migration: added {}.{}", table, column)
-            except sqlite3.OperationalError:
-                pass  # column already exists
+            except sqlite3.OperationalError as e:
+                if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                    pass  # column already exists — expected
+                else:
+                    log.warning("Unexpected migration error for {}.{}: {}", table, column, e)
 
     def integrity_check(self) -> bool:
         """PRAGMA integrity_check — вернуть True если БД целая."""

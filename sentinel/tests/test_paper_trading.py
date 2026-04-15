@@ -254,16 +254,17 @@ class TestPositionManager:
         pos = await pm.open_position(order)
         assert pos is None
 
-    def test_update_price(self, pm):
+    @pytest.mark.asyncio
+    async def test_update_price(self, pm):
         # Нет позиции — не падает
-        pm.update_price("BTCUSDT", 68000.0)
+        await pm.update_price("BTCUSDT", 68000.0)
 
     @pytest.mark.asyncio
     async def test_update_price_unrealized_pnl(self, pm):
         buy = self._make_buy_order(qty=0.001, price=67000.0)
         await pm.open_position(buy)
 
-        pm.update_price("BTCUSDT", 68000.0)
+        await pm.update_price("BTCUSDT", 68000.0)
         pos = pm.get_position("BTCUSDT")
         assert pos is not None
         assert pos.current_price == 68000.0
@@ -276,12 +277,12 @@ class TestPositionManager:
         await pm.open_position(buy, stop_loss_price=64990.0, take_profit_price=70350.0)
 
         # Цена выше SL — нет триггера
-        pm.update_price("BTCUSDT", 66000.0)
+        await pm.update_price("BTCUSDT", 66000.0)
         result = pm.check_stop_loss_take_profit("BTCUSDT")
         assert result is None
 
         # Цена ниже SL
-        pm.update_price("BTCUSDT", 64900.0)
+        await pm.update_price("BTCUSDT", 64900.0)
         result = pm.check_stop_loss_take_profit("BTCUSDT")
         assert result == "stop_loss"
 
@@ -290,7 +291,7 @@ class TestPositionManager:
         buy = self._make_buy_order(qty=0.001, price=67000.0)
         await pm.open_position(buy, stop_loss_price=64990.0, take_profit_price=70350.0)
 
-        pm.update_price("BTCUSDT", 70400.0)
+        await pm.update_price("BTCUSDT", 70400.0)
         result = pm.check_stop_loss_take_profit("BTCUSDT")
         assert result == "take_profit"
 
@@ -334,7 +335,7 @@ class TestPositionManager:
         buy = self._make_buy_order(qty=1.0, price=100.0)
         await pm.open_position(buy)
 
-        pm.update_price("BTCUSDT", 80.0)
+        await pm.update_price("BTCUSDT", 80.0)
         state = pm.get_state()
 
         assert state["current_drawdown_pct"] > 0

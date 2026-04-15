@@ -232,6 +232,7 @@ class Position:
     closed_at: Optional[str] = None
     is_paper: bool = True
     position_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    db_id: Optional[int] = None
 
 
 # ──────────────────────────────────────────────

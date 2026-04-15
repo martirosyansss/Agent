@@ -278,7 +278,22 @@ def run_backtest_with_features(
 # ──────────────────────────────────────────────
 
 def build_all_trades(repo: Repository, settings) -> list:
-    """Build StrategyTrade list from backtests — called by both main() and auto-retrain loop."""
+    """Build StrategyTrade list from backtests — called by both main() and auto-retrain loop.
+
+    Returns flat list of all trades (backward compat).
+    Use build_trades_per_symbol() for per-coin separation.
+    """
+    result = build_trades_per_symbol(repo, settings)
+    all_trades: list[StrategyTrade] = []
+    for sym_trades in result.values():
+        all_trades.extend(sym_trades)
+    all_trades.sort(key=lambda t: t.timestamp_open)
+    logger.info("build_all_trades: total {} trades", len(all_trades))
+    return all_trades
+
+
+def build_trades_per_symbol(repo: Repository, settings) -> dict:
+    """Build StrategyTrade list per symbol from backtests."""
     symbols = settings.trading_symbols
 
     # Load tuned params if available
@@ -328,9 +343,9 @@ def build_all_trades(repo: Repository, settings) -> list:
     else:
         strategies_map["macd_divergence"] = strategies_map["macd_divergence_default"]
 
-    all_trades: list[StrategyTrade] = []
+    trades_per_symbol: dict[str, list[StrategyTrade]] = {sym: [] for sym in symbols}
     for symbol in symbols:
-        logger.info("build_all_trades: loading candles for {}...", symbol)
+        logger.info("build_trades_per_symbol: loading candles for {}...", symbol)
         candles_1h = load_candles(repo, symbol, "1h")
         candles_4h = load_candles(repo, symbol, "4h")
         candles_1d = load_candles(repo, symbol, "1d")
@@ -339,14 +354,14 @@ def build_all_trades(repo: Repository, settings) -> list:
             reset_regime()
             try:
                 trades = run_backtest_with_features(strategy, strat_name, candles_1h, candles_4h, candles_1d, symbol)
-                all_trades.extend(trades)
+                trades_per_symbol[symbol].extend(trades)
                 logger.info("  {} / {}: {} trades", symbol, strat_name, len(trades))
             except Exception as e:
                 logger.error("  Backtest failed {} {}: {}", symbol, strat_name, e)
 
-    all_trades.sort(key=lambda t: t.timestamp_open)
-    logger.info("build_all_trades: total {} trades", len(all_trades))
-    return all_trades
+    for sym, sym_trades in trades_per_symbol.items():
+        sym_trades.sort(key=lambda t: t.timestamp_open)
+    return trades_per_symbol
 
 
 def main():
@@ -452,6 +467,8 @@ def main():
 
     strategies = strategies_map
 
+    # ── Collect trades per symbol ──
+    trades_per_symbol: dict[str, list[StrategyTrade]] = {sym: [] for sym in symbols}
     all_trades: list[StrategyTrade] = []
 
     for symbol in symbols:
@@ -473,134 +490,169 @@ def main():
                 losses = len(trades) - wins
                 total_pnl = sum(t.pnl_usd for t in trades)
                 logger.info("  {} trades (W:{} L:{}) PnL=${:.2f}", len(trades), wins, losses, total_pnl)
+                trades_per_symbol[symbol].extend(trades)
                 all_trades.extend(trades)
             except Exception as e:
                 logger.error("  Backtest failed: {}", e)
 
     logger.info("=" * 50)
     logger.info("Total trades from all backtests: {}", len(all_trades))
-    wins = sum(1 for t in all_trades if t.is_win)
-    logger.info("Win rate: {:.1f}% ({}/{})", wins / len(all_trades) * 100 if all_trades else 0, wins, len(all_trades))
+    for sym, sym_trades in trades_per_symbol.items():
+        w = sum(1 for t in sym_trades if t.is_win)
+        logger.info("  {}: {} trades, WR {:.1f}%", sym, len(sym_trades), w / len(sym_trades) * 100 if sym_trades else 0)
 
     if len(all_trades) < 100:
         logger.error("Too few trades for ML training ({}). Need at least 100.", len(all_trades))
         db.close()
         return
 
-    # Sort by trade open time
-    all_trades.sort(key=lambda t: t.timestamp_open)
+    model_dir = BASE_DIR / "data" / "ml_models"
+    model_dir.mkdir(parents=True, exist_ok=True)
 
-    # Train ML model — heavy regularization for noisy backtest data
-    # With 44% win rate, the signal is weak — use very shallow trees
+    # min_trades=80 (lowered from 150): per-symbol training gets ~half the data
+    # Use settings where available, fallback to proven defaults
     ml_config = MLConfig(
-        n_estimators=250,            # v3: increased from 150 for stronger base models
-        max_depth=4,                 # Slightly deeper — ensemble reduces variance risk
-        learning_rate=0.01,          # Slow learning for LightGBM
-        min_child_samples=40,        # Large leaf size — generalizes better
+        n_estimators=250,
+        max_depth=4,                # conservative for per-symbol (~1200 samples)
+        learning_rate=0.01,         # low LR + many trees = stable convergence
+        min_child_samples=40,
         min_samples_split=25,
         max_features="sqrt",
-        subsample=0.7,               # Bagging reduces variance
-        colsample_bytree=0.7,        # Feature subsampling
-        min_trades=150,
-        block_threshold=0.45,
+        subsample=0.7,
+        colsample_bytree=0.7,
+        min_trades=max(80, getattr(settings, 'analyzer_min_trades_ml', 80)),
+        block_threshold=getattr(settings, 'analyzer_ml_block_threshold', 0.45),
         reduce_threshold=0.60,
-        min_precision=0.65,          # PRO LEVEL target
-        min_recall=0.45,             # Recall can be sacrificed for precision
-        min_roc_auc=0.55,
-        min_skill_score=0.72,        # PRO LEVEL target
+        min_precision=getattr(settings, 'analyzer_ml_min_precision', 0.65),
+        min_recall=getattr(settings, 'analyzer_ml_min_recall', 0.45),
+        min_roc_auc=getattr(settings, 'analyzer_ml_min_roc_auc', 0.55),
+        min_skill_score=getattr(settings, 'analyzer_ml_min_skill_score', 0.72),
         cv_splits=5,
         use_lightgbm=True,
         use_xgboost=True,
-        max_overfit_gap=0.08,        # Tightened from 0.20 to prevent overfitting
+        max_overfit_gap=0.10,       # relaxed from 0.08: builders now have L1/L2 + AUC-based guard
     )
-    predictor = MLPredictor(config=ml_config)
 
-    logger.info("Training ML model on {} trades...", len(all_trades))
+    # ── Train per-symbol models ──
+    all_reports = []
+    for symbol in symbols:
+        sym_trades = trades_per_symbol[symbol]
+        sym_trades.sort(key=lambda t: t.timestamp_open)
+
+        logger.info("=" * 50)
+        logger.info("Training ML model for {} ({} trades)...", symbol, len(sym_trades))
+
+        if len(sym_trades) < 50:
+            logger.warning("⚠️ {} — too few trades ({}), skipping per-symbol model", symbol, len(sym_trades))
+            continue
+
+        predictor = MLPredictor(config=ml_config)
+        metrics = predictor.train(sym_trades)
+
+        if metrics is None:
+            logger.error("{}: ML training returned None", symbol)
+            continue
+
+        logger.info("{} Training Results:", symbol)
+        logger.info("  Precision:   {:.3f}", metrics.precision)
+        logger.info("  Recall:      {:.3f}", metrics.recall)
+        logger.info("  ROC AUC:     {:.3f}", metrics.roc_auc)
+        logger.info("  Accuracy:    {:.3f}", metrics.accuracy)
+        logger.info("  Skill Score: {:.3f}", metrics.skill_score)
+        logger.info("  Train/Test:  {}/{}", metrics.train_samples, metrics.test_samples)
+
+        if predictor._ensemble is not None:
+            members = predictor._ensemble.get_member_info()
+            logger.info("  Ensemble members ({}):", len(members))
+            for m in members:
+                logger.info("    [{}] weight={:.3f}", m['tag'], m['weight'])
+
+        if hasattr(predictor, '_feature_selector') and predictor._feature_selector and predictor._feature_selector.is_fitted:
+            dropped = predictor._feature_selector.dropped_names
+            kept = predictor._feature_selector.selected_names
+            logger.info("  Features kept: {}/{}", len(kept), len(kept) + len(dropped))
+
+        if metrics.feature_importances:
+            sorted_imp = sorted(metrics.feature_importances.items(), key=lambda x: x[1], reverse=True)
+            logger.info("  Top features:")
+            for name, imp in sorted_imp[:10]:
+                logger.info("    {:<25} {:.4f}", name, imp)
+
+        # Save per-symbol model
+        model_path = model_dir / f"ml_predictor_{symbol}.pkl"
+        saved = predictor.save_to_file(model_path)
+        if saved:
+            n_members = predictor._ensemble.member_count() if predictor._ensemble else 0
+            logger.info("✅ {} model saved to {} (ensemble members={})", symbol, model_path, n_members)
+        else:
+            logger.warning("⚠️ {} model save failed — may not have passed quality gate", symbol)
+
+        ensemble_info = predictor._ensemble.get_member_info() if predictor._ensemble else []
+        feature_selector_info = {}
+        if hasattr(predictor, '_feature_selector') and predictor._feature_selector and predictor._feature_selector.is_fitted:
+            feature_selector_info = {
+                "kept": predictor._feature_selector.selected_names,
+                "dropped": predictor._feature_selector.dropped_names,
+            }
+
+        all_reports.append({
+            "symbol": symbol,
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "total_trades": len(sym_trades),
+            "strategies": list(strategies.keys()),
+            "model_version": predictor._model_version,
+            "ensemble": ensemble_info,
+            "feature_selector": feature_selector_info,
+            "metrics": {
+                "precision": metrics.precision,
+                "recall": metrics.recall,
+                "roc_auc": metrics.roc_auc,
+                "accuracy": metrics.accuracy,
+                "skill_score": metrics.skill_score,
+            },
+            "feature_importances": metrics.feature_importances,
+            "model_ready": predictor.is_ready,
+        })
+
+        if predictor.is_ready:
+            logger.info("✅ {} ML model is READY", symbol)
+        else:
+            logger.warning("⚠️ {} ML model metrics below threshold", symbol)
+
+    # ── Also train unified fallback model (backward compat) ──
+    logger.info("=" * 50)
+    logger.info("Training unified fallback model on all {} trades...", len(all_trades))
+    all_trades.sort(key=lambda t: t.timestamp_open)
+    predictor = MLPredictor(config=ml_config)
     metrics = predictor.train(all_trades)
 
-    if metrics is None:
-        logger.error("ML training returned None — insufficient data or sklearn missing")
-        db.close()
-        return
+    if metrics is not None:
+        model_path = model_dir / "ml_predictor.pkl"
+        saved = predictor.save_to_file(model_path)
+        if saved:
+            logger.info("✅ Unified fallback model saved to {}", model_path)
 
-    logger.info("=" * 50)
-    logger.info("ML Training Results (VotingEnsemble v3):")
-    logger.info("  Precision:   {:.3f}", metrics.precision)
-    logger.info("  Recall:      {:.3f}", metrics.recall)
-    logger.info("  ROC AUC:     {:.3f}", metrics.roc_auc)
-    logger.info("  Accuracy:    {:.3f}", metrics.accuracy)
-    logger.info("  Skill Score: {:.3f}", metrics.skill_score)
-    logger.info("  Train/Test:  {}/{}", metrics.train_samples, metrics.test_samples)
+        all_reports.append({
+            "symbol": "UNIFIED",
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "total_trades": len(all_trades),
+            "symbols": symbols,
+            "strategies": list(strategies.keys()),
+            "model_version": predictor._model_version,
+            "metrics": {
+                "precision": metrics.precision,
+                "recall": metrics.recall,
+                "roc_auc": metrics.roc_auc,
+                "accuracy": metrics.accuracy,
+                "skill_score": metrics.skill_score,
+            },
+            "model_ready": predictor.is_ready,
+        })
 
-    # Ensemble member info
-    if predictor._ensemble is not None:
-        members = predictor._ensemble.get_member_info()
-        logger.info("  Ensemble members ({}):", len(members))
-        for m in members:
-            logger.info("    [{}] weight={:.3f}", m['tag'], m['weight'])
-
-    # AdaptiveFeatureSelector info
-    if predictor._feature_selector.is_fitted:
-        dropped = predictor._feature_selector.dropped_names
-        kept = predictor._feature_selector.selected_names
-        logger.info("  Features kept: {}/{}", len(kept), len(kept) + len(dropped))
-        if dropped:
-            logger.info("  Features dropped (low importance): {}", ", ".join(dropped))
-
-    # Top features (ensemble-averaged)
-    if metrics.feature_importances:
-        sorted_imp = sorted(metrics.feature_importances.items(), key=lambda x: x[1], reverse=True)
-        logger.info("  Top features (averaged across ensemble):")
-        for name, imp in sorted_imp[:10]:
-            logger.info("    {:<25} {:.4f}", name, imp)
-
-    # Save model — v3: use predictor.save_to_file() which persists VotingEnsemble
-    model_dir = BASE_DIR / "data" / "ml_models"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    model_path = model_dir / "ml_predictor.pkl"
-
-    saved = predictor.save_to_file(model_path)
-    if saved:
-        n_members = predictor._ensemble.member_count() if predictor._ensemble else 0
-        logger.info("✅ Model saved to {} (ensemble members={})", model_path, n_members)
-    else:
-        logger.warning("⚠️ Model save failed — model may not have passed quality gate")
-
-    # Save training report
+    # Save combined training report
     report_path = model_dir / "training_report.json"
-    ensemble_info = []
-    if predictor._ensemble is not None:
-        ensemble_info = predictor._ensemble.get_member_info()
-    feature_selector_info = {
-        "kept": predictor._feature_selector.selected_names,
-        "dropped": predictor._feature_selector.dropped_names,
-    } if predictor._feature_selector.is_fitted else {}
-
-    report = {
-        "trained_at": datetime.now(timezone.utc).isoformat(),
-        "total_trades": len(all_trades),
-        "symbols": symbols,
-        "strategies": list(strategies.keys()),
-        "model_version": predictor._model_version,
-        "ensemble": ensemble_info,
-        "feature_selector": feature_selector_info,
-        "metrics": {
-            "precision": metrics.precision,
-            "recall": metrics.recall,
-            "roc_auc": metrics.roc_auc,
-            "accuracy": metrics.accuracy,
-            "skill_score": metrics.skill_score,
-        },
-        "feature_importances": metrics.feature_importances,
-        "model_ready": predictor.is_ready,
-    }
-    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    logger.info("Report saved to {}", report_path)
-
-    if predictor.is_ready:
-        logger.info("✅ ML model is READY — can be used in shadow mode")
-    else:
-        logger.warning("⚠️ ML model metrics below threshold — model trained but not activated")
+    report_path.write_text(json.dumps(all_reports, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("Combined report saved to {}", report_path)
 
     db.close()
 

@@ -142,26 +142,22 @@ class DCABot(BaseStrategy):
         self._last_buy_time[sym] = now_ms
         self._daily_buys[sym] = daily + 1
 
-        amount = cfg.base_amount_usd * multiplier
-        qty = amount / features.close if features.close > 0 else 0
-
         # DCA: professional news-aware sizing
         news_delta, news_reason = news_confidence_adjustment(features, direction="buy")
         dca_confidence = 0.80 + news_delta
 
-        # Scale DCA amount based on news signal
-        if features.news_composite_score < -0.2 and features.news_actionable:
-            multiplier *= 1.3  # more DCA in fear (contrarian)
-            amount = cfg.base_amount_usd * multiplier
-            qty = amount / features.close if features.close > 0 else 0
+        # Scale multiplier based on news signal (compound with dip multiplier)
+        news_mult = 1.0
+        if features.news_critical_alert:
+            news_mult = 0.5  # reduce position on critical news (highest priority)
+        elif features.news_composite_score < -0.2 and features.news_actionable:
+            news_mult = 1.3  # more DCA in fear (contrarian)
         elif features.news_composite_score > 0.3 and features.news_actionable:
-            multiplier *= 0.7  # less DCA at euphoria
-            amount = cfg.base_amount_usd * multiplier
-            qty = amount / features.close if features.close > 0 else 0
-        elif features.news_critical_alert:
-            multiplier *= 0.5  # reduce position on critical news
-            amount = cfg.base_amount_usd * multiplier
-            qty = amount / features.close if features.close > 0 else 0
+            news_mult = 0.7  # less DCA at euphoria
+        multiplier *= news_mult
+
+        amount = cfg.base_amount_usd * multiplier
+        qty = amount / features.close if features.close > 0 else 0
 
         reason = f"DCA buy: ${amount:.2f} (mult={multiplier:.1f}x)"
         if news_delta != 0:

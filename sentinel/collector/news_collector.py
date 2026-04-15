@@ -724,12 +724,12 @@ Respond ONLY with a JSON array. No markdown, no text outside JSON."""
                 gid = f"evt_{group_id}"
                 # Сортируем по trust (лучший первый)
                 group.sort(key=lambda idx: items[idx].source_trust, reverse=True)
-                for rank, idx in enumerate(group):
+                for _, idx in enumerate(group):
                     items[idx].event_group = gid
-                    if rank > 0 and items[idx].analysis_mode == "llm":
-                        # Понижаем impact дублей — они об одном событии
-                        items[idx].impact_pct = round(items[idx].impact_pct * 0.3, 2)
-                        items[idx].sentiment_score = round(items[idx].sentiment_score * 0.3, 3)
+                    # NOTE: Don't reduce impact_pct/sentiment_score here.
+                    # The consensus mechanism in _compute_effective_impacts()
+                    # handles cross-source weighting correctly — reducing here
+                    # would double-penalize duplicates.
 
     # ── Effective Impact (professional scoring) ───
 

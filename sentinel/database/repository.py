@@ -230,13 +230,28 @@ class Repository:
     # ==================================================================
 
     def insert_position(self, p: Position) -> int:
+        # Guard: prevent duplicate OPEN positions for the same symbol
+        existing = self._db.fetchone(
+            "SELECT id FROM positions WHERE symbol = ? AND status = 'OPEN'",
+            (p.symbol,),
+        )
+        if existing:
+            log.warning("Duplicate OPEN position for {} — closing stale row id={}", p.symbol, existing["id"])
+            self._db.execute(
+                "UPDATE positions SET status = 'STALE' WHERE id = ?", (existing["id"],)
+            )
+            self._db.commit()
         cur = self._db.execute(
-            "INSERT INTO positions (symbol, side, entry_price, quantity, current_price, "
-            "unrealized_pnl, realized_pnl, status, is_paper) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO positions (position_id, symbol, side, entry_price, quantity, "
+            "current_price, unrealized_pnl, realized_pnl, stop_loss_price, take_profit_price, "
+            "strategy_name, signal_id, signal_reason, status, opened_at, is_paper) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                p.symbol, p.side, p.entry_price, p.quantity,
+                p.position_id, p.symbol, p.side, p.entry_price, p.quantity,
                 p.current_price, p.unrealized_pnl, p.realized_pnl,
-                p.status.value, int(p.is_paper),
+                p.stop_loss_price, p.take_profit_price,
+                p.strategy_name, p.signal_id, p.signal_reason,
+                p.status.value, p.opened_at, int(p.is_paper),
             ),
         )
         self._db.commit()
@@ -309,8 +324,16 @@ class Repository:
     # ==================================================================
 
     def insert_strategy_trade(self, st: StrategyTrade) -> int:
+        # Check for duplicates before inserting
+        existing = self._db.fetchone(
+            "SELECT id FROM strategy_trades WHERE trade_id = ?", (st.trade_id,)
+        )
+        if existing:
+            log.warning("Duplicate strategy_trade ignored: trade_id={}", st.trade_id)
+            return existing["id"]
+
         cur = self._db.execute(
-            "INSERT OR IGNORE INTO strategy_trades "
+            "INSERT INTO strategy_trades "
             "(trade_id, signal_id, symbol, strategy_name, market_regime, "
             "timestamp_open, timestamp_close, entry_price, exit_price, quantity, "
             "pnl_usd, pnl_pct, is_win, confidence, hour_of_day, day_of_week, "

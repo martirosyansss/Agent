@@ -543,6 +543,64 @@ async def run() -> None:
             initial_balance=settings.paper_initial_balance,
             max_open_positions=settings.max_open_positions,
         )
+
+        # Restore open positions from DB after restart (atomic)
+        if repo:
+            try:
+                from core.models import Position as _Pos, PositionStatus as _PS
+                saved_positions = await asyncio.to_thread(repo.get_open_positions)
+                _positions_to_restore: list[_Pos] = []
+                _total_cost = 0.0
+                for row in saved_positions:
+                    _ep = row["entry_price"]
+                    _qty = row["quantity"]
+                    if _ep <= 0 or _qty <= 0:
+                        log.warning("Skipping invalid DB position: entry={} qty={}", _ep, _qty)
+                        continue
+                    pos = _Pos(
+                        symbol=row["symbol"],
+                        side=row["side"],
+                        entry_price=_ep,
+                        quantity=_qty,
+                        current_price=row.get("current_price") or _ep,
+                        unrealized_pnl=row.get("unrealized_pnl", 0.0),
+                        realized_pnl=row.get("realized_pnl", 0.0),
+                        stop_loss_price=row.get("stop_loss_price", 0.0),
+                        take_profit_price=row.get("take_profit_price", 0.0),
+                        strategy_name=row.get("strategy_name", ""),
+                        signal_id=row.get("signal_id", ""),
+                        signal_reason=row.get("signal_reason", ""),
+                        status=_PS.OPEN,
+                        opened_at=row.get("opened_at", ""),
+                        is_paper=bool(row.get("is_paper", 1)),
+                    )
+                    if row.get("position_id"):
+                        pos.position_id = row["position_id"]
+                    pos.db_id = row["id"]
+                    _positions_to_restore.append(pos)
+                    _total_cost += _qty * _ep
+
+                # Validate: total cost must not exceed initial balance
+                if _total_cost > position_manager.wallet.initial_balance:
+                    log.error(
+                        "Restored positions cost ${:.2f} > initial balance ${:.2f} — skipping restore",
+                        _total_cost, position_manager.wallet.initial_balance,
+                    )
+                else:
+                    # Atomic: apply all positions at once
+                    for pos in _positions_to_restore:
+                        position_manager._positions[pos.symbol] = pos
+                        sl = pos.stop_loss_price
+                        tp = pos.take_profit_price
+                        if sl > 0 or tp > 0:
+                            position_manager._sl_tp[pos.symbol] = (sl, tp)
+                    position_manager.wallet.usdt_balance -= _total_cost
+                    if _positions_to_restore:
+                        log.info("Restored {} open position(s) from DB (cost=${:.2f})",
+                                 len(_positions_to_restore), _total_cost)
+            except Exception as _restore_err:
+                log.warning("Failed to restore positions from DB: {}", _restore_err)
+
         risk_state_machine = RiskStateMachine(
             event_bus=bus,
             max_daily_loss=settings.max_daily_loss_usd,
@@ -564,25 +622,36 @@ async def run() -> None:
             state_machine=risk_state_machine,
         )
 
-        # Stores {symbol: ml_probability} for open positions so we can feed the
-        # outcome back to LivePerformanceTracker when the trade closes.
-        _ml_prob_at_entry: dict[str, float] = {}
+        # Stores {(symbol, strategy): (probability, entry_price)} for open positions
+        # so we can feed the outcome back to LivePerformanceTracker when the trade closes.
+        _ml_prob_at_entry: dict[tuple, tuple] = {}
 
         async def _on_order_filled(order):
             if not position_manager:
                 return
 
-            # Persist order to DB
+            # Persist order to DB — critical for trade audit trail
             if repo:
                 try:
                     await asyncio.to_thread(repo.insert_order, order)
                 except Exception as _db_err:
-                    log.warning("Order DB write failed: {}", _db_err)
+                    log.critical("Order DB write FAILED: {} — halting trading", _db_err)
+                    nonlocal trading_paused
+                    trading_paused = True
+                    return
 
             if order.side == Direction.BUY:
                 opened = await position_manager.open_position(order)
                 if opened and risk_sentinel:
                     risk_sentinel.record_trade(order.commission, increment_trade=True)
+                # Persist opened position to DB
+                if opened and repo:
+                    try:
+                        db_id = await asyncio.to_thread(repo.insert_position, opened)
+                        opened.db_id = db_id
+                        log.info("Position persisted to DB: {} id={}", opened.symbol, db_id)
+                    except Exception as _db_err:
+                        log.error("Position DB write FAILED for {}: {}", order.symbol, _db_err)
             elif order.side == Direction.SELL:
                 # Capture position data BEFORE close (close deletes from dict)
                 _pos_before = position_manager.get_position(order.symbol)
@@ -591,10 +660,21 @@ async def run() -> None:
                 _strat_name = _pos_before.strategy_name if _pos_before else order.strategy_name
                 _signal_id = _pos_before.signal_id if _pos_before else ""
                 _signal_reason = _pos_before.signal_reason if _pos_before else ""
+                _pos_db_id = _pos_before.db_id if _pos_before else None
 
                 closed = await position_manager.close_position(order)
                 if closed and risk_sentinel:
                     risk_sentinel.record_trade(order.commission, increment_trade=False)
+
+                # Update position status in DB
+                if closed and repo and _pos_db_id:
+                    try:
+                        await asyncio.to_thread(
+                            repo.close_position,
+                            _pos_db_id, closed.realized_pnl, closed.closed_at or "",
+                        )
+                    except Exception as _db_err:
+                        log.warning("Position DB close failed: {}", _db_err)
 
                 # Persist completed trade to strategy_trades DB
                 if closed and repo:
@@ -604,10 +684,27 @@ async def run() -> None:
                         _fill_px = order.fill_price or order.price or 0
                         _fill_qty = order.fill_quantity or order.quantity
                         _pnl = closed.realized_pnl
-                        _pnl_pct = ((_fill_px - _entry_px_pos) / _entry_px_pos * 100) if _entry_px_pos > 0 else 0.0
+                        _cost_basis = _entry_px_pos * _fill_qty
+                        _pnl_pct = (_pnl / _cost_basis * 100) if _cost_basis > 0 else 0.0
                         _hold_ms = (int(closed.closed_at or 0) - int(_opened_at or 0)) if _opened_at else 0
                         _hold_hours = max(_hold_ms / 3_600_000, 0)
                         _regime_name = _current_regime.regime.value if _current_regime else "unknown"
+
+                        # Look up entry confidence from signal_executions
+                        _entry_conf = 0.0
+                        if _signal_id:
+                            try:
+                                _sig_row = await asyncio.to_thread(
+                                    repo._db.fetchone,
+                                    "SELECT confidence FROM signal_executions "
+                                    "WHERE symbol = ? AND outcome = 'filled' "
+                                    "ORDER BY timestamp DESC LIMIT 1",
+                                    (order.symbol,),
+                                )
+                                if _sig_row and _sig_row["confidence"]:
+                                    _entry_conf = float(_sig_row["confidence"])
+                            except Exception:
+                                pass
 
                         _st = _ST(
                             trade_id=_uuid.uuid4().hex[:12],
@@ -623,7 +720,7 @@ async def run() -> None:
                             pnl_usd=round(_pnl, 4),
                             pnl_pct=round(_pnl_pct, 4),
                             is_win=_pnl > 0,
-                            confidence=0.0,  # Order model lacks confidence; entry conf in signal_exec table
+                            confidence=_entry_conf,
                             hour_of_day=int(time.strftime("%H")),
                             day_of_week=int(time.strftime("%w")),
                             exit_reason=order.signal_reason or "",
@@ -637,10 +734,23 @@ async def run() -> None:
                         log.warning("Strategy trade DB write failed: {}", _db_err)
 
                 # Feed realized outcome back to ML tracker for concept drift detection
-                if closed and _ml_predictor and order.symbol in _ml_prob_at_entry:
-                    _entry_prob, _entry_px = _ml_prob_at_entry.pop(order.symbol, (0.5, 0.0))
-                    _actual_win = (order.fill_price > _entry_px) if _entry_px > 0 else False
-                    _ml_predictor.record_outcome(_entry_prob, _actual_win)
+                if closed:
+                    # Find matching ML entry by symbol (any strategy key)
+                    _matched_key = None
+                    for _k in list(_ml_prob_at_entry.keys()):
+                        if _k[0] == order.symbol:
+                            _matched_key = _k
+                            break
+                    if _matched_key is not None:
+                        _entry_prob, _entry_px = _ml_prob_at_entry.pop(_matched_key, (0.5, 0.0))
+                        # Use realized PnL as source of truth (works for both LONG and SHORT)
+                        _actual_win = closed.realized_pnl > 0
+                        # Record to per-symbol model if available, and always to unified
+                        _sym_ml = _ml_predictors.get(order.symbol)
+                        if _sym_ml:
+                            _sym_ml.record_outcome(_entry_prob, _actual_win)
+                        if _ml_predictor:
+                            _ml_predictor.record_outcome(_entry_prob, _actual_win)
 
             if risk_state_machine:
                 await risk_state_machine.update(position_manager.total_realized_pnl)
@@ -648,7 +758,7 @@ async def run() -> None:
         async def _on_market_trade(trade):
             if not position_manager:
                 return
-            position_manager.update_price(trade.symbol, trade.price)
+            await position_manager.update_price(trade.symbol, trade.price)
             if risk_state_machine:
                 await risk_state_machine.update(position_manager.total_realized_pnl)
 
@@ -695,7 +805,8 @@ async def run() -> None:
         log.warning("[Module] Strategies failed to initialize: {}", e)
 
     _current_regime = None
-    _last_features = None  # последний FeatureVector для дашборда
+    _last_features = None  # последний FeatureVector для дашборда (backward compat)
+    _last_features_per_symbol: dict = {}  # symbol → FeatureVector
     _adaptive_allocator = None
     try:
         _adaptive_allocator = AdaptiveAllocator(lookback_trades=50)
@@ -716,11 +827,12 @@ async def run() -> None:
     except Exception as e:
         log.warning("[Module] Advanced risk modules failed: {}", e)
 
-    # ML Predictor — фильтрация сигналов
-    _ml_predictor = None
+    # ML Predictor — фильтрация сигналов (per-symbol models + unified fallback)
+    _ml_predictor = None          # unified fallback (backward compat)
+    _ml_predictors: dict = {}     # symbol → MLPredictor
     try:
         from analyzer.ml_predictor import MLPredictor, MLConfig
-        _ml_predictor = MLPredictor(MLConfig(
+        _ml_cfg = MLConfig(
             block_threshold=settings.analyzer_ml_block_threshold,
             min_precision=settings.analyzer_ml_min_precision,
             min_recall=settings.analyzer_ml_min_recall,
@@ -729,31 +841,46 @@ async def run() -> None:
             min_trades=settings.analyzer_min_trades_ml,
             retrain_days=settings.analyzer_ml_retrain_days,
             test_window_days=settings.analyzer_ml_test_window_days,
-        ))
-        if settings.analyzer_ml_shadow_mode:
-            _ml_predictor.rollout_mode = "shadow"
-        elif settings.analyzer_ml_enabled:
-            _ml_predictor.rollout_mode = "block"
-        # Load previously trained model from disk
-        _ml_model_path = Path(__file__).parent / "data" / "ml_models" / "ml_predictor.pkl"
+        )
+        _rollout = "shadow" if settings.analyzer_ml_shadow_mode else ("block" if settings.analyzer_ml_enabled else "off")
+        _ml_models_dir = Path(__file__).parent / "data" / "ml_models"
+
+        # Load per-symbol models
+        for _sym in (settings.trading_symbols or []):
+            _sym_path = _ml_models_dir / f"ml_predictor_{_sym}.pkl"
+            if _sym_path.exists():
+                _sym_predictor = MLPredictor(config=_ml_cfg)
+                _sym_predictor.rollout_mode = _rollout
+                if _sym_predictor.load_from_file(_sym_path):
+                    _ml_predictors[_sym] = _sym_predictor
+                    log.info("[Module] ML model for {} loaded (version={})", _sym, _sym_predictor._model_version)
+                else:
+                    log.warning("[Module] ML model load failed for {}", _sym)
+
+        # Load unified fallback model
+        _ml_predictor = MLPredictor(config=_ml_cfg)
+        _ml_predictor.rollout_mode = _rollout
+        _ml_model_path = _ml_models_dir / "ml_predictor.pkl"
         if _ml_model_path.exists():
             loaded = _ml_predictor.load_from_file(_ml_model_path)
             if loaded:
-                log.info("[Module] ML model loaded from disk (version={})", _ml_predictor._model_version)
+                log.info("[Module] ML unified model loaded (version={})", _ml_predictor._model_version)
             else:
-                log.warning("[Module] ML model load failed — running without model until retrain")
+                log.warning("[Module] ML unified model load failed")
         else:
-            log.warning("[Module] No saved ML model found at {} — will train on startup", _ml_model_path)
-        log.info("[Module] ML Predictor initialized (mode={})", _ml_predictor.rollout_mode)
+            log.warning("[Module] No saved ML model found at {}", _ml_model_path)
+
+        log.info("[Module] ML Predictors: {} per-symbol + unified fallback (mode={})",
+                 len(_ml_predictors), _ml_predictor.rollout_mode)
     except Exception as e:
         log.warning("[Module] ML Predictor failed: {}", e)
 
     # ── ML retrain function (defined early so get_system_state can reference it) ──
-    _ml_model_path_early = Path(__file__).parent / "data" / "ml_models" / "ml_predictor.pkl"
-    _ml_retrain_lock_early = asyncio.Lock()
+    _ml_model_path_unified = Path(__file__).parent / "data" / "ml_models" / "ml_predictor.pkl"
+    _ml_retrain_lock = asyncio.Lock()
 
     async def _run_ml_training() -> bool:
-        """Load trades from DB, train ML model, save to disk. Returns True on success."""
+        """Load trades from DB, train per-symbol + unified ML models, save to disk."""
         if not _ml_predictor or not repo:
             return False
         try:
@@ -761,26 +888,55 @@ async def run() -> None:
             _scripts_dir = str(Path(__file__).parent / "scripts")
             if _scripts_dir not in _sys.path:
                 _sys.path.insert(0, _scripts_dir)
-            from scripts.train_ml import build_all_trades
+            from scripts.train_ml import build_trades_per_symbol
             log.info("ML auto-retrain: collecting training data...")
-            all_trades = await asyncio.to_thread(build_all_trades, repo, settings)
-            if not all_trades:
+            trades_by_sym = await asyncio.to_thread(build_trades_per_symbol, repo, settings)
+            if not trades_by_sym:
                 log.warning("ML auto-retrain: no trades available for training")
                 return False
-            log.info("ML auto-retrain: training on {} trades...", len(all_trades))
-            metrics = await asyncio.to_thread(_ml_predictor.train, all_trades)
-            if metrics is None or not _ml_predictor.is_ready:
-                log.warning("ML auto-retrain: training failed or metrics below threshold")
-                return False
-            saved = await asyncio.to_thread(_ml_predictor.save_to_file, _ml_model_path_early)
-            if saved:
-                log.info(
-                    "ML auto-retrain: ✅ saved (skill={:.3f} prec={:.3f} rec={:.3f} auc={:.3f})",
-                    metrics.skill_score, metrics.precision, metrics.recall, metrics.roc_auc,
-                )
-                return True
-            log.warning("ML auto-retrain: model below quality gate — not saved")
-            return False
+
+            _ml_models_dir = Path(__file__).parent / "data" / "ml_models"
+            _ml_models_dir.mkdir(parents=True, exist_ok=True)
+            any_saved = False
+
+            # Train per-symbol models
+            for sym, sym_trades in trades_by_sym.items():
+                if len(sym_trades) < 50:
+                    log.info("ML auto-retrain: {} — too few trades ({}), skip", sym, len(sym_trades))
+                    continue
+                # Use existing per-symbol predictor or create new one
+                sym_predictor = _ml_predictors.get(sym)
+                if sym_predictor is None:
+                    from analyzer.ml_predictor import MLPredictor as _MLP, MLConfig as _MLC
+                    sym_predictor = _MLP(config=_ml_predictor._cfg)
+                    sym_predictor.rollout_mode = _ml_predictor.rollout_mode
+                log.info("ML auto-retrain: training {} on {} trades...", sym, len(sym_trades))
+                metrics = await asyncio.to_thread(sym_predictor.train, sym_trades)
+                if metrics is None or not sym_predictor.is_ready:
+                    log.warning("ML auto-retrain: {} — training failed or below threshold", sym)
+                    continue
+                sym_path = _ml_models_dir / f"ml_predictor_{sym}.pkl"
+                saved = await asyncio.to_thread(sym_predictor.save_to_file, sym_path)
+                if saved:
+                    _ml_predictors[sym] = sym_predictor
+                    log.info("ML auto-retrain: ✅ {} saved (skill={:.3f})", sym, metrics.skill_score)
+                    any_saved = True
+
+            # Train unified fallback
+            all_trades = []
+            for sym_trades in trades_by_sym.values():
+                all_trades.extend(sym_trades)
+            all_trades.sort(key=lambda t: t.timestamp_open)
+            if all_trades:
+                log.info("ML auto-retrain: training unified on {} trades...", len(all_trades))
+                metrics = await asyncio.to_thread(_ml_predictor.train, all_trades)
+                if metrics is not None and _ml_predictor.is_ready:
+                    saved = await asyncio.to_thread(_ml_predictor.save_to_file, _ml_model_path_unified)
+                    if saved:
+                        log.info("ML auto-retrain: ✅ unified saved (skill={:.3f})", metrics.skill_score)
+                        any_saved = True
+
+            return any_saved
         except Exception as exc:
             log.error("ML auto-retrain error: {}", exc)
             return False
@@ -794,7 +950,7 @@ async def run() -> None:
 
     async def _on_new_candle(candle):
         """Главный торговый цикл — вызывается при закрытии каждой свечи."""
-        nonlocal _current_regime, trading_paused, _last_features
+        nonlocal _current_regime, trading_paused, _last_features, _last_features_per_symbol
 
         if trading_paused:
             return
@@ -868,6 +1024,7 @@ async def run() -> None:
             return
 
         _last_features = features
+        _last_features_per_symbol[symbol] = features
 
         # 2.5. Обогащение FeatureVector данными из NewsCollector
         if news_collector:
@@ -1005,8 +1162,9 @@ async def run() -> None:
                           sltp.method, sltp.stop_loss_price, sltp.stop_loss_pct,
                           sltp.take_profit_price, sltp.take_profit_pct)
 
-            # 6.5 ML Predictor filter
-            if _ml_predictor and settings.analyzer_ml_enabled and _ml_predictor.rollout_mode != "off":
+            # 6.5 ML Predictor filter (per-symbol model with unified fallback)
+            _active_ml = _ml_predictors.get(symbol, _ml_predictor)
+            if _active_ml and settings.analyzer_ml_enabled and _active_ml.rollout_mode != "off":
                 try:
                     from core.models import StrategyTrade as _ST
                     _ml_trade = _ST(
@@ -1031,18 +1189,19 @@ async def run() -> None:
                             _prev_trades_for_ml = [_ST(**t) if isinstance(t, dict) else t for t in _raw]
                         except Exception as _ml_hist_err:
                             log.debug("ML history fetch failed: {}", _ml_hist_err)
-                    _ml_features = _ml_predictor.extract_features(_ml_trade, _prev_trades_for_ml)
-                    _ml_pred = _ml_predictor.predict(_ml_features)
+                    _ml_features = _active_ml.extract_features(_ml_trade, _prev_trades_for_ml)
+                    _ml_pred = _active_ml.predict(_ml_features)
                     log.info("ML prediction: {} prob={:.2f} decision={} mode={}",
                              strat_name, _ml_pred.probability, _ml_pred.decision, _ml_pred.rollout_mode)
                     # Track ML probability at entry so we can record outcome on close.
                     # Store (prob, entry_price) tuple — used in _on_order_filled SELL path.
                     if signal.direction.value == "BUY":
-                        _ml_prob_at_entry[symbol] = (_ml_pred.probability, features.close)
+                        _ml_prob_at_entry[(symbol, strat_name)] = (_ml_pred.probability, features.close)
                     if _ml_pred.decision == "block":
                         log.info("ML BLOCKED signal: {} {} {} prob={:.2f}",
                                  strat_name, signal.direction.value, symbol, _ml_pred.probability)
                         strat_results.append({"strategy": strat_name, "result": "ml_blocked",
+                                              "direction": signal.direction.value,
                                               "detail": f"ML blocked: prob={_ml_pred.probability:.2f}"})
                         if repo:
                             try:
@@ -1072,7 +1231,7 @@ async def run() -> None:
             if not check.approved:
                 log.info("Signal REJECTED by Risk: {} {} {} — {}",
                          strat_name, signal.direction.value, symbol, check.reason)
-                strat_results.append({"strategy": strat_name, "result": "rejected", "detail": f"{signal.direction.value} rejected: {check.reason}"})
+                strat_results.append({"strategy": strat_name, "result": "rejected", "direction": signal.direction.value, "detail": f"{signal.direction.value} rejected: {check.reason}"})
                 # Audit trail
                 if repo:
                     try:
@@ -1134,7 +1293,7 @@ async def run() -> None:
                     except Exception as _err_audit_err:
                         log.debug("Error audit write failed: {}", _err_audit_err)
 
-            strat_results.append({"strategy": strat_name, "result": "signal", "detail": order_msg})
+            strat_results.append({"strategy": strat_name, "result": "signal", "direction": signal.direction.value, "detail": order_msg})
             signal_found = True
             # Только один сигнал на символ за свечу
             break
@@ -1165,9 +1324,16 @@ async def run() -> None:
         if trigger is None:
             return
 
+        # Re-check position after trigger — it may have been closed by another signal
         pos = position_manager.get_position(symbol)
-        if not pos:
+        if not pos or pos.quantity <= 0:
             return
+
+        # Snapshot values before async execution (guard against concurrent close)
+        _qty = pos.quantity
+        _strategy = pos.strategy_name or "sl_tp"
+        _sl = pos.stop_loss_price
+        _tp = pos.take_profit_price
 
         direction = Direction.SELL
         reason = f"SL/TP triggered: {trigger}"
@@ -1176,17 +1342,20 @@ async def run() -> None:
             symbol=symbol,
             direction=direction,
             confidence=1.0,
-            strategy_name=pos.strategy_name or "sl_tp",
+            strategy_name=_strategy,
             reason=reason,
-            suggested_quantity=pos.quantity,
-            stop_loss_price=pos.stop_loss_price,
-            take_profit_price=pos.take_profit_price,
+            suggested_quantity=_qty,
+            stop_loss_price=_sl,
+            take_profit_price=_tp,
         )
 
         try:
+            # Final check right before execution
+            if not position_manager.has_position(symbol):
+                return
             order = await executor.execute_order(
                 signal=signal,
-                quantity=pos.quantity,
+                quantity=_qty,
                 current_price=trade.price,
             )
             if order:
@@ -1232,8 +1401,11 @@ async def run() -> None:
     _ALLOWED_INTERVALS = {"1m", "5m", "15m", "1h", "4h", "1d"}
     _INTERVAL_LIMITS = {"1m": 120, "5m": 120, "15m": 96, "1h": 96, "4h": 120, "1d": 90}
 
-    def build_market_chart(interval: str = "1m") -> dict:
-        primary_symbol = settings.trading_symbols[0] if settings.trading_symbols else "BTCUSDT"
+    def build_market_chart(interval: str = "1m", symbol: str = "") -> dict:
+        primary_symbol = symbol.upper() if symbol else (settings.trading_symbols[0] if settings.trading_symbols else "BTCUSDT")
+        # Validate symbol is in configured list
+        if settings.trading_symbols and primary_symbol not in [s.upper() for s in settings.trading_symbols]:
+            primary_symbol = settings.trading_symbols[0]
         if interval not in _ALLOWED_INTERVALS:
             interval = "1m"
         limit = _INTERVAL_LIMITS.get(interval, 120)
@@ -1328,14 +1500,31 @@ async def run() -> None:
             "candles": [],
         }
 
-    def _build_indicators_snapshot() -> dict:
-        """Собирает текущие значения индикаторов для дашборда."""
-        f = _last_features
+    # Cache: {symbol: (timestamp_ms, result_dict)} — invalidated when _last_features_per_symbol updates
+    _indicators_cache: dict[str, tuple[int, dict]] = {}
+    _INDICATORS_CACHE_TTL_MS = 5_000  # 5 seconds
+
+    def _build_indicators_snapshot(target_symbol: str = "") -> dict:
+        """Собирает текущие значения индикаторов для дашборда (cached)."""
+        primary_symbol = target_symbol.upper() if target_symbol else (settings.trading_symbols[0] if settings.trading_symbols else "BTCUSDT")
+
+        # Check cache — features change only on new candle (hourly), so 5s TTL is safe
+        _now_ms = int(time.time() * 1000)
+        _cached = _indicators_cache.get(primary_symbol)
+        if _cached and (_now_ms - _cached[0]) < _INDICATORS_CACHE_TTL_MS:
+            return _cached[1]
+
+        result = _build_indicators_snapshot_uncached(primary_symbol)
+        _indicators_cache[primary_symbol] = (_now_ms, result)
+        return result
+
+    def _build_indicators_snapshot_uncached(primary_symbol: str) -> dict:
+        """Uncached impl — called by _build_indicators_snapshot."""
+        f = _last_features_per_symbol.get(primary_symbol, _last_features)
         # Если ещё нет features от торгового цикла — вычислить напрямую из 1h свечей
         if f is None and repo:
             try:
                 from features import indicators as ind
-                primary_symbol = settings.trading_symbols[0] if settings.trading_symbols else "BTCUSDT"
                 c1r = repo.get_candles(primary_symbol, "1h", limit=60)
                 if not c1r or len(c1r) < 30:
                     return {}
@@ -1499,6 +1688,24 @@ async def run() -> None:
             "all_buy_conditions_met": all_conditions_met,
         }
 
+    def _calc_win_rate_per_symbol(recent_trades: list) -> dict:
+        """Compute win rate per symbol from recent closed trades."""
+        by_sym: dict[str, dict] = {}
+        for t in recent_trades:
+            sym = t.get("symbol", "") if isinstance(t, dict) else getattr(t, "symbol", "")
+            if not sym:
+                continue
+            if sym not in by_sym:
+                by_sym[sym] = {"wins": 0, "total": 0}
+            by_sym[sym]["total"] += 1
+            pnl = t.get("pnl", 0) if isinstance(t, dict) else getattr(t, "realized_pnl", 0)
+            if pnl > 0:
+                by_sym[sym]["wins"] += 1
+        result = {}
+        for sym, stats in by_sym.items():
+            result[sym] = round(stats["wins"] / stats["total"] * 100, 1) if stats["total"] > 0 else 0.0
+        return result
+
     def get_system_state() -> dict:
         position_state = position_manager.get_state() if position_manager else {}
         balance = float(position_state.get("balance", settings.paper_initial_balance))
@@ -1555,7 +1762,7 @@ async def run() -> None:
             "positions": position_state.get("positions", []),
             "recent_trades": position_state.get("recent_trades", []),
             "pnl_history": position_state.get("pnl_history", []),
-            "market_chart": build_market_chart("1m"),
+            # market_chart omitted — dashboard fetches via /api/market-chart with symbol param
             "activity": {
                 "collector": collector.stats if collector else {},
                 "events": bus.get_event_stats(),
@@ -1601,8 +1808,18 @@ async def run() -> None:
                 "block_threshold": _ml_predictor._cfg.block_threshold if _ml_predictor else 0.55,
                 "reduce_threshold": _ml_predictor._cfg.reduce_threshold if _ml_predictor else 0.65,
                 "model_version": _ml_predictor._model_version if _ml_predictor and hasattr(_ml_predictor, '_model_version') else "",
+                "per_symbol_models": {
+                    sym: {"ready": p.is_ready, "version": getattr(p, '_model_version', '')}
+                    for sym, p in _ml_predictors.items()
+                },
             },
             "indicators": _build_indicators_snapshot(),
+            "indicators_per_symbol": {
+                sym: _build_indicators_snapshot(sym)
+                for sym in (settings.trading_symbols or [])
+            },
+            "trading_symbols": settings.trading_symbols or [],
+            "win_rate_per_symbol": _calc_win_rate_per_symbol(position_state.get("recent_trades", [])),
             "strategy_performance": repo.get_strategy_performance() if repo else [],
             "trades_export": repo.get_all_trades_for_export() if repo else [],
             "alerts": _alert_monitor.get_recent_alerts() if _alert_monitor else [],
@@ -1660,7 +1877,7 @@ async def run() -> None:
         await asyncio.sleep(60)
         while True:
             try:
-                async with _ml_retrain_lock_early:
+                async with _ml_retrain_lock:
                     if _ml_predictor:
                         if not _ml_predictor.is_ready:
                             log.info("ML auto-retrain: no model loaded — triggering initial training")
@@ -1684,6 +1901,24 @@ async def run() -> None:
 
     equity_task = asyncio.create_task(_equity_snapshot_loop())
 
+    # Periodic position price sync to DB (every 60s)
+    async def _position_db_sync_loop():
+        while True:
+            await asyncio.sleep(60)
+            if not position_manager or not repo:
+                continue
+            for pos in position_manager.open_positions:
+                if pos.db_id:
+                    try:
+                        await asyncio.to_thread(
+                            repo.update_position_price,
+                            pos.db_id, pos.current_price, pos.unrealized_pnl,
+                        )
+                    except Exception as _sync_err:
+                        log.warning("Position price sync failed for {}: {}", pos.symbol, _sync_err)
+
+    pos_sync_task = asyncio.create_task(_position_db_sync_loop())
+
     # Heartbeat writer (шаг 19)
     heartbeat_task = asyncio.create_task(heartbeat_writer(settings))
 
@@ -1692,6 +1927,7 @@ async def run() -> None:
         ("equity_snapshot", equity_task),
         ("heartbeat", heartbeat_task),
         ("ml_retrain", ml_retrain_task),
+        ("pos_db_sync", pos_sync_task),
     ]
     if collector_task:
         _background_tasks.append(("collector", collector_task))
@@ -1721,7 +1957,8 @@ async def run() -> None:
     heartbeat_task.cancel()
     equity_task.cancel()
     ml_retrain_task.cancel()
-    await asyncio.gather(watchdog_task, heartbeat_task, equity_task, ml_retrain_task, return_exceptions=True)
+    pos_sync_task.cancel()
+    await asyncio.gather(watchdog_task, heartbeat_task, equity_task, ml_retrain_task, pos_sync_task, return_exceptions=True)
     if collector:
         await collector.stop()
     if collector_task:
@@ -1729,6 +1966,15 @@ async def run() -> None:
         await asyncio.gather(collector_task, return_exceptions=True)
     if dashboard:
         await dashboard.stop()
+    # Final sync: persist latest position prices to DB before closing
+    if position_manager and repo:
+        for _pos in position_manager.open_positions:
+            if _pos.db_id:
+                try:
+                    repo.update_position_price(_pos.db_id, _pos.current_price, _pos.unrealized_pnl)
+                    log.info("Shutdown sync: {} @ {:.2f} uPnL={:.4f}", _pos.symbol, _pos.current_price, _pos.unrealized_pnl)
+                except Exception as _e:
+                    log.warning("Shutdown position sync failed for {}: {}", _pos.symbol, _e)
     db.close()
     save_state({"stopped_at": int(time.time()), "mode": settings.trading_mode})
     release_pid_lock()

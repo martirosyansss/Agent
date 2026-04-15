@@ -291,13 +291,14 @@ class PositionManager:
     # Price updates & SL/TP checker
     # ──────────────────────────────────────────────
 
-    def update_price(self, symbol: str, price: float) -> None:
-        """Обновить текущую цену позиции."""
-        pos = self._positions.get(symbol)
-        if pos:
-            pos.current_price = price
-            pos.unrealized_pnl = (price - pos.entry_price) * pos.quantity
-            self._record_equity_snapshot()
+    async def update_price(self, symbol: str, price: float) -> None:
+        """Обновить текущую цену позиции (async-safe)."""
+        async with self._lock:
+            pos = self._positions.get(symbol)
+            if pos:
+                pos.current_price = price
+                pos.unrealized_pnl = (price - pos.entry_price) * pos.quantity
+                self._record_equity_snapshot()
 
     def check_stop_loss_take_profit(self, symbol: str) -> Optional[str]:
         """Проверить SL/TP для позиции.

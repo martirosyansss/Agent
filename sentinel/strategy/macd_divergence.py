@@ -81,11 +81,12 @@ class MACDDivergence(BaseStrategy):
         if len(ph) < min_bars or len(mh) < min_bars:
             return False
 
-        recent = min_bars
+        # Use configured lookback (capped by available data, but not limited to min_bars)
+        lookback = min(len(ph), self._cfg.lookback_candles)
         # Price made lower low
-        price_new_low = ph[-1] < min(ph[-recent:-1])
+        price_new_low = ph[-1] < min(ph[-lookback:-1])
         # MACD made higher low
-        macd_higher_low = mh[-1] > min(mh[-recent:-1])
+        macd_higher_low = mh[-1] > min(mh[-lookback:-1])
 
         return price_new_low and macd_higher_low
 
@@ -97,9 +98,9 @@ class MACDDivergence(BaseStrategy):
         if len(ph) < min_bars or len(mh) < min_bars:
             return False
 
-        recent = min_bars
-        price_new_high = ph[-1] > max(ph[-recent:-1])
-        macd_lower_high = mh[-1] < max(mh[-recent:-1])
+        lookback = min(len(ph), self._cfg.lookback_candles)
+        price_new_high = ph[-1] > max(ph[-lookback:-1])
+        macd_lower_high = mh[-1] < max(mh[-lookback:-1])
 
         return price_new_high and macd_lower_high
 

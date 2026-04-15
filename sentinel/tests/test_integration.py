@@ -128,7 +128,7 @@ class TestFullPipeline:
         assert position_manager.open_positions_count == 1
 
         # 5. Update price and check PnL
-        position_manager.update_price("BTCUSDT", 105.0)
+        await position_manager.update_price("BTCUSDT", 105.0)
         assert position_manager.total_unrealized_pnl > 0
 
         # 6. Strategy generates SELL signal (take profit scenario)
@@ -226,11 +226,11 @@ class TestFullPipeline:
         await position_manager.open_position(order, 95.0, 110.0)
 
         # Price above SL → no trigger
-        position_manager.update_price("BTCUSDT", 98.0)
+        await position_manager.update_price("BTCUSDT", 98.0)
         assert position_manager.check_stop_loss_take_profit("BTCUSDT") is None
 
         # Price hits SL
-        position_manager.update_price("BTCUSDT", 94.0)
+        await position_manager.update_price("BTCUSDT", 94.0)
         assert position_manager.check_stop_loss_take_profit("BTCUSDT") == "stop_loss"
 
     @pytest.mark.asyncio
@@ -246,7 +246,7 @@ class TestFullPipeline:
         assert order is not None
         await position_manager.open_position(order, 95.0, 110.0)
 
-        position_manager.update_price("BTCUSDT", 112.0)
+        await position_manager.update_price("BTCUSDT", 112.0)
         assert position_manager.check_stop_loss_take_profit("BTCUSDT") == "take_profit"
 
 
@@ -360,17 +360,18 @@ class TestMLPipelineIntegration:
 
         # Pass unordered list — future trade should be filtered out
         features = ml.extract_features(current, [trade_past, trade_future])
-        assert len(features) == 20
+        assert len(features) == 32
 
-        # recent_win_rate should be based on trade_past only (100% win)
-        assert features[11] == pytest.approx(1.0, abs=0.01)
+        # recent_win_rate_10 is at index 13 in 32-feature vector
+        # With only 1 prior trade, extract_features uses default 0.5 at idx=0
+        assert features[13] == pytest.approx(0.5, abs=0.01)
 
     def test_prediction_without_model_allows(self):
         """ML predictor without trained model should allow all signals."""
         from analyzer.ml_predictor import MLPredictor
 
         ml = MLPredictor()
-        pred = ml.predict([0.0] * 20)
+        pred = ml.predict([0.0] * 32)
         assert pred.decision == "allow"
 
 

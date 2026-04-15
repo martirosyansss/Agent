@@ -21,7 +21,13 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core.models import Direction, FeatureVector, Signal
-from strategy.base_strategy import BaseStrategy, news_confidence_adjustment
+from strategy.base_strategy import (
+    BaseStrategy,
+    news_confidence_adjustment,
+    news_should_block_entry,
+    news_should_accelerate_exit,
+    news_adjust_sl_tp,
+)
 
 
 @dataclass
@@ -31,6 +37,7 @@ class GridConfig:
     min_profit_pct: float = 0.3
     max_loss_pct: float = 5.0
     min_confidence: float = 0.70
+    min_volume_ratio: float = 0.8
 
     def __post_init__(self):
         if self.num_grids <= 0:
@@ -103,6 +110,16 @@ class GridTrading(BaseStrategy):
                     reason=f"SAFETY: invalid entry_price={entry_price}",
                 )
             pnl_pct = (price - entry_price) / entry_price * 100
+
+            # News-driven emergency exit (critical bearish / security event)
+            exit_now, exit_conf, exit_reason = news_should_accelerate_exit(features, pnl_pct)
+            if exit_now:
+                return Signal(
+                    timestamp=now_ms, symbol=sym, direction=Direction.SELL,
+                    confidence=exit_conf, strategy_name=self.NAME,
+                    reason=exit_reason,
+                )
+
             if pnl_pct >= cfg.min_profit_pct:
                 return Signal(
                     timestamp=now_ms,
@@ -128,14 +145,24 @@ class GridTrading(BaseStrategy):
 
         # BUY: find lowest unfilled grid level above current price
         if not has_open_position:
+            # Block entry on critical news (black swan / security event)
+            blocked, block_reason = news_should_block_entry(features)
+            if blocked:
+                return None
+
+            # Volume filter: skip entry in silent markets
+            if features.volume_ratio < cfg.min_volume_ratio:
+                return None
+
             filled = self._filled_buys.get(sym, set())
             for i, level in enumerate(levels):
                 if i in filled:
                     continue
                 if price <= level:
                     self._filled_buys.setdefault(sym, set()).add(i)
-                    sl = price * (1 - cfg.max_loss_pct / 100)
-                    tp = price * (1 + cfg.min_profit_pct / 100)
+
+                    # News-adjusted SL/TP (volatility-aware)
+                    sl, tp = news_adjust_sl_tp(features, price, cfg.max_loss_pct, cfg.min_profit_pct)
 
                     # Grid: professional news-adjusted confidence
                     news_delta, news_reason = news_confidence_adjustment(features, direction="buy")
