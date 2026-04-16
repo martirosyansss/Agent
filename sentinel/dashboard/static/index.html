@@ -4015,11 +4015,24 @@
         var ds3 = pnlChart.data.datasets[3];
         if (ds2) {
             ds2.data = hasEMA9 ? ema9Data : [];
-            if (!hasEMA9) ds2.hidden = true;
+            ds2.hidden = !hasEMA9;
         }
         if (ds3) {
             ds3.data = hasEMA21 ? ema21Data : [];
-            if (!hasEMA21) ds3.hidden = true;
+            ds3.hidden = !hasEMA21;
+        }
+
+        /* Include EMA range in Y scale for candle mode */
+        if (chartType === 'candle' && (hasEMA9 || hasEMA21)) {
+            var emaAll = ema9Data.concat(ema21Data).filter(function(v) { return v !== null; });
+            if (emaAll.length) {
+                var emaMin = Math.min.apply(null, emaAll);
+                var emaMax = Math.max.apply(null, emaAll);
+                var curMin = pnlChart.options.scales.y.min;
+                var curMax = pnlChart.options.scales.y.max;
+                if (emaMin < curMin) pnlChart.options.scales.y.min = emaMin - (curMax - curMin) * 0.02;
+                if (emaMax > curMax) pnlChart.options.scales.y.max = emaMax + (curMax - curMin) * 0.02;
+            }
         }
 
         /* Sync legend dimmed state & update live values */

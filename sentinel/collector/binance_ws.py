@@ -133,8 +133,11 @@ class BinanceWebSocketCollector:
         """
         import requests as _requests
 
-        INTERVALS = ["1h", "4h", "1d"]
+        INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"]
         INTERVAL_MS: dict[str, int] = {
+            "1m":     60_000,
+            "5m":    300_000,
+            "15m":   900_000,
             "1h":  3_600_000,
             "4h": 14_400_000,
             "1d": 86_400_000,
@@ -153,27 +156,45 @@ class BinanceWebSocketCollector:
                     log.warning("Backfill: не удалось получить последнюю свечу {}/{}: {}", sym_upper, interval, e)
                     continue
 
-                if not last:
-                    continue  # нет истории — скип (download_history.py для начальной загрузки)
-
-                last_ts: int = last["timestamp"]
                 interval_ms = INTERVAL_MS[interval]
-                gap_ms = now_ms - last_ts
 
-                if gap_ms < interval_ms * 2:
-                    continue  # пропущено < 2 свечей — не считаем дырой
+                # Для коротких интервалов (1m/5m/15m) — подгружаем начальный
+                # набор свечей даже если истории нет, чтобы дашборд сразу
+                # показывал заполненный график.
+                SHORT_INTERVALS = {"1m", "5m", "15m"}
+                # Кол-во свечей для начальной загрузки (совпадает с лимитами дашборда)
+                INITIAL_COUNTS = {"1m": 150, "5m": 150, "15m": 120}
 
-                missing_count = int(gap_ms // interval_ms)
-                log.info(
-                    "Backfill: {}/{} — обнаружена дыра ~{} свечей ({:.1f}ч), докачиваю...",
-                    sym_upper, interval, missing_count, gap_ms / 3_600_000,
-                )
+                if not last:
+                    if interval in SHORT_INTERVALS:
+                        # Нет истории — подгружаем начальный набор
+                        count = INITIAL_COUNTS.get(interval, 150)
+                        start_ts = now_ms - count * interval_ms
+                        log.info(
+                            "Backfill: {}/{} — нет истории, загружаю {} свечей...",
+                            sym_upper, interval, count,
+                        )
+                    else:
+                        continue  # для 1h/4h/1d — скип (download_history.py)
+                else:
+                    last_ts: int = last["timestamp"]
+                    gap_ms = now_ms - last_ts
+
+                    if gap_ms < interval_ms * 2:
+                        continue  # пропущено < 2 свечей — не считаем дырой
+
+                    missing_count = int(gap_ms // interval_ms)
+                    log.info(
+                        "Backfill: {}/{} — обнаружена дыра ~{} свечей ({:.1f}ч), докачиваю...",
+                        sym_upper, interval, missing_count, gap_ms / 3_600_000,
+                    )
+                    start_ts = last_ts + interval_ms
 
                 try:
                     params = {
                         "symbol": sym_upper,
                         "interval": interval,
-                        "startTime": last_ts + interval_ms,
+                        "startTime": start_ts,
                         "endTime": now_ms,
                         "limit": 1000,
                     }
@@ -211,6 +232,8 @@ class BinanceWebSocketCollector:
 
                 except Exception as e:
                     log.warning("Backfill: {}/{} — ошибка при докачке: {}", sym_upper, interval, e)
+
+                await asyncio.sleep(0.3)  # rate-limit protection
 
     # ------------------------------------------------------------------
     # Connection
