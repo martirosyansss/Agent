@@ -1442,22 +1442,41 @@ async def run() -> None:
 
         # ── Startup prediction: сразу прогноз по последней закрытой свече ──
         async def _startup_prediction():
+            import time as _time
             from core.models import Candle as CandleModel
+
+            _INTERVAL_MS = {
+                "1m": 60_000, "5m": 300_000, "15m": 900_000,
+                "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
+            }
+
             for sym in settings.trading_symbols:
                 last = await asyncio.to_thread(repo.get_latest_candle, sym, settings.signal_timeframe)
-                if last:
-                    candle = CandleModel(
-                        timestamp=last["timestamp"], symbol=last["symbol"],
-                        interval=last["interval"],
-                        open=float(last["open"]), high=float(last["high"]),
-                        low=float(last["low"]), close=float(last["close"]),
-                        volume=float(last.get("volume", 0)),
-                        trades_count=int(last.get("trades_count", 0)),
-                    )
-                    log.info("[Startup] Running prediction on last closed {} candle for {}", settings.signal_timeframe, sym)
-                    await _on_new_candle(candle)
-                else:
+                if not last:
                     log.info("[Startup] No historical {} candles for {} — waiting for first close", settings.signal_timeframe, sym)
+                    continue
+
+                # Проверяем, что свеча гарантированно закрыта:
+                # timestamp + длительность интервала <= текущее время
+                ivl_ms = _INTERVAL_MS.get(settings.signal_timeframe, 3_600_000)
+                candle_close_time = last["timestamp"] + ivl_ms
+                now_ms = int(_time.time() * 1000)
+
+                if candle_close_time > now_ms:
+                    log.info("[Startup] Latest {} candle for {} is still OPEN (closes in {:.0f}s) — skipping",
+                             settings.signal_timeframe, sym, (candle_close_time - now_ms) / 1000)
+                    continue
+
+                candle = CandleModel(
+                    timestamp=last["timestamp"], symbol=last["symbol"],
+                    interval=last["interval"],
+                    open=float(last["open"]), high=float(last["high"]),
+                    low=float(last["low"]), close=float(last["close"]),
+                    volume=float(last.get("volume", 0)),
+                    trades_count=int(last.get("trades_count", 0)),
+                )
+                log.info("[Startup] Running prediction on last closed {} candle for {}", settings.signal_timeframe, sym)
+                await _on_new_candle(candle)
 
         asyncio.ensure_future(_startup_prediction())
     else:

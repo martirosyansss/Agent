@@ -190,48 +190,68 @@ class BinanceWebSocketCollector:
                     )
                     start_ts = last_ts + interval_ms
 
-                try:
-                    params = {
-                        "symbol": sym_upper,
-                        "interval": interval,
-                        "startTime": start_ts,
-                        "endTime": now_ms,
-                        "limit": 1000,
-                    }
-                    resp = await asyncio.to_thread(
-                        lambda p=params: _requests.get(BINANCE_REST, params=p, timeout=10)
-                    )
-                    if resp.status_code != 200:
-                        log.warning("Backfill REST ошибка {}: {} {}", resp.status_code, sym_upper, interval)
-                        continue
+                # Paginated backfill — fetch in chunks of 1000
+                from core.models import Candle as _Candle
+                total_inserted = 0
+                cursor_ts = start_ts
 
-                    raw = resp.json()
-                    if not raw:
-                        continue
-
-                    from core.models import Candle as _Candle
-                    candles = [
-                        _Candle(
-                            timestamp=int(k[0]),
-                            symbol=sym_upper,
-                            interval=interval,
-                            open=float(k[1]),
-                            high=float(k[2]),
-                            low=float(k[3]),
-                            close=float(k[4]),
-                            volume=float(k[5]),
-                            trades_count=int(k[8]),
+                while cursor_ts < now_ms:
+                    try:
+                        params = {
+                            "symbol": sym_upper,
+                            "interval": interval,
+                            "startTime": cursor_ts,
+                            "endTime": now_ms,
+                            "limit": 1000,
+                        }
+                        resp = await asyncio.to_thread(
+                            lambda p=params: _requests.get(BINANCE_REST, params=p, timeout=15)
                         )
-                        for k in raw
-                    ]
+                        if resp.status_code != 200:
+                            log.warning("Backfill REST ошибка {}: {} {}", resp.status_code, sym_upper, interval)
+                            break
 
-                    inserted = await asyncio.to_thread(
-                        self._repo.upsert_candles_batch, candles
-                    )
-                    log.info("Backfill: {}/{} — сохранено {} свечей ✅", sym_upper, interval, inserted)
+                        raw = resp.json()
+                        if not raw:
+                            break
 
-                except Exception as e:
-                    log.warning("Backfill: {}/{} — ошибка при докачке: {}", sym_upper, interval, e)
+                        candles = [
+                            _Candle(
+                                timestamp=int(k[0]),
+                                symbol=sym_upper,
+                                interval=interval,
+                                open=float(k[1]),
+                                high=float(k[2]),
+                                low=float(k[3]),
+                                close=float(k[4]),
+                                volume=float(k[5]),
+                                trades_count=int(k[8]),
+                            )
+                            for k in raw
+                        ]
+
+                        inserted = await asyncio.to_thread(
+                            self._repo.upsert_candles_batch, candles
+                        )
+                        total_inserted += inserted
+
+                        # Move cursor past the last received candle
+                        last_received_ts = int(raw[-1][0])
+                        if last_received_ts <= cursor_ts:
+                            break  # no progress — avoid infinite loop
+                        cursor_ts = last_received_ts + interval_ms
+
+                        if len(raw) < 1000:
+                            break  # last page
+
+                        await asyncio.sleep(0.3)
+
+                    except Exception as e:
+                        log.warning("Backfill: {}/{} — ошибка при докачке: {}", sym_upper, interval, e)
+                        break
+
+                if total_inserted:
+                    log.info("Backfill: {}/{} — сохранено {} свечей ✅", sym_upper, interval, total_inserted)
 
                 await asyncio.sleep(0.3)  # rate-limit protection
 
