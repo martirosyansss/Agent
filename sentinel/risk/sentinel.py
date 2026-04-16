@@ -31,7 +31,8 @@ class RiskLimits:
     min_trade_interval_sec: int = 1800
     min_order_usd: float = 10.0
     max_order_usd: float = 100.0
-    max_loss_per_trade_pct: float = 3.0
+    max_loss_per_trade_pct: float = 3.0   # legacy: used as fallback SL% cap
+    max_risk_per_trade_pct: float = 3.0   # NEW: max % of PORTFOLIO at risk per trade
     mandatory_stop_loss: bool = True
     min_rr_ratio: float = 1.5               # minimum risk:reward ratio for BUY
     max_daily_commission_pct: float = 1.0
@@ -110,6 +111,7 @@ class RiskSentinel:
         total_exposure_pct: float,
         balance: float,
         current_market_price: float,
+        open_symbols: Optional[set[str]] = None,
     ) -> RiskCheckResult:
         """Проверить сигнал по 7 правилам.
 
@@ -157,11 +159,23 @@ class RiskSentinel:
                 )
             order_value = signal.suggested_quantity * current_market_price
             new_exposure_pct = total_exposure_pct + (order_value / balance * 100)
-            # Correlation risk: BTC+ETH are ~0.85 correlated, apply 15% penalty
-            # to effective exposure when both are held (prevents false diversification)
+            # Correlation cluster cap: BTC+ETH are ~0.85 correlated — treating
+            # them as independent diversifies the paper but not the risk. Block
+            # the second entry into the same cluster entirely.
             correlated_symbols = {"BTCUSDT", "ETHUSDT"}
-            if signal.symbol in correlated_symbols and open_positions_count > 0:
-                new_exposure_pct *= 1.15  # 15% correlation surcharge
+            if signal.symbol in correlated_symbols and open_symbols:
+                cluster_overlap = [
+                    s for s in open_symbols
+                    if s in correlated_symbols and s != signal.symbol
+                ]
+                if cluster_overlap:
+                    return RiskCheckResult(
+                        approved=False,
+                        reason=(
+                            f"Correlated cluster exposure: already long "
+                            f"{','.join(cluster_overlap)} (~0.85 corr with {signal.symbol})"
+                        ),
+                    )
             if new_exposure_pct > self._limits.max_total_exposure_pct:
                 return RiskCheckResult(
                     approved=False,
@@ -211,7 +225,10 @@ class RiskSentinel:
                     reason=f"Order too large: ${order_usd:.2f} > ${self._limits.max_order_usd}",
                 )
 
-        # [6] Stop-Loss
+        # [6] Stop-Loss — constant dollar risk model
+        # Instead of capping SL% (which kills ATR-adaptive SL), cap the DOLLAR risk:
+        # risk_usd = sl_pct% × order_value ≤ balance × max_risk_per_trade_pct%
+        # Wider SL is fine if position size is proportionally smaller.
         if self._limits.mandatory_stop_loss and signal.direction == Direction.BUY:
             if signal.stop_loss_price <= 0:
                 return RiskCheckResult(
@@ -219,11 +236,24 @@ class RiskSentinel:
                     reason="Stop-loss is mandatory but not set",
                 )
             sl_pct = abs(current_market_price - signal.stop_loss_price) / current_market_price * 100
-            if sl_pct > self._limits.max_loss_per_trade_pct:
+            # Hard ceiling: SL > 8% is never acceptable (likely a bug)
+            if sl_pct > 8.0:
                 return RiskCheckResult(
                     approved=False,
-                    reason=f"Stop-loss too wide: {sl_pct:.1f}% > {self._limits.max_loss_per_trade_pct}%",
+                    reason=f"Stop-loss extreme: {sl_pct:.1f}% > 8.0% hard ceiling",
                 )
+            # Constant dollar risk: risk_usd must be ≤ max_risk_per_trade_pct% of portfolio
+            # Include 0.1% exit commission in risk (Binance spot = 0.1% per trade)
+            if balance > 0:
+                order_value = signal.suggested_quantity * current_market_price
+                risk_usd = order_value * (sl_pct + 0.10) / 100  # SL% + 0.1% exit commission
+                max_risk_usd = balance * self._limits.max_risk_per_trade_pct / 100
+                if risk_usd > max_risk_usd:
+                    return RiskCheckResult(
+                        approved=False,
+                        reason=f"Dollar risk too high: ${risk_usd:.2f} > ${max_risk_usd:.2f} "
+                               f"(SL={sl_pct:.1f}%, order=${order_value:.2f})",
+                    )
 
         # [7] Minimum Risk:Reward ratio
         if signal.direction == Direction.BUY and current_market_price > 0:

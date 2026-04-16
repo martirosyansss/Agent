@@ -22,6 +22,8 @@ from strategy.base_strategy import (
     news_should_accelerate_exit,
     news_should_block_entry,
     news_adjust_sl_tp,
+    grouped_confidence,
+    adaptive_min_confidence,
 )
 
 
@@ -184,6 +186,15 @@ class BollingerBreakout(BaseStrategy):
         # Breakout magnitude filter
         if (features.close - features.bb_upper) / features.bb_upper <= 0.001:
             return None
+        # Robust BB confirmation — if return distribution has fat tails
+        # (κ > 1), require breakout of the MAD/kurtosis-expanded band too.
+        # This rejects "2σ breakouts" that are actually unremarkable under
+        # the true (leptokurtic) distribution.
+        robust_confirmed = True
+        if features.return_kurtosis > 1.0 and features.bb_upper_robust > 0:
+            robust_confirmed = features.close > features.bb_upper_robust
+            if not robust_confirmed:
+                return None
         # Volume confirmation
         if features.volume_ratio < cfg.volume_confirm_mult:
             return None
@@ -209,18 +220,29 @@ class BollingerBreakout(BaseStrategy):
         squeeze_duration = self._squeeze_bars.get(sym, 0)
         long_squeeze = squeeze_duration >= 5  # 5+ bars of squeeze = high energy
 
-        # Confidence
-        confidence = 0.60
-        if features.volume_ratio > 2.0:
-            confidence += 0.10
-        if long_squeeze:
-            confidence += 0.12  # long squeeze = higher energy breakout
-        elif is_squeeze:
-            confidence += 0.06  # short squeeze = weaker signal
-        if features.adx > 30:
-            confidence += 0.05
-        if features.ema_9 > features.ema_21:
-            confidence += 0.05
+        # Grouped confidence model (diminishing-returns sum across groups)
+        evidence = grouped_confidence([
+            # Group A: Breakout energy (squeeze duration — correlated measures)
+            [
+                (long_squeeze, 0.14),      # 5+ bars squeeze = high energy
+                (is_squeeze, 0.07),         # short squeeze = moderate
+                # Bonus when the breakout also pierces the robust band —
+                # a statistically stronger tail event under fat-tailed data.
+                (features.bb_upper_robust > 0 and features.close > features.bb_upper_robust, 0.10),
+            ],
+            # Group B: Conviction (volume, ADX — both measure strength)
+            [
+                (features.volume_ratio > 2.0, 0.12),
+                (features.volume_ratio > 1.5, 0.07),
+                (features.adx > 30, 0.08),
+            ],
+            # Group C: Trend alignment (EMA, momentum direction)
+            [
+                (features.ema_9 > features.ema_21, 0.07),
+                (features.macd_histogram > 0, 0.06),
+            ],
+        ], correlation_penalty=0.12)
+        confidence = 0.55 + evidence  # base + max ~0.33
 
         # News block
         blocked, block_reason = news_should_block_entry(features)
@@ -231,7 +253,9 @@ class BollingerBreakout(BaseStrategy):
         confidence += news_delta
         confidence = min(confidence, 0.95)
 
-        if confidence < cfg.min_confidence:
+        regime = getattr(features, 'market_regime', 'unknown')
+        eff_threshold = adaptive_min_confidence(cfg.min_confidence, regime, "breakout")
+        if confidence < eff_threshold:
             return None
 
         # ATR-adaptive SL/TP: use 1.5x ATR as SL floor, 3x ATR as TP floor

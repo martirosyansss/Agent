@@ -26,15 +26,14 @@ class SLTPConfig:
 
 # Default tuning per strategy type
 STRATEGY_SLTP_DEFAULTS: dict[str, SLTPConfig] = {
-    # max_sl_pct is capped at 2.9% to stay within the RiskSentinel.max_loss_per_trade_pct (3.0%).
-    # Dynamic ATR-based SL for volatile assets like ETH/BTC can easily exceed 3% —
-    # without this cap every signal would be rejected at the risk check stage.
-    "ema_crossover_rsi": SLTPConfig("ema_crossover_rsi", rr_ratio=2.0, atr_sl_mult=2.0, max_sl_pct=2.9),
-    "bollinger_breakout": SLTPConfig("bollinger_breakout", rr_ratio=2.5, atr_sl_mult=1.8, max_sl_pct=2.9),
-    "mean_reversion":     SLTPConfig("mean_reversion", rr_ratio=2.2, atr_sl_mult=2.5, min_sl_pct=1.5, max_sl_pct=2.9),
-    "macd_divergence":    SLTPConfig("macd_divergence", rr_ratio=2.0, atr_sl_mult=2.2, max_sl_pct=2.9),
-    "dca_bot":            SLTPConfig("dca_bot", rr_ratio=2.0, atr_sl_mult=3.0, max_sl_pct=2.9),
-    "grid_trading":       SLTPConfig("grid_trading", rr_ratio=1.8, atr_sl_mult=1.5, min_sl_pct=0.5, max_sl_pct=2.9),
+    # ATR-based SL is now uncapped — RiskSentinel uses constant dollar risk model
+    # (wider SL → smaller position → same dollar risk). No need for artificial 2.9% cap.
+    "ema_crossover_rsi": SLTPConfig("ema_crossover_rsi", rr_ratio=2.0, atr_sl_mult=2.0, max_sl_pct=6.0),
+    "bollinger_breakout": SLTPConfig("bollinger_breakout", rr_ratio=2.5, atr_sl_mult=1.8, max_sl_pct=6.0),
+    "mean_reversion":     SLTPConfig("mean_reversion", rr_ratio=2.2, atr_sl_mult=2.5, min_sl_pct=1.5, max_sl_pct=7.0),
+    "macd_divergence":    SLTPConfig("macd_divergence", rr_ratio=2.0, atr_sl_mult=2.2, max_sl_pct=6.0),
+    "dca_bot":            SLTPConfig("dca_bot", rr_ratio=2.0, atr_sl_mult=3.0, max_sl_pct=8.0),
+    "grid_trading":       SLTPConfig("grid_trading", rr_ratio=1.8, atr_sl_mult=1.5, min_sl_pct=0.5, max_sl_pct=4.0),
 }
 
 

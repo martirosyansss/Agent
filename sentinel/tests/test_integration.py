@@ -45,6 +45,7 @@ def make_features(**overrides) -> FeatureVector:
         atr=2.0, volume=1000.0, volume_sma_20=800.0, volume_ratio=1.25,
         obv=50000.0, close=100.0, momentum=0.5, spread=0.01,
         price_change_1m=0.1, price_change_5m=0.3, price_change_15m=-0.5,
+        market_regime="trending_up",
     )
     defaults.update(overrides)
     return FeatureVector(**defaults)
@@ -96,7 +97,9 @@ class TestFullPipeline:
         signal = strat.generate_signal(f2, has_open_position=False)
         assert signal is not None
         assert signal.direction == Direction.BUY
-        assert signal.confidence >= 0.75
+        # Threshold relaxed to 0.72 — grouped_confidence now applies
+        # correlation-penalty attenuation across groups (more honest score)
+        assert signal.confidence >= 0.72
 
         # Override signal with explicit SL/TP to pass risk checks
         signal = Signal(

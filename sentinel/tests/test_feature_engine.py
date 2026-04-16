@@ -240,6 +240,7 @@ class TestEMACrossoverRSI:
             momentum=2.0,
             spread=0.01,
             close=67100.0,
+            market_regime="trending_up",
         )
         defaults.update(overrides)
         return FeatureVector(**defaults)
@@ -258,7 +259,11 @@ class TestEMACrossoverRSI:
         result2 = strat.generate_signal(f2, has_open_position=False)
         assert result2 is not None
         assert result2.direction == Direction.BUY
-        assert result2.confidence >= 0.75
+        # Confidence threshold tuned for grouped_confidence with
+        # correlation_penalty=0.12 — weaker evidence groups now contribute
+        # with geometric attenuation (no longer full sum), so the bar is
+        # lower but the score is a more honest estimate of independent info.
+        assert result2.confidence >= 0.72
         assert result2.strategy_name == "ema_crossover_rsi"
 
     def test_no_buy_if_rsi_overbought(self):

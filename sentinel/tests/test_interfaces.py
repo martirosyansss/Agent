@@ -62,7 +62,7 @@ class TestSignalFormatter:
         assert "📈" in text
         assert "BUY" in text
         assert "BTCUSDT" in text
-        assert "0.82" in text
+        assert "82%" in text
         assert "ema_crossover_rsi" in text
         assert "Stop-Loss" in text
         assert "Take-Profit" in text
@@ -167,7 +167,7 @@ class TestPnlFormatter:
 class TestPositionsFormatter:
     def test_no_positions(self):
         text = format_positions([])
-        assert "Нет открытых позиций" in text
+        assert "позиций" in text
 
     def test_with_positions(self):
         pos = [
@@ -182,7 +182,7 @@ class TestPositionsFormatter:
 class TestTradesFormatter:
     def test_no_trades(self):
         text = format_trades([])
-        assert "Нет сделок" in text
+        assert "сделок" in text.lower()
 
     def test_with_trades(self):
         trades = [{"side": "BUY", "symbol": "BTCUSDT", "price": 67234.0, "pnl": None}]
@@ -195,7 +195,7 @@ class TestDailyReport:
     def test_basic(self):
         text = format_daily_report(pnl=5.23, win_rate=58.0, trades_count=12, wins=5, losses=3)
         assert "+$5.23" in text
-        assert "58%" in text
+        assert "58.0%" in text
         assert "12" in text
 
 

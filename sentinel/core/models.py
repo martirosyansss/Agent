@@ -116,6 +116,13 @@ class FeatureVector:
     bb_middle: float = 0.0
     bb_lower: float = 0.0
     bb_bandwidth: float = 0.0
+    # Robust (fat-tail aware) BB — MAD × 1.4826 with kurtosis expansion.
+    # A breakout beyond *these* bands is a true tail event accounting for
+    # leptokurtic crypto return distributions.
+    bb_upper_robust: float = 0.0
+    bb_lower_robust: float = 0.0
+    bb_bandwidth_robust: float = 0.0
+    return_kurtosis: float = 0.0  # excess kurtosis of price window
     atr: float = 0.0
 
     # Объём
@@ -173,6 +180,9 @@ class FeatureVector:
     # Price change 5h (real, not proxy)
     price_change_5h: float = 0.0       # 5-hour price change %
 
+    # Market regime (set by main loop from detect_regime)
+    market_regime: str = "unknown"
+
 
 # ──────────────────────────────────────────────
 # Strategy / Signals
@@ -192,6 +202,7 @@ class Signal:
     take_profit_price: float = 0.0
     features: Optional[FeatureVector] = None
     signal_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    close_pct: float = 100.0           # % of position to close (100=full, 50=half)
 
 
 # ──────────────────────────────────────────────
@@ -240,12 +251,19 @@ class Position:
     strategy_name: str = ""
     signal_id: str = ""
     signal_reason: str = ""
+    close_reason: str = ""
     status: PositionStatus = PositionStatus.OPEN
     opened_at: str = ""
     closed_at: Optional[str] = None
     is_paper: bool = True
     position_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     db_id: Optional[int] = None
+    # Partial close tracking
+    initial_quantity: float = 0.0       # original qty before partial closes
+    tp_stage: int = 0                   # 0=none, 1=TP1 hit, 2=TP2 hit, 3=full
+    original_stop_loss: float = 0.0     # SL before breakeven adjustment
+    partial_realized_pnl: float = 0.0   # PnL from partial closes
+    open_commission: float = 0.0        # commission paid on entry; allocated pro-rata on close
 
 
 # ──────────────────────────────────────────────

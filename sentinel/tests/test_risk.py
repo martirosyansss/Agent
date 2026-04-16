@@ -195,14 +195,35 @@ class TestRiskSentinel:
         assert "mandatory" in result.reason.lower()
 
     def test_reject_stop_loss_too_wide(self, sentinel):
-        # SL at $60000 from current $67000 = ~10.4%
+        # SL at $60000 from current $67000 = ~10.4% → exceeds 8% hard ceiling
         signal = self._make_buy_signal(stop_loss_price=60000.0)
         result = sentinel.check_signal(
             signal, daily_pnl=0.0, open_positions_count=0,
             total_exposure_pct=0.0, balance=500.0, current_market_price=67000.0,
         )
         assert result.approved is False
-        assert "too wide" in result.reason.lower()
+        assert "extreme" in result.reason.lower() or "risk" in result.reason.lower()
+
+    def test_reject_dollar_risk_too_high(self, sentinel):
+        """Constant dollar risk: wide SL + position within limits → rejected on $ risk."""
+        # SL at $62000 from $67000 = ~7.46%
+        # qty=0.0014 → order_value = $93.80
+        # exposure = $93.80 / $500 = 18.8% (under 60%)
+        # risk_usd = 7.46% × $93.80 = $7.00
+        # max_risk_usd = 3% × $500 = $15 → passes with $500 balance
+        # Need to make risk exceed: use lower balance where max_risk is smaller
+        # With balance=$200: max_risk = 3% × $200 = $6, risk = $7 > $6 → rejected
+        # exposure = $93.80 / $200 = 46.9% (under 60%) ✓
+        signal = self._make_buy_signal(
+            stop_loss_price=62000.0,   # 7.46% SL
+            suggested_quantity=0.0014, # $93.80 position
+        )
+        result = sentinel.check_signal(
+            signal, daily_pnl=0.0, open_positions_count=0,
+            total_exposure_pct=0.0, balance=200.0, current_market_price=67000.0,
+        )
+        assert result.approved is False
+        assert "risk" in result.reason.lower()
 
     def test_sell_always_allowed(self, sentinel):
         """SELL не блокируется лимитами позиций/частоты."""

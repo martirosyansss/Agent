@@ -20,15 +20,20 @@ class SizingInput:
     balance: float
     price: float
     atr: float                          # current ATR value
-    win_rate: float = 0.5               # strategy win rate (0-1)
-    avg_win_pct: float = 3.0            # average winning trade %
-    avg_loss_pct: float = 2.0           # average losing trade %
+    win_rate: float = 0.5               # strategy win rate (0-1), gross
+    avg_win_pct: float = 3.0            # average winning trade % (gross)
+    avg_loss_pct: float = 2.0           # average losing trade % (gross)
+    sample_size: int = 0                # number of trades backing the above
+                                        # stats — drives shrinkage strength
+    round_trip_cost_pct: float = 0.20   # entry+exit commission+slippage budget
     regime_adx: float = 25.0            # current ADX
     max_position_pct: float = 20.0      # hard cap from config
     max_order_usd: float = 100.0        # hard cap from config
     symbol: str = ""                    # trading symbol
     open_symbols: list[str] | None = None  # already open positions' symbols
     consecutive_losses: int = 0         # current loss streak
+    stop_loss_pct: float = 0.0          # actual SL% for risk-based sizing
+    max_risk_per_trade_pct: float = 3.0 # max % of portfolio to risk per trade
 
 
 @dataclass(slots=True)
@@ -42,17 +47,93 @@ class SizingResult:
     volatility_factor: float = 1.0
 
 
-def kelly_fraction(win_rate: float, avg_win: float, avg_loss: float) -> float:
-    """Half-Kelly fraction (conservative) clamped to [0, 0.25].
+def shrinkage_win_rate(
+    observed_wr: float,
+    sample_size: int,
+    prior_wr: float = 0.5,
+    prior_weight: int = 30,
+) -> float:
+    """Beta-Binomial posterior-mean shrinkage of observed WR toward a prior.
 
-    Formula: f = (p * b - q) / b  where p=win_rate, q=1-p, b=avg_win/avg_loss
-    Then halved for safety.
+    Formula: ŵ = (n·p̂ + k·w₀) / (n + k)
+
+    Motivation: MLE of a Bernoulli parameter from small samples has variance
+    p(1-p)/n — 10 trades at 70% WR have ~14% stderr. Raw plug-in of that
+    estimate into Kelly systematically over-sizes. Shrinkage toward 0.5
+    with k=30 pseudo-trades is equivalent to a James-Stein-type estimator
+    and dominates the MLE under squared-error loss when the true rate is
+    near neutral.
+
+    Convergence: ŵ → p̂ as n → ∞; ŵ → w₀ as n → 0.
     """
-    if avg_loss <= 0 or avg_win <= 0 or win_rate <= 0:
+    if sample_size <= 0:
+        return prior_wr
+    return (sample_size * observed_wr + prior_weight * prior_wr) / (
+        sample_size + prior_weight
+    )
+
+
+def kelly_fraction(
+    win_rate: float,
+    avg_win: float,
+    avg_loss: float,
+    sample_size: int = 0,
+    round_trip_cost_pct: float = 0.0,
+    prior_weight: int = 30,
+) -> float:
+    """Half-Kelly fraction, net of transaction costs, with WR shrinkage.
+
+    Core formula: f* = (p·b - q) / b  where p=win_rate, q=1-p, b=avg_win/avg_loss
+    Half-Kelly: f = 0.5·f* (Thorp-style margin for estimation error)
+    Clamped to [0, 0.25] — a hard defence against runaway sizing.
+
+    Two corrections relative to textbook Kelly:
+
+    1. Transaction-cost adjustment (round_trip_cost_pct):
+       Textbook Kelly assumes frictionless execution. A Binance spot
+       round-trip is ≈0.2% (0.1% each side) plus slippage. Subtracting
+       the cost from avg_win and adding it to avg_loss gives the *net*
+       payoff-ratio b_net, which is what the geometric-growth objective
+       actually optimises.
+
+    2. Shrinkage of observed WR (sample_size):
+       With n ≪ 100 trades, raw WR is noisy; a 60% WR from 10 trades
+       has a 95% CI of roughly [30%, 85%]. Shrinking toward 0.5 via a
+       Beta-Binomial prior with prior_weight pseudo-trades protects
+       against over-sizing on fluke early wins.
+
+    Args:
+        win_rate: observed win-rate ∈ [0, 1]
+        avg_win: average gross winning-trade size (e.g. %)
+        avg_loss: average gross losing-trade size (e.g. %)
+        sample_size: number of trades backing win_rate (drives shrinkage).
+            Pass 0 to disable shrinkage (use observed WR directly).
+        round_trip_cost_pct: total commission + slippage per round-trip
+            (default 0 for backwards compat; use ≈0.20 for Binance spot).
+        prior_weight: shrinkage prior strength in pseudo-trades.
+
+    Returns:
+        Half-Kelly fraction clamped to [0, 0.25].
+    """
+    if avg_loss <= 0 or avg_win <= 0:
         return 0.0
-    b = avg_win / avg_loss
-    q = 1.0 - win_rate
-    f = (win_rate * b - q) / b
+
+    # Shrink raw WR toward 0.5 to correct small-sample over-estimation
+    effective_wr = (
+        shrinkage_win_rate(win_rate, sample_size, 0.5, prior_weight)
+        if sample_size > 0
+        else win_rate
+    )
+    if effective_wr <= 0:
+        return 0.0
+
+    # Net-of-cost payoff (textbook Kelly is gross; real growth compounds net)
+    net_win = max(0.01, avg_win - round_trip_cost_pct)
+    net_loss = avg_loss + round_trip_cost_pct
+
+    b = net_win / net_loss
+    q = 1.0 - effective_wr
+    f = (effective_wr * b - q) / b
     # Half-Kelly for safety
     f *= 0.5
     return max(0.0, min(f, 0.25))
@@ -136,8 +217,14 @@ def calculate_position_size(inp: SizingInput) -> SizingResult:
             quantity=0.0, budget_usd=0.0, budget_pct=0.0, method="minimum"
         )
 
-    # 1. Kelly fraction
-    kf = kelly_fraction(inp.win_rate, inp.avg_win_pct, inp.avg_loss_pct)
+    # 1. Kelly fraction (shrunk WR + net-of-cost payoff)
+    kf = kelly_fraction(
+        inp.win_rate,
+        inp.avg_win_pct,
+        inp.avg_loss_pct,
+        sample_size=inp.sample_size,
+        round_trip_cost_pct=inp.round_trip_cost_pct,
+    )
 
     # 2. Volatility factor
     vf = volatility_factor(inp.atr, inp.price)
@@ -160,6 +247,16 @@ def calculate_position_size(inp: SizingInput) -> SizingResult:
         # Insufficient edge, use minimum fixed size
         adjusted_pct = 5.0 * vf * rd * cf * ld
         method = "fixed"
+
+    # Risk-based cap: if SL is known, ensure dollar_risk ≤ max_risk_per_trade_pct% of balance
+    # This is the key fix: wider SL → smaller position → same dollar risk
+    # Include 0.1% exit commission in effective SL (Binance spot = 0.1% per trade)
+    if inp.stop_loss_pct > 0 and inp.balance > 0:
+        max_risk_usd = inp.balance * inp.max_risk_per_trade_pct / 100
+        effective_sl_pct = inp.stop_loss_pct + 0.10  # SL% + 0.1% exit commission
+        max_position_usd = max_risk_usd / (effective_sl_pct / 100)
+        risk_cap_pct = max_position_usd / inp.balance * 100
+        adjusted_pct = min(adjusted_pct, risk_cap_pct)
 
     # Clamp to hard limits
     budget_pct = max(2.0, min(adjusted_pct, inp.max_position_pct))

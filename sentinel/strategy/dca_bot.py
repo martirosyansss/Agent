@@ -22,6 +22,7 @@ from strategy.base_strategy import (
     news_confidence_adjustment,
     news_should_accelerate_exit,
     news_should_block_entry,
+    adaptive_min_confidence,
 )
 
 
@@ -171,7 +172,9 @@ class DCABot(BaseStrategy):
         news_delta, news_reason = news_confidence_adjustment(features, direction="buy")
         dca_confidence = 0.80 + news_delta
 
-        if dca_confidence < cfg.min_confidence:
+        regime = getattr(features, 'market_regime', 'unknown')
+        eff_threshold = adaptive_min_confidence(cfg.min_confidence, regime, "dca")
+        if dca_confidence < eff_threshold:
             return None
 
         # News-aware sizing
@@ -196,9 +199,9 @@ class DCABot(BaseStrategy):
         if news_delta != 0:
             reason += f", {news_reason}"
 
-        # SL for Risk Sentinel compliance (max 2.9% per trade).
+        # SL for Risk Sentinel compliance — use ATR-aware SL if available.
         # Internal drawdown stop at stop_drawdown_pct is handled in SELL logic.
-        _sl_pct_for_risk = 2.9
+        _sl_pct_for_risk = min(features.atr / features.close * 100 * 2.5, 8.0) if features.atr > 0 and features.close > 0 else 3.0
         return Signal(
             timestamp=now_ms, symbol=sym, direction=Direction.BUY,
             confidence=dca_confidence, strategy_name=self.NAME,

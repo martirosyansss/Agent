@@ -23,6 +23,8 @@ from strategy.base_strategy import (
     news_should_accelerate_exit,
     news_should_block_entry,
     news_adjust_sl_tp,
+    grouped_confidence,
+    adaptive_min_confidence,
 )
 
 
@@ -247,24 +249,35 @@ class MACDDivergence(BaseStrategy):
         if cfg.require_vol_confirm and features.volume_ratio < cfg.min_volume_ratio:
             return None
 
-        confidence = 0.60  # raised base — swing point detection is reliable
-        if features.rsi_14 < cfg.rsi_oversold:
-            confidence += 0.10
-        if features.volume_ratio > cfg.min_volume_ratio:
-            confidence += 0.08
-        mh = self._macd_history.get(sym, [])
-        if len(mh) >= 2 and mh[-2] < 0 <= mh[-1]:
-            confidence += 0.05
-
-        # Williams %R oversold confirmation
-        if hasattr(features, 'williams_r') and features.williams_r < -85:
-            confidence += 0.04
-
-        # Ichimoku: price near/above cloud = stronger reversal potential
-        if features.ichimoku_senkou_a > 0 and features.ichimoku_senkou_b > 0:
+        has_cloud = features.ichimoku_senkou_a > 0 and features.ichimoku_senkou_b > 0
+        near_cloud = False
+        if has_cloud:
             cloud_bottom = min(features.ichimoku_senkou_a, features.ichimoku_senkou_b)
-            if features.close >= cloud_bottom:
-                confidence += 0.04
+            near_cloud = features.close >= cloud_bottom
+
+        mh = self._macd_history.get(sym, [])
+        macd_zero_cross = len(mh) >= 2 and mh[-2] < 0 <= mh[-1]
+
+        # Grouped confidence model
+        evidence = grouped_confidence([
+            # Group A: Oversold confirmation (RSI, Williams — correlated)
+            [
+                (features.rsi_14 < cfg.rsi_oversold, 0.12),
+                (hasattr(features, 'williams_r') and features.williams_r < -85, 0.08),
+            ],
+            # Group B: MACD reversal + volume
+            [
+                (macd_zero_cross, 0.08),
+                (features.volume_ratio > 1.5, 0.10),
+                (features.volume_ratio > cfg.min_volume_ratio, 0.06),
+            ],
+            # Group C: Structure support
+            [
+                (near_cloud, 0.06),
+                (features.ema_50 > 0 and features.close > features.ema_50 * 0.93, 0.05),
+            ],
+        ], correlation_penalty=0.12)
+        confidence = 0.58 + evidence  # base + max ~0.28
 
         blocked, block_reason = news_should_block_entry(features)
         if blocked:
@@ -272,7 +285,9 @@ class MACDDivergence(BaseStrategy):
         news_delta, news_reason = news_confidence_adjustment(features, "buy", "divergence")
         confidence += news_delta
         confidence = min(confidence, 0.95)
-        if confidence < cfg.min_confidence:
+        regime = getattr(features, 'market_regime', 'unknown')
+        eff_threshold = adaptive_min_confidence(cfg.min_confidence, regime, "divergence")
+        if confidence < eff_threshold:
             return None
 
         sl, tp = news_adjust_sl_tp(features, features.close, cfg.stop_loss_pct, cfg.take_profit_pct)

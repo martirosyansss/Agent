@@ -38,6 +38,9 @@ from .formatters import (
     format_stop_loss,
     format_take_profit,
     format_trades,
+    fmt_pnl,
+    fmt_price,
+    _now_str,
 )
 
 if TYPE_CHECKING:
@@ -94,6 +97,7 @@ class TelegramBot:
             from telegram import Update
             from telegram.ext import (
                 Application,
+                CallbackQueryHandler,
                 CommandHandler,
                 MessageHandler,
                 filters,
@@ -106,22 +110,26 @@ class TelegramBot:
 
         # Регистрация команд
         handlers = {
-            "start": self._cmd_start,
-            "help": self._cmd_help,
-            "status": self._cmd_status,
-            "pnl": self._cmd_pnl,
-            "positions": self._cmd_positions,
-            "trades": self._cmd_trades,
-            "portfolio": self._cmd_portfolio,
-            "stop": self._cmd_stop,
-            "resume": self._cmd_resume,
-            "kill": self._cmd_kill,
+            "start":        self._cmd_start,
+            "help":         self._cmd_help,
+            "panel":        self._cmd_panel,
+            "status":       self._cmd_status,
+            "pnl":          self._cmd_pnl,
+            "positions":    self._cmd_positions,
+            "trades":       self._cmd_trades,
+            "portfolio":    self._cmd_portfolio,
+            "stop":         self._cmd_stop,
+            "resume":       self._cmd_resume,
+            "kill":         self._cmd_kill,
             "kill_confirm": self._cmd_kill_confirm,
-            "mode": self._cmd_mode,
-            "config": self._cmd_config,
+            "mode":         self._cmd_mode,
+            "config":       self._cmd_config,
         }
         for name, handler in handlers.items():
             self._app.add_handler(CommandHandler(name, handler))
+
+        # Обработчик нажатий на inline-кнопки
+        self._app.add_handler(CallbackQueryHandler(self._on_button))
 
         # Подписка на события EventBus
         self._subscribe_events()
@@ -179,6 +187,50 @@ class TelegramBot:
         await self.send_message(text)
 
     # ──────────────────────────────────────────────
+    # Inline keyboard builder
+    # ──────────────────────────────────────────────
+
+    def _build_panel_keyboard(self, trading_paused: bool = False):
+        """Построить inline-клавиатуру панели управления."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        trade_btn = (
+            InlineKeyboardButton("▶️ Запустить торговлю", callback_data="btn_resume")
+            if trading_paused
+            else InlineKeyboardButton("⏸ Остановить торговлю", callback_data="btn_stop")
+        )
+
+        keyboard = [
+            # Строка 1 — информация
+            [
+                InlineKeyboardButton("📊 Статус",    callback_data="btn_status"),
+                InlineKeyboardButton("💰 P&L",        callback_data="btn_pnl"),
+                InlineKeyboardButton("📋 Позиции",   callback_data="btn_positions"),
+            ],
+            # Строка 2 — статистика
+            [
+                InlineKeyboardButton("📈 Сделки",    callback_data="btn_trades"),
+                InlineKeyboardButton("🏆 Portfolio", callback_data="btn_portfolio"),
+                InlineKeyboardButton("⚙️ Режим",     callback_data="btn_mode"),
+            ],
+            # Строка 3 — управление
+            [trade_btn],
+            # Строка 4 — опасная зона
+            [InlineKeyboardButton("☠️ АВАРИЙНАЯ ОСТАНОВКА", callback_data="btn_kill")],
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def _build_kill_confirm_keyboard(self):
+        """Клавиатура подтверждения аварийной остановки."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ ДА, остановить всё", callback_data="btn_kill_confirm"),
+                InlineKeyboardButton("❌ Отмена",             callback_data="btn_kill_cancel"),
+            ]
+        ])
+
+    # ──────────────────────────────────────────────
     # Command handlers
     # ──────────────────────────────────────────────
 
@@ -186,11 +238,21 @@ class TelegramBot:
         if not self._is_authorized(update.effective_chat.id):
             return
         logger.info("CMD /start from %s", update.effective_chat.id)
-        await update.message.reply_text(
+        state = self._get_state()
+        trading_paused = state.get("trading_paused", False)
+        mode = state.get("mode", "paper").upper()
+        risk_state = state.get("risk_state", "NORMAL")
+        state_icon = {"NORMAL": "🟢", "REDUCED": "🟡", "SAFE": "🟠", "STOP": "🔴"}.get(risk_state, "⚪")
+
+        text = (
             f"🤖 <b>SENTINEL v{VERSION}</b>\n\n"
-            f"Торговый бот запущен.\n"
-            f"Введите /help для списка команд.",
+            f"{state_icon} Режим: <b>{mode}</b>  |  Risk: <b>{risk_state}</b>\n\n"
+            f"Нажми кнопку или введи /help для списка команд."
+        )
+        await update.message.reply_text(
+            text,
             parse_mode="HTML",
+            reply_markup=self._build_panel_keyboard(trading_paused),
         )
 
     async def _cmd_help(self, update, context) -> None:
@@ -199,19 +261,58 @@ class TelegramBot:
         logger.info("CMD /help from %s", update.effective_chat.id)
         text = (
             "📋 <b>Команды SENTINEL</b>\n\n"
+            "<b>Панель управления</b>\n"
+            "/panel — 🎛️ Панель с кнопками (старт/стоп/статус)\n\n"
+            "<b>Информация</b>\n"
             "/status — Статус системы\n"
             "/pnl — PnL за день/неделю/месяц\n"
             "/portfolio — PnL по стратегиям\n"
             "/positions — Открытые позиции\n"
             "/trades — Последние 10 сделок\n"
-            "/stop — Остановить торговлю\n"
-            "/resume — Возобновить торговлю\n"
-            "/kill — ⚠️ Аварийная остановка\n"
             "/mode — Текущий режим (paper/live)\n"
-            "/config — Текущие настройки\n"
+            "/config — Текущие настройки\n\n"
+            "<b>Управление</b>\n"
+            "/stop — ⏸ Остановить торговлю\n"
+            "/resume — ▶️ Возобновить торговлю\n"
+            "/kill — ☠️ Аварийная остановка\n\n"
             "/help — Эта справка"
         )
         await update.message.reply_text(text, parse_mode="HTML")
+
+    async def _cmd_panel(self, update, context) -> None:
+        """Панель управления с кнопками."""
+        if not self._is_authorized(update.effective_chat.id):
+            return
+        logger.info("CMD /panel from %s", update.effective_chat.id)
+
+        state = self._get_state()
+        trading_paused = state.get("trading_paused", False)
+        mode = state.get("mode", "paper").upper()
+        risk_state = state.get("risk_state", "NORMAL")
+        pnl_today = state.get("pnl_today", 0.0)
+        balance = state.get("balance", 0.0)
+        open_positions = state.get("open_positions", 0)
+        state_icon = {"NORMAL": "🟢", "REDUCED": "🟡", "SAFE": "🟠", "STOP": "🔴"}.get(risk_state, "⚪")
+        trade_status = "⏸ Торговля остановлена" if trading_paused else "▶️ Торговля активна"
+        pnl_icon = "📈" if pnl_today >= 0 else "📉"
+
+        text = (
+            f"🎛️ <b>Панель управления SENTINEL</b>\n"
+            f"⏰ {_now_str()}\n\n"
+            f"{state_icon} Risk State: <b>{risk_state}</b>\n"
+            f"⚙️ Режим: <b>{mode}</b>\n"
+            f"{trade_status}\n\n"
+            f"💵 P&L сегодня: <b>{fmt_pnl(pnl_today)}</b>  {pnl_icon}\n"
+            f"📋 Открытых позиций: <b>{open_positions}</b>\n"
+        )
+        if balance > 0:
+            text += f"💰 Баланс: <b>${balance:,.2f}</b>\n"
+
+        await update.message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=self._build_panel_keyboard(trading_paused),
+        )
 
     async def _cmd_status(self, update, context) -> None:
         if not self._is_authorized(update.effective_chat.id):
@@ -227,6 +328,10 @@ class TelegramBot:
             pnl_total=state.get("pnl_total", 0.0),
             open_positions=state.get("open_positions", 0),
             trades_today=state.get("trades_today", 0),
+            balance=state.get("balance", 0.0),
+            win_rate_today=state.get("win_rate", 0.0),
+            wins_today=state.get("total_wins", 0),
+            losses_today=state.get("total_losses", 0),
         )
         await update.message.reply_text(text, parse_mode="HTML")
 
@@ -241,6 +346,9 @@ class TelegramBot:
             pnl_week=state.get("pnl_week", 0.0),
             pnl_month=state.get("pnl_month", 0.0),
             balance=state.get("balance", 0.0),
+            pnl_total=state.get("pnl_total", 0.0),
+            trades_day=state.get("trades_today", 0),
+            win_rate_day=state.get("win_rate", 0.0),
         )
         await update.message.reply_text(text, parse_mode="HTML")
 
@@ -346,6 +454,137 @@ class TelegramBot:
         await update.message.reply_text(text, parse_mode="HTML")
 
     # ──────────────────────────────────────────────
+    # Inline button handler
+    # ──────────────────────────────────────────────
+
+    async def _on_button(self, update, context) -> None:
+        """Обработка нажатий на inline-кнопки."""
+        query = update.callback_query
+        if not self._is_authorized(query.message.chat_id):
+            await query.answer("⛔ Нет доступа", show_alert=True)
+            return
+
+        data = query.data
+        logger.info("BUTTON %s from %s", data, query.message.chat_id)
+
+        # Подтверждаем нажатие (убираем часики у кнопки)
+        await query.answer()
+
+        if data == "btn_status":
+            state = self._get_state()
+            text = format_status(
+                mode=state.get("mode", "paper"),
+                risk_state=state.get("risk_state", "NORMAL"),
+                uptime=state.get("uptime", "N/A"),
+                pnl_today=state.get("pnl_today", 0.0),
+                pnl_total=state.get("pnl_total", 0.0),
+                open_positions=state.get("open_positions", 0),
+                trades_today=state.get("trades_today", 0),
+                balance=state.get("balance", 0.0),
+                win_rate_today=state.get("win_rate", 0.0),
+                wins_today=state.get("total_wins", 0),
+                losses_today=state.get("total_losses", 0),
+            )
+            await query.message.reply_text(text, parse_mode="HTML")
+
+        elif data == "btn_pnl":
+            state = self._get_state()
+            text = format_pnl(
+                pnl_day=state.get("pnl_today", 0.0),
+                pnl_week=state.get("pnl_week", 0.0),
+                pnl_month=state.get("pnl_month", 0.0),
+                balance=state.get("balance", 0.0),
+                pnl_total=state.get("pnl_total", 0.0),
+                trades_day=state.get("trades_today", 0),
+                win_rate_day=state.get("win_rate", 0.0),
+            )
+            await query.message.reply_text(text, parse_mode="HTML")
+
+        elif data == "btn_positions":
+            state = self._get_state()
+            text = format_positions(state.get("positions", []))
+            await query.message.reply_text(text, parse_mode="HTML")
+
+        elif data == "btn_trades":
+            state = self._get_state()
+            text = format_trades(state.get("recent_trades", []))
+            await query.message.reply_text(text, parse_mode="HTML")
+
+        elif data == "btn_portfolio":
+            state = self._get_state()
+            text = format_portfolio(state.get("strategy_performance", []), state.get("balance", 0.0))
+            await query.message.reply_text(text, parse_mode="HTML")
+
+        elif data == "btn_mode":
+            state = self._get_state()
+            mode = state.get("mode", "paper").upper()
+            mode_icon = "📄" if mode == "PAPER" else "💰"
+            await query.message.reply_text(
+                f"⚙️ Текущий режим: {mode_icon} <b>{mode}</b>",
+                parse_mode="HTML",
+            )
+
+        elif data == "btn_stop":
+            if self.on_stop:
+                await self.on_stop()
+                state = self._get_state()
+                trading_paused = state.get("trading_paused", True)
+                # Обновляем кнопку панели
+                await query.edit_message_reply_markup(
+                    reply_markup=self._build_panel_keyboard(trading_paused)
+                )
+                await query.message.reply_text(
+                    "⏸ <b>Торговля остановлена</b>\n"
+                    "Новые сделки не будут открываться.\n"
+                    "Нажми ▶️ чтобы возобновить.",
+                    parse_mode="HTML",
+                )
+            else:
+                await query.message.reply_text("⚠️ Stop handler не настроен", parse_mode="HTML")
+
+        elif data == "btn_resume":
+            if self.on_resume:
+                await self.on_resume()
+                state = self._get_state()
+                trading_paused = state.get("trading_paused", False)
+                await query.edit_message_reply_markup(
+                    reply_markup=self._build_panel_keyboard(trading_paused)
+                )
+                await query.message.reply_text(
+                    "▶️ <b>Торговля возобновлена</b>\n"
+                    "Бот снова ищет сигналы.",
+                    parse_mode="HTML",
+                )
+            else:
+                await query.message.reply_text("⚠️ Resume handler не настроен", parse_mode="HTML")
+
+        elif data == "btn_kill":
+            await query.message.reply_text(
+                "☠️ <b>АВАРИЙНАЯ ОСТАНОВКА</b>\n\n"
+                "Все открытые позиции будут <b>немедленно закрыты</b>.\n"
+                "Это действие нельзя отменить!\n\n"
+                "Вы уверены?",
+                parse_mode="HTML",
+                reply_markup=self._build_kill_confirm_keyboard(),
+            )
+
+        elif data == "btn_kill_confirm":
+            if self.on_kill:
+                await query.edit_message_reply_markup(reply_markup=None)
+                await query.message.reply_text("☠️ Выполняю аварийную остановку...", parse_mode="HTML")
+                await self.on_kill()
+                await query.message.reply_text(
+                    "☠️ <b>SENTINEL ОСТАНОВЛЕН</b>\nВсе позиции закрыты.",
+                    parse_mode="HTML",
+                )
+            else:
+                await query.message.reply_text("⚠️ Kill handler не настроен", parse_mode="HTML")
+
+        elif data == "btn_kill_cancel":
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("✅ Отменено. Торговля продолжается.", parse_mode="HTML")
+
+    # ──────────────────────────────────────────────
     # State provider
     # ──────────────────────────────────────────────
 
@@ -369,6 +608,7 @@ class TelegramBot:
         self._event_bus.subscribe(EVENT_ORDER_FILLED, self._on_order_filled)
         self._event_bus.subscribe(EVENT_RISK_STATE_CHANGED, self._on_risk_state_changed)
         self._event_bus.subscribe(EVENT_EMERGENCY_STOP, self._on_emergency_stop)
+        self._event_bus.subscribe(EVENT_POSITION_CLOSED, self._on_position_closed)
 
     async def _on_new_signal(self, signal: Signal) -> None:
         """Обработка нового сигнала."""
@@ -389,3 +629,80 @@ class TelegramBot:
         """Обработка аварийной остановки."""
         text = format_error(f"EMERGENCY STOP: {reason}")
         await self.send_message(text)
+
+    async def _on_position_closed(self, position: Position) -> None:
+        """Подробное уведомление о закрытии позиции."""
+        pnl = position.realized_pnl
+        pnl_icon = "💰" if pnl >= 0 else "💸"
+        result_word = "ПРИБЫЛЬ" if pnl >= 0 else "УБЫТОК"
+        mode = "📄 Paper" if position.is_paper else "💰 LIVE"
+
+        pnl_pct = 0.0
+        if position.entry_price > 0 and position.quantity > 0:
+            pnl_pct = pnl / (position.entry_price * position.quantity) * 100
+
+        # Определяем иконку причины закрытия
+        close_reason = position.close_reason or ""
+        if "stop_loss" in close_reason:
+            close_icon = "🛑"
+            close_label = "Stop-Loss сработал"
+        elif "take_profit" in close_reason:
+            close_icon = "🎯"
+            close_label = "Take-Profit достигнут"
+        elif "trailing_stop" in close_reason:
+            close_icon = "📉"
+            close_label = "Trailing Stop сработал"
+        elif "kill" in close_reason.lower() or "emergency" in close_reason.lower():
+            close_icon = "☠️"
+            close_label = "Аварийная остановка"
+        elif close_reason:
+            close_icon = "📋"
+            close_label = close_reason
+        else:
+            close_icon = "📋"
+            close_label = "Сигнал на закрытие"
+
+        lines = [
+            f"{pnl_icon} <b>ПОЗИЦИЯ ЗАКРЫТА — {position.symbol}</b>",
+            f"⏰ {_now_str()}  |  {mode}",
+            "",
+            f"{close_icon} <b>Причина: {close_label}</b>",
+            "",
+            f"📊 <b>Результат: {result_word}</b>",
+            f"  Реализованный P&L: <b>{fmt_pnl(pnl)}</b>  ({'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%)",
+            f"  Цена входа:   <b>{fmt_price(position.entry_price)}</b>",
+            f"  Цена выхода:  <b>{fmt_price(position.current_price)}</b>",
+            f"  Сторона:      <b>{position.side}</b>",
+            f"  Количество:   <b>{position.quantity:.6f}</b>",
+        ]
+
+        if position.strategy_name:
+            lines += ["", f"⚙️ Стратегия: <b>{position.strategy_name}</b>"]
+        if position.signal_reason:
+            lines.append(f"💬 Открыта по: <i>{position.signal_reason}</i>")
+        if position.opened_at:
+            lines.append(f"⏱️ Открыта: {position.opened_at}")
+
+        # Получаем актуальный P&L за день из state_provider
+        state = self._get_state()
+        pnl_today = state.get("pnl_today", 0.0)
+        trades_today = state.get("trades_today", 0)
+        balance = state.get("balance", 0.0)
+        wins = state.get("total_wins", 0)
+        losses_count = state.get("total_losses", 0)
+
+        if trades_today > 0 or balance > 0:
+            pnl_today_icon = "📈" if pnl_today >= 0 else "📉"
+            lines += [
+                "",
+                f"📅 <b>Итог за сегодня</b>",
+                f"  P&L дня:  <b>{fmt_pnl(pnl_today)}</b>  {pnl_today_icon}",
+            ]
+            if trades_today > 0:
+                wr = wins / (wins + losses_count) * 100 if (wins + losses_count) > 0 else 0
+                lines.append(f"  Сделок:   <b>{trades_today}</b>  (W:{wins} / L:{losses_count})  WR:{wr:.0f}%")
+            if balance > 0:
+                lines.append(f"  Баланс:   <b>${balance:,.2f}</b>")
+
+        lines += ["", f"🔖 Position ID: <code>{position.position_id}</code>"]
+        await self.send_message("\n".join(lines))

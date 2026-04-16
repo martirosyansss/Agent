@@ -28,6 +28,7 @@ def make_fv(**overrides) -> FeatureVector:
         atr=2.0, volume=1000.0, volume_sma_20=800.0, volume_ratio=1.25,
         obv=50000.0, close=100.0, momentum=0.5, spread=0.01,
         price_change_1m=0.1, price_change_5m=0.3, price_change_15m=-0.5,
+        market_regime="trending_up",
     )
     defaults.update(overrides)
     return FeatureVector(**defaults)
@@ -173,7 +174,7 @@ class TestMeanReversion:
         sig = s.generate_signal(f, has_open_position=False)
         assert sig is not None
         assert sig.direction == Direction.BUY
-        assert sig.confidence >= 0.80
+        assert sig.confidence >= 0.70  # grouped model: correlated indicators don't stack
 
     def test_no_buy_normal_rsi(self):
         from strategy.mean_reversion import MeanReversion

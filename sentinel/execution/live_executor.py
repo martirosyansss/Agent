@@ -136,16 +136,31 @@ class LiveExecutor(BaseExecutor):
             return None
 
     async def _check_recent_order(self, symbol: str, direction: Direction) -> Optional[dict]:
-        """Check if a recent order was filled on exchange despite local error."""
+        """Check if a recent order was filled on exchange despite local error.
+
+        Scans the last 20 orders (covers bursts during retries / reconnects)
+        within a 2-minute window and matches by side, so we catch orphans even
+        when multiple orders followed in quick succession.
+        """
         if not self._client:
             return None
         try:
-            orders = self._client.get_all_orders(symbol=symbol, limit=1)
-            if orders:
-                last = orders[-1]
-                if (last.get("status") == "FILLED"
-                        and abs(time.time() * 1000 - float(last.get("time", 0))) < 30_000):
-                    return last
+            orders = self._client.get_all_orders(symbol=symbol, limit=20)
+            if not orders:
+                return None
+            now_ms = time.time() * 1000
+            want_side = "BUY" if direction == Direction.BUY else "SELL"
+            # Iterate newest → oldest; stop at first match within window.
+            for entry in reversed(orders):
+                status = entry.get("status")
+                order_side = entry.get("side")
+                ts = float(entry.get("time", 0))
+                if (
+                    status in ("FILLED", "PARTIALLY_FILLED")
+                    and order_side == want_side
+                    and abs(now_ms - ts) < 120_000  # 2-minute window
+                ):
+                    return entry
         except Exception as check_err:
             logger.error("Failed to verify order status: %s", check_err)
         return None
@@ -161,12 +176,16 @@ class LiveExecutor(BaseExecutor):
         commission = self.calculate_commission(quantity, current_price)
 
         # --- Step 1: MARKET order ---
+        # newClientOrderId: deterministic per-signal ID so retries on timeout
+        # don't create duplicate fills on Binance.
+        entry_client_id = f"s{signal.signal_id}-ent"[:36]
         try:
             result = self._client.create_order(
                 symbol=signal.symbol,
                 side=side_str,
                 type="MARKET",
                 quantity=f"{quantity:.8f}",
+                newClientOrderId=entry_client_id,
             )
         except Exception as e:
             logger.error("Market order failed: %s", e)
@@ -209,11 +228,12 @@ class LiveExecutor(BaseExecutor):
             oco_ok = await self._place_protective_oco(
                 signal.symbol, fill_qty, fill_price,
                 signal.stop_loss_price, signal.take_profit_price,
+                signal_id=signal.signal_id,
             )
             if not oco_ok:
                 # Emergency: protective order failed → market exit
                 logger.error("CRITICAL: Protective OCO failed, emergency sell!")
-                await self._emergency_sell(signal.symbol, fill_qty)
+                await self._emergency_sell(signal.symbol, fill_qty, signal_id=signal.signal_id)
                 order.status = OrderStatus.CANCELLED
                 return order
 
@@ -233,13 +253,19 @@ class LiveExecutor(BaseExecutor):
         entry_price: float,
         stop_loss: float,
         take_profit: float,
+        signal_id: str = "",
     ) -> bool:
         """Разместить OCO protective order на бирже."""
         if take_profit <= 0:
             take_profit = entry_price * 1.05  # Default 5% TP
 
+        # Deterministic client IDs for the two legs of the OCO — prevents
+        # duplicate protective orders on retry.
+        limit_client_id = f"s{signal_id}-tp"[:36] if signal_id else None
+        stop_client_id = f"s{signal_id}-sl"[:36] if signal_id else None
+
         try:
-            self._client.create_oco_order(
+            kwargs: dict = dict(
                 symbol=symbol,
                 side="SELL",
                 quantity=f"{quantity:.8f}",
@@ -248,21 +274,28 @@ class LiveExecutor(BaseExecutor):
                 stopLimitPrice=f"{stop_loss * 0.999:.2f}",
                 stopLimitTimeInForce="GTC",
             )
+            if limit_client_id and stop_client_id:
+                kwargs["limitClientOrderId"] = limit_client_id
+                kwargs["stopClientOrderId"] = stop_client_id
+            self._client.create_oco_order(**kwargs)
             logger.info("OCO placed: SL=%.2f TP=%.2f", stop_loss, take_profit)
             return True
         except Exception as e:
             logger.error("OCO order failed: %s", e)
             return False
 
-    async def _emergency_sell(self, symbol: str, quantity: float) -> None:
+    async def _emergency_sell(self, symbol: str, quantity: float, signal_id: str = "") -> None:
         """Аварийная продажа — market sell без retry."""
         try:
-            self._client.create_order(
+            kwargs: dict = dict(
                 symbol=symbol,
                 side="SELL",
                 type="MARKET",
                 quantity=f"{quantity:.8f}",
             )
+            if signal_id:
+                kwargs["newClientOrderId"] = f"s{signal_id}-emg"[:36]
+            self._client.create_order(**kwargs)
             logger.warning("Emergency sell executed: %s qty=%.6f", symbol, quantity)
         except Exception as e:
             logger.critical("EMERGENCY SELL FAILED: %s - %s", symbol, e)

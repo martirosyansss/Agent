@@ -25,6 +25,8 @@ from strategy.base_strategy import (
     news_should_accelerate_exit,
     news_should_block_entry,
     news_adjust_sl_tp,
+    grouped_confidence,
+    adaptive_min_confidence,
 )
 
 log = logger.bind(module="strategy")
@@ -169,58 +171,54 @@ class EMACrossoverRSI(BaseStrategy):
                 log.debug("{} BUY skip: price below Ichimoku cloud", f.symbol)
                 return None
 
-        # ── Расчёт confidence ──
-        confidence = 0.50  # base
+        # ── Расчёт confidence (grouped evidence model) ──
+        # Correlated indicators are grouped — only best-in-group counts.
+        # This prevents EMA50 + MACD + trend_alignment from triple-counting trend.
 
-        # RSI далёк от overbought (+0.10)
-        if f.rsi_14 < 50:
-            confidence += 0.10
-        elif f.rsi_14 < 60:
-            confidence += 0.05
-
-        # Сильный объём (+0.10)
-        if f.volume_ratio > 2.0:
-            confidence += 0.10
-        elif f.volume_ratio > 1.5:
-            confidence += 0.05
-
-        # Тренд подтверждён EMA50 (+0.10)
-        if f.ema_50 > 0 and f.close > f.ema_50:
-            confidence += 0.10
-
-        # MACD подтверждает (+0.10)
-        if f.macd_histogram > 0:
-            confidence += 0.10
-
-        # ADX сильный тренд (+0.05)
-        if f.adx > 25:
-            confidence += 0.05
-
-        # Trend alignment (multi-TF) boost (+0.10 / +0.05 / -0.10)
-        if hasattr(f, 'trend_alignment'):
-            if f.trend_alignment >= 0.8:
-                confidence += 0.10
-            elif f.trend_alignment >= 0.6:
-                confidence += 0.05
-            elif f.trend_alignment <= 0.2:
-                confidence -= 0.10
-
-        # Ichimoku Cloud confirmation (+0.08 above cloud, -0.05 inside)
-        if f.ichimoku_senkou_a > 0 and f.ichimoku_senkou_b > 0:
+        has_cloud = f.ichimoku_senkou_a > 0 and f.ichimoku_senkou_b > 0
+        above_cloud = False
+        inside_cloud = False
+        if has_cloud:
             cloud_top = max(f.ichimoku_senkou_a, f.ichimoku_senkou_b)
             cloud_bottom = min(f.ichimoku_senkou_a, f.ichimoku_senkou_b)
-            if f.close > cloud_top:
-                confidence += 0.08
-            elif f.close >= cloud_bottom:
-                confidence -= 0.05  # inside cloud = uncertainty
+            above_cloud = f.close > cloud_top
+            inside_cloud = cloud_bottom <= f.close <= cloud_top
 
-        # Williams %R confirmation (+0.05 if not overbought)
-        if hasattr(f, 'williams_r') and f.williams_r < -20:
-            confidence += 0.05  # room to run
+        trend_align = getattr(f, 'trend_alignment', 0.5)
 
-        # Penalty factors for marginal conditions
+        evidence = grouped_confidence([
+            # Group A: Trend confirmation (EMA50, MACD, trend alignment — correlated)
+            [
+                (f.ema_50 > 0 and f.close > f.ema_50, 0.12),
+                (f.macd_histogram > 0, 0.10),
+                (trend_align >= 0.8, 0.10),
+                (trend_align >= 0.6, 0.06),
+            ],
+            # Group B: Momentum room (RSI, Ichimoku, Williams — all measure headroom)
+            [
+                (f.rsi_14 < 45, 0.12),
+                (f.rsi_14 < 55, 0.07),
+                (above_cloud, 0.08),
+                (hasattr(f, 'williams_r') and f.williams_r < -30, 0.06),
+            ],
+            # Group C: Conviction strength (volume, ADX — independent but correlated)
+            [
+                (f.volume_ratio > 2.0, 0.12),
+                (f.volume_ratio > 1.5, 0.07),
+                (f.adx > 30, 0.08),
+                (f.adx > 25, 0.05),
+            ],
+        ], correlation_penalty=0.12)
+
+        confidence = 0.52 + evidence  # base 0.52 + max ~0.36 from groups
+
+        # Penalties (independent, not grouped — each weakens the signal)
         if 60 <= f.rsi_14 < 70:
             confidence -= 0.05    # approaching overbought
+        if inside_cloud:
+            confidence -= 0.05    # cloud uncertainty
+        if trend_align <= 0.2:
+            confidence -= 0.08    # multi-TF divergence — strong penalty
         if 1.0 <= f.volume_ratio < 1.2:
             confidence -= 0.03    # volume barely passing
         if 20 <= f.adx < 25:
@@ -238,8 +236,11 @@ class EMACrossoverRSI(BaseStrategy):
 
         confidence = min(confidence, 0.95)
 
-        if confidence < cfg.min_confidence:
-            log.debug("{} BUY skip: confidence {:.2f} < {}", f.symbol, confidence, cfg.min_confidence)
+        # Adaptive threshold: easier in trending_up, harder in trending_down
+        regime = getattr(f, 'market_regime', 'unknown')
+        eff_threshold = adaptive_min_confidence(cfg.min_confidence, regime, "trend")
+        if confidence < eff_threshold:
+            log.debug("{} BUY skip: confidence {:.2f} < {:.2f} (regime={})", f.symbol, confidence, eff_threshold, regime)
             return None
 
         # ATR-adaptive SL/TP: use 1.5x ATR as SL floor, 2.5x ATR as TP floor

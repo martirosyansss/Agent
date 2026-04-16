@@ -14,6 +14,7 @@ import os
 import signal
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -646,9 +647,12 @@ async def run() -> None:
                     risk_sentinel.record_trade(order.commission, increment_trade=True)
                 # Setup trailing stop for strategies that support it
                 if opened and order.strategy_name == "ema_crossover_rsi":
-                    position_manager.set_trailing_stop(order.symbol, 2.5, 1.5)
+                    await position_manager.set_trailing_stop(order.symbol, 2.5, 1.5)
                 elif opened and order.strategy_name == "bollinger_breakout":
-                    position_manager.set_trailing_stop(order.symbol, 3.0, 2.0)
+                    await position_manager.set_trailing_stop(order.symbol, 3.0, 2.0)
+                # Setup multi-stage TP levels (TP1→50% close+breakeven, TP2→30%, TP3→trailing)
+                if opened:
+                    await position_manager.setup_tp_levels(order.symbol)
                 # Persist opened position to DB
                 if opened and repo:
                     try:
@@ -1088,6 +1092,9 @@ async def run() -> None:
 
         regime_name = _current_regime.regime.value if _current_regime else "unknown"
 
+        # 3.5. Inject regime into FeatureVector for adaptive confidence thresholds
+        features.market_regime = regime_name
+
         # 4. Определить активные стратегии
         if settings.auto_strategy_selection and _current_regime:
             if _adaptive_allocator and _adaptive_allocator._skill_scores:
@@ -1142,7 +1149,31 @@ async def run() -> None:
                     strat_results.append({"strategy": strat_name, "result": "no_position"})
                     continue
 
-            # Compute position size with real Kelly params from recent trades
+            # Pre-compute dynamic SL/TP BEFORE position sizing (SL% feeds risk-based sizing)
+            _actual_sl_pct = 0.0
+            if _position_sizer and signal.direction == Direction.BUY:
+                sltp = calculate_dynamic_sltp(
+                    entry_price=features.close,
+                    atr=features.atr,
+                    strategy_name=strat_name,
+                    fallback_sl_pct=settings.stop_loss_pct,
+                    fallback_tp_pct=settings.take_profit_pct,
+                )
+                # Merge: keep the tighter (more protective) SL and wider TP
+                if signal.stop_loss_price > 0:
+                    signal.stop_loss_price = max(signal.stop_loss_price, sltp.stop_loss_price)
+                else:
+                    signal.stop_loss_price = sltp.stop_loss_price
+                if signal.take_profit_price > 0:
+                    signal.take_profit_price = max(signal.take_profit_price, sltp.take_profit_price)
+                else:
+                    signal.take_profit_price = sltp.take_profit_price
+                _actual_sl_pct = sltp.stop_loss_pct
+                log.debug("Dynamic SL/TP [{}]: SL={:.2f} ({:.1f}%) TP={:.2f} ({:.1f}%) (merged with strategy)",
+                          sltp.method, signal.stop_loss_price, sltp.stop_loss_pct,
+                          signal.take_profit_price, sltp.take_profit_pct)
+
+            # Compute position size with real Kelly params + risk-based SL sizing
             if signal.suggested_quantity <= 0 and signal.direction == Direction.BUY:
                 balance = position_manager.balance
                 if _position_sizer and features.atr > 0:
@@ -1185,10 +1216,12 @@ async def run() -> None:
                         symbol=symbol,
                         open_symbols=_open_syms,
                         consecutive_losses=_consec_losses,
+                        stop_loss_pct=_actual_sl_pct,
+                        max_risk_per_trade_pct=risk_sentinel._limits.max_risk_per_trade_pct if risk_sentinel else 3.0,
                     ))
                     signal.suggested_quantity = sizing.quantity
-                    log.debug("Position sizer: {} budget=${:.2f} ({:.1f}%) kelly={:.3f}",
-                              sizing.method, sizing.budget_usd, sizing.budget_pct, sizing.kelly_fraction)
+                    log.debug("Position sizer: {} budget=${:.2f} ({:.1f}%) kelly={:.3f} sl={:.1f}%",
+                              sizing.method, sizing.budget_usd, sizing.budget_pct, sizing.kelly_fraction, _actual_sl_pct)
                 else:
                     if _current_regime and settings.auto_strategy_selection:
                         budget_pct = get_strategy_budget_pct(_current_regime, strat_name)
@@ -1198,29 +1231,6 @@ async def run() -> None:
                     budget_usd = min(budget_usd, settings.max_order_usd)
                     if features.close > 0:
                         signal.suggested_quantity = budget_usd / features.close
-
-            # Dynamic SL/TP — merge with strategy-calculated values (news-adjusted)
-            # Use tighter SL (higher price = closer to entry) and wider TP (higher price)
-            if _position_sizer and signal.direction == Direction.BUY:
-                sltp = calculate_dynamic_sltp(
-                    entry_price=features.close,
-                    atr=features.atr,
-                    strategy_name=strat_name,
-                    fallback_sl_pct=settings.stop_loss_pct,
-                    fallback_tp_pct=settings.take_profit_pct,
-                )
-                # Merge: keep the tighter (more protective) SL and wider TP
-                if signal.stop_loss_price > 0:
-                    signal.stop_loss_price = max(signal.stop_loss_price, sltp.stop_loss_price)
-                else:
-                    signal.stop_loss_price = sltp.stop_loss_price
-                if signal.take_profit_price > 0:
-                    signal.take_profit_price = max(signal.take_profit_price, sltp.take_profit_price)
-                else:
-                    signal.take_profit_price = sltp.take_profit_price
-                log.debug("Dynamic SL/TP [{}]: SL={:.2f} ({:.1f}%) TP={:.2f} ({:.1f}%) (merged with strategy)",
-                          sltp.method, signal.stop_loss_price, sltp.stop_loss_pct,
-                          signal.take_profit_price, sltp.take_profit_pct)
 
             # 6.5 ML Predictor filter (per-symbol model with unified fallback)
             _active_ml = _ml_predictors.get(symbol, _ml_predictor)
@@ -1294,6 +1304,7 @@ async def run() -> None:
                     if position_manager.balance > 0 else 0.0,
                 balance=position_manager.balance,
                 current_market_price=features.close,
+                open_symbols={p.symbol for p in position_manager.open_positions},
             )
 
             if not check.approved:
@@ -1397,14 +1408,22 @@ async def run() -> None:
         if not pos or pos.quantity <= 0:
             return
 
-        # Snapshot values before async execution (guard against concurrent close)
-        _qty = pos.quantity
+        # Determine if this is a partial or full close
+        _is_partial = trigger in ("tp1_partial", "tp2_partial")
+        if trigger == "tp1_partial":
+            _close_pct = 50.0   # close 50% at TP1
+        elif trigger == "tp2_partial":
+            _close_pct = 60.0   # close 60% of remaining (≈30% of original)
+        else:
+            _close_pct = 100.0  # full close
+
+        _qty = pos.quantity if not _is_partial else pos.quantity * _close_pct / 100
         _strategy = pos.strategy_name or "sl_tp"
         _sl = pos.stop_loss_price
         _tp = pos.take_profit_price
 
         direction = Direction.SELL
-        reason = f"SL/TP triggered: {trigger}"
+        reason = f"SL/TP triggered: {trigger}" + (f" ({_close_pct:.0f}%)" if _is_partial else "")
         signal = Signal(
             timestamp=int(time.time() * 1000),
             symbol=symbol,
@@ -1415,6 +1434,7 @@ async def run() -> None:
             suggested_quantity=_qty,
             stop_loss_price=_sl,
             take_profit_price=_tp,
+            close_pct=_close_pct,
         )
 
         try:
@@ -1426,7 +1446,29 @@ async def run() -> None:
                 quantity=_qty,
                 current_price=trade.price,
             )
-            if order:
+            if order and _is_partial:
+                # Execute partial close
+                closed_pos = await position_manager.partial_close_position(order, _close_pct)
+                # Only advance state if the position is still open after partial close
+                # (partial_close_position returns None or force-closed dust => skip).
+                if closed_pos and position_manager.has_position(symbol):
+                    if trigger == "tp1_partial":
+                        # Atomic: tp_stage=1 + SL→breakeven + tighter trailing
+                        await position_manager.apply_tp_stage_transition(
+                            symbol,
+                            stage=1,
+                            move_to_breakeven=True,
+                            trailing=(1.5, 1.0),
+                        )
+                    elif trigger == "tp2_partial":
+                        # Atomic: tp_stage=2 + very tight trailing for final 20%
+                        await position_manager.apply_tp_stage_transition(
+                            symbol,
+                            stage=2,
+                            trailing=(0.5, 0.8),
+                        )
+                log.info("Partial close {} {}: {}% @ {:.2f}", trigger, symbol, _close_pct, trade.price)
+            elif order:
                 log.info("{} {} @ {:.2f} — {}", trigger, symbol, trade.price, reason)
         except Exception as e:
             log.error("SL/TP execution error: {}", e)
@@ -2022,10 +2064,20 @@ async def run() -> None:
         if telegram_bot.enabled and telegram_bot._running:
             log.info("[Module] Telegram bot started")
             # Отправить уведомление о старте
+            mode_icon = "📄" if settings.trading_mode.lower() == "paper" else "💰"
+            symbols_str = ", ".join(settings.trading_symbols)
+            strats = list(strategies.keys()) if strategies else []
+            strats_str = ", ".join(strats) if strats else "нет"
             await telegram_bot.send_message(
-                f"🟢 <b>SENTINEL v{VERSION}</b> запущен\n"
-                f"Режим: {settings.trading_mode.upper()}\n"
-                f"Символы: {', '.join(settings.trading_symbols)}"
+                f"🟢 <b>SENTINEL v{VERSION} — ЗАПУЩЕН</b>\n"
+                f"⏰ {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                f"\n"
+                f"{mode_icon} Режим торговли: <b>{settings.trading_mode.upper()}</b>\n"
+                f"📊 Торговые пары: <b>{symbols_str}</b>\n"
+                f"⚙️ Стратегии: <b>{strats_str}</b>\n"
+                f"💵 Начальный баланс: <b>${settings.paper_initial_balance:,.2f}</b>\n"
+                f"\n"
+                f"Бот активен. Используйте /help для управления."
             )
         else:
             log.warning("[Module] Telegram bot disabled (token/chat_id not set)")
@@ -2129,7 +2181,31 @@ async def run() -> None:
         await asyncio.gather(collector_task, return_exceptions=True)
     if telegram_bot:
         try:
-            await telegram_bot.send_message("🔴 <b>SENTINEL</b> останавливается...")
+            state = get_system_state()
+            pnl_today = state.get("pnl_today", 0.0)
+            pnl_total = state.get("pnl_total", 0.0)
+            trades_today = state.get("trades_today", 0)
+            balance = state.get("balance", 0.0)
+            wins = state.get("total_wins", 0)
+            losses_count = state.get("total_losses", 0)
+            uptime = state.get("uptime", "N/A")
+            pnl_icon = "📈" if pnl_today >= 0 else "📉"
+            pnl_total_icon = "📈" if pnl_total >= 0 else "📉"
+            wr = wins / (wins + losses_count) * 100 if (wins + losses_count) > 0 else 0
+            shutdown_msg = (
+                f"🔴 <b>SENTINEL — ОСТАНОВКА</b>\n"
+                f"⏰ {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                f"⏱️ Uptime: {uptime}\n"
+                f"\n"
+                f"💵 <b>P&L за сегодня: {'+'if pnl_today >= 0 else ''}{pnl_today:.2f}$</b>  {pnl_icon}\n"
+                f"💰 <b>P&L всего: {'+'if pnl_total >= 0 else ''}{pnl_total:.2f}$</b>  {pnl_total_icon}\n"
+            )
+            if trades_today > 0:
+                shutdown_msg += f"📊 Сделок сегодня: <b>{trades_today}</b>  (W:{wins} / L:{losses_count})  WR:{wr:.0f}%\n"
+            if balance > 0:
+                shutdown_msg += f"💵 Финальный баланс: <b>${balance:,.2f}</b>\n"
+            shutdown_msg += "\nСистема остановлена."
+            await telegram_bot.send_message(shutdown_msg)
             await telegram_bot.stop()
         except Exception:
             pass

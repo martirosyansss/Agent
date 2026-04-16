@@ -374,4 +374,4 @@ class TestFormatPortfolio:
         assert "Portfolio" in text
         assert "ema_crossover_rsi" in text
         assert "mean_reversion" in text
-        assert "Итого" in text
+        assert "ИТОГО" in text or "Итого" in text

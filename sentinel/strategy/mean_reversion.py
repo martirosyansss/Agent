@@ -22,6 +22,8 @@ from strategy.base_strategy import (
     news_should_accelerate_exit,
     news_should_block_entry,
     news_adjust_sl_tp,
+    grouped_confidence,
+    adaptive_min_confidence,
 )
 
 
@@ -140,23 +142,41 @@ class MeanReversion(BaseStrategy):
                 # RSI still making lower lows — continuation, not reversal
                 return None
 
-        confidence = 0.65
-        if features.rsi_14 < 20:
-            confidence += 0.10
-        if features.volume_ratio > 2.0:
-            confidence += 0.08
-        if features.ema_50 > 0 and features.close > features.ema_50 * 0.95:
-            confidence += 0.07
-
-        # Williams %R extreme oversold confirmation
-        if hasattr(features, 'williams_r') and features.williams_r < -90:
-            confidence += 0.05
-
-        # Ichimoku: if price is above cloud even when RSI oversold, stronger reversion
-        if features.ichimoku_senkou_a > 0 and features.ichimoku_senkou_b > 0:
+        has_cloud = features.ichimoku_senkou_a > 0 and features.ichimoku_senkou_b > 0
+        above_cloud_bottom = False
+        if has_cloud:
             cloud_bottom = min(features.ichimoku_senkou_a, features.ichimoku_senkou_b)
-            if features.close > cloud_bottom:
-                confidence += 0.05  # still in uptrend structure despite oversold
+            above_cloud_bottom = features.close > cloud_bottom
+
+        # Grouped confidence model — with group-correlation attenuation
+        # (oversold measures and volume-conviction measures share drivers)
+        robust_lower_pierced = (
+            features.bb_lower_robust > 0
+            and features.close < features.bb_lower_robust
+        )
+        evidence = grouped_confidence([
+            # Group A: Oversold extremity (RSI, Williams — correlated oversold measures)
+            [
+                (features.rsi_14 < 20, 0.12),
+                (features.rsi_14 < 25, 0.07),
+                (hasattr(features, 'williams_r') and features.williams_r < -90, 0.08),
+                # Pierced the fat-tail-aware lower band → genuine outlier, not
+                # a routine 2σ excursion inflated by leptokurtosis
+                (robust_lower_pierced, 0.09),
+            ],
+            # Group B: Volume conviction
+            [
+                (features.volume_ratio > 2.5, 0.10),
+                (features.volume_ratio > 2.0, 0.08),
+                (features.volume_ratio >= 1.8, 0.04),
+            ],
+            # Group C: Structure support (EMA50, Ichimoku — uptrend intact despite dip)
+            [
+                (features.ema_50 > 0 and features.close > features.ema_50 * 0.95, 0.09),
+                (above_cloud_bottom, 0.07),
+            ],
+        ], correlation_penalty=0.12)
+        confidence = 0.58 + evidence  # base + max ~0.31
 
         blocked, block_reason = news_should_block_entry(features)
         if blocked:
@@ -164,7 +184,9 @@ class MeanReversion(BaseStrategy):
         news_delta, news_reason = news_confidence_adjustment(features, "buy", "mean_reversion")
         confidence += news_delta
         confidence = min(confidence, 0.95)
-        if confidence < cfg.min_confidence:
+        regime = getattr(features, 'market_regime', 'unknown')
+        eff_threshold = adaptive_min_confidence(cfg.min_confidence, regime, "mean_reversion")
+        if confidence < eff_threshold:
             return None
 
         # ATR-adaptive SL/TP

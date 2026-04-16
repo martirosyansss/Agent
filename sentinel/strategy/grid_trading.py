@@ -29,6 +29,7 @@ from strategy.base_strategy import (
     news_should_block_entry,
     news_should_accelerate_exit,
     news_adjust_sl_tp,
+    adaptive_min_confidence,
 )
 
 COMMISSION_ROUND_TRIP_PCT = 0.20  # Binance spot: 0.1% maker + 0.1% taker
@@ -232,7 +233,9 @@ class GridTrading(BaseStrategy):
                     news_delta, news_reason = news_confidence_adjustment(features, direction="buy")
                     grid_conf = 0.75 + news_delta
 
-                    if grid_conf < cfg.min_confidence:
+                    regime = getattr(features, 'market_regime', 'unknown')
+                    eff_threshold = adaptive_min_confidence(cfg.min_confidence, regime, "grid")
+                    if grid_conf < eff_threshold:
                         continue
 
                     self._entry_ts[sym] = now_ms

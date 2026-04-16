@@ -172,6 +172,44 @@ def adx(
 # Bollinger Bands
 # ──────────────────────────────────────────────
 
+def _median(values: list[float]) -> float:
+    """Robust central tendency — median of a sequence."""
+    n = len(values)
+    if n == 0:
+        return 0.0
+    s = sorted(values)
+    mid = n // 2
+    if n % 2 == 1:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2.0
+
+
+def _mad_sigma(values: list[float], center: float) -> float:
+    """Median Absolute Deviation scaled to σ-consistent estimator.
+
+    σ̂ = 1.4826 × median(|x - center|). Under Gaussian data this converges to
+    the population σ; under fat-tail distributions it is a far more robust
+    estimator — outliers cannot inflate the central-tendency dispersion.
+    """
+    if not values:
+        return 0.0
+    absdev = [abs(v - center) for v in values]
+    return _median(absdev) * 1.4826
+
+
+def _excess_kurtosis(values: list[float], mean: float, sd: float) -> float:
+    """Fisher-Pearson excess kurtosis: E[((x-μ)/σ)^4] - 3.
+
+    0 under Gaussian, >0 for fat-tailed (leptokurtic) distributions
+    (crypto returns routinely exhibit κ ∈ [3, 15]).
+    """
+    n = len(values)
+    if n < 4 or sd <= 0:
+        return 0.0
+    m4 = sum(((v - mean) / sd) ** 4 for v in values) / n
+    return m4 - 3.0
+
+
 def bollinger_bands(
     closes: list[float],
     period: int = 20,
@@ -194,6 +232,63 @@ def bollinger_bands(
         safe_value(middle),
         safe_value(lower),
         safe_value(bandwidth),
+    )
+
+
+def bollinger_bands_robust(
+    closes: list[float],
+    period: int = 20,
+    std_dev: float = 2.0,
+) -> Optional[tuple[float, float, float, float, float]]:
+    """Fat-tail aware Bollinger Bands via MAD + kurtosis scaling.
+
+    Returns (upper, middle, lower, bandwidth, kurtosis).
+
+    Motivation:
+        Standard BB assume Gaussian residuals — P(|X-μ|>2σ) ≈ 4.6%. Crypto
+        returns are leptokurtic: realised tail frequency often 8–12%, making
+        2σ breakouts statistically weaker signals than in equity markets.
+
+    Construction:
+        1. center   = median of closes (robust μ)
+        2. σ_mad    = MAD × 1.4826 (robust σ, outlier-invariant)
+        3. κ        = excess kurtosis of the window
+        4. scale    = √(1 + max(0, κ)/3) — Cornish-Fisher-like expansion
+                      so the effective multiplier widens under fat tails to
+                      preserve the nominal tail probability.
+
+    A breakout that exceeds THIS band is genuinely a tail event even after
+    accounting for fat tails — a strictly stronger signal than standard BB.
+    """
+    if len(closes) < period:
+        return None
+
+    window = closes[-period:]
+    mean = sum(window) / period
+    variance = sum((x - mean) ** 2 for x in window) / (period - 1)
+    sd = math.sqrt(variance)
+
+    median = _median(window)
+    mad_sd = _mad_sigma(window, median)
+    kurt = _excess_kurtosis(window, mean, sd)
+
+    # Fat-tail multiplier — no tightening when κ≤0 (thin tails keep nominal σ)
+    fat_tail_scale = math.sqrt(1.0 + max(0.0, kurt) / 3.0)
+    effective_sigma = mad_sd * fat_tail_scale
+    # Floor: never tighter than 60% of classical σ (guards against MAD=0 on a
+    # flat window, which would collapse the bands to a single line).
+    effective_sigma = max(effective_sigma, sd * 0.6)
+
+    upper = median + std_dev * effective_sigma
+    lower = median - std_dev * effective_sigma
+    bandwidth = (upper - lower) / median if median != 0 else 0.0
+
+    return (
+        safe_value(upper),
+        safe_value(median),
+        safe_value(lower),
+        safe_value(bandwidth),
+        safe_value(kurt),
     )
 
 

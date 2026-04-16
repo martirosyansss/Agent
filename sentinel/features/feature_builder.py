@@ -86,6 +86,13 @@ class FeatureBuilder:
         bb_lower = bb[2] if bb else 0.0
         bb_bw = bb[3] if bb else 0.0
 
+        # Robust (fat-tail aware) BB — MAD × 1.4826 with kurtosis expansion
+        bb_r = ind.bollinger_bands_robust(closes_4h, 20, 2.0)
+        bb_upper_r = bb_r[0] if bb_r else bb_upper
+        bb_lower_r = bb_r[2] if bb_r else bb_lower
+        bb_bw_r = bb_r[3] if bb_r else bb_bw
+        bb_kurt = bb_r[4] if bb_r else 0.0
+
         atr_val = ind.atr(highs_4h, lows_4h, closes_4h, 14)
 
         # ── Объём (1h) ──
@@ -157,6 +164,10 @@ class FeatureBuilder:
             bb_middle=bb_middle,
             bb_lower=bb_lower,
             bb_bandwidth=bb_bw,
+            bb_upper_robust=bb_upper_r,
+            bb_lower_robust=bb_lower_r,
+            bb_bandwidth_robust=bb_bw_r,
+            return_kurtosis=bb_kurt,
             atr=safe_value(atr_val),
             # Объём
             volume=volumes_1h[-1] if volumes_1h else 0.0,
