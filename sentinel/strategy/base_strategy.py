@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -40,7 +41,6 @@ def _news_decay_factor() -> float:
     if age >= _NEWS_MAX_AGE_SEC:
         return 0.0  # completely stale
     # Exponential decay: factor = 2^(-age / half_life)
-    import math
     return math.pow(2.0, -age / _NEWS_DECAY_HALF_LIFE_SEC)
 
 
@@ -115,7 +115,7 @@ def news_confidence_adjustment(
         # Trend-following / breakout / divergence — news supports direction
         weight_map = {"trend": 0.30, "breakout": 0.35, "divergence": 0.20}
         w = weight_map.get(strategy_type, 0.30)
-        penalty_w = w * 1.3  # penalties are stronger than boosts
+        penalty_w = w * 1.15  # slight asymmetry (was 1.3x — too aggressive)
 
         if direction == "buy":
             if news_bullish:

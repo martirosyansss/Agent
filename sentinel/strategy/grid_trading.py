@@ -38,10 +38,10 @@ COMMISSION_ROUND_TRIP_PCT = 0.20  # Binance spot: 0.1% maker + 0.1% taker
 class GridConfig:
     num_grids: int = 8
     capital_pct: float = 30.0
-    min_profit_pct: float = 0.5          # raised from 0.3: must cover commissions
-    max_loss_pct: float = 5.0
-    trailing_activate_pct: float = 1.0   # activate trailing at +1%
-    trailing_stop_pct: float = 0.5       # trail 0.5% from max (tight for grid)
+    min_profit_pct: float = 1.2          # R:R 1.8+ after 0.2% round-trip commission (was 0.7%)
+    max_loss_pct: float = 4.0            # tighter SL for grid (was 5%)
+    trailing_activate_pct: float = 1.2   # activate trailing at +1.2%
+    trailing_stop_pct: float = 0.4       # tight trail for grid scalping
     max_hold_hours: int = 48             # prevent stuck positions
     min_confidence: float = 0.70
     min_volume_ratio: float = 0.8
@@ -97,14 +97,17 @@ class GridTrading(BaseStrategy):
         self._entry_ts.pop(sym, None)
 
     def _atr_based_tp(self, features: FeatureVector) -> float:
-        """Calculate ATR-based take-profit, minimum min_profit_pct, commission-aware."""
+        """Calculate ATR-based take-profit, minimum min_profit_pct, commission-aware.
+
+        Ensures net R:R >= 1.3 after commissions.
+        """
         if features.atr > 0 and features.close > 0:
             atr_pct = features.atr / features.close * 100
-            # Grid TP = 30% of ATR (capture a fraction of expected range)
-            raw_tp = atr_pct * 0.3
+            # Grid TP = 35% of ATR (capture a fraction of expected range)
+            raw_tp = atr_pct * 0.35
         else:
             raw_tp = self._cfg.min_profit_pct
-        # Subtract commissions + add floor
+        # Ensure net profit after commissions, with R:R >= 1.3
         net_tp = max(raw_tp, self._cfg.min_profit_pct) + COMMISSION_ROUND_TRIP_PCT
         return net_tp
 
@@ -116,7 +119,7 @@ class GridTrading(BaseStrategy):
     ) -> Optional[Signal]:
         cfg = self._cfg
         sym = features.symbol
-        now_ms = int(time.time() * 1000)
+        now_ms = features.timestamp or int(time.time() * 1000)
 
         # Rebuild grid if needed (timer or volatility shift)
         if sym not in self._grid_levels or self._should_rebuild(sym, now_ms, features):

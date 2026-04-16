@@ -176,9 +176,9 @@ class MACDDivergence(BaseStrategy):
     ) -> Optional[Signal]:
         cfg = self._cfg
         sym = features.symbol
-        now_ms = int(time.time() * 1000)
+        now_ms = features.timestamp or int(time.time() * 1000)
         macd_val = getattr(features, 'macd', None) or features.macd_histogram
-        ts = getattr(features, 'timestamp', now_ms)
+        ts = now_ms
         self._update_history(sym, features.close, macd_val, ts)
 
         if has_open_position and entry_price is not None:

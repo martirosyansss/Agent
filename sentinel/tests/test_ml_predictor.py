@@ -73,18 +73,20 @@ class TestExtractFeatures:
 
     def test_regime_encoding(self, predictor, sample_trade):
         features = predictor.extract_features(sample_trade)
-        assert features[9] == float(REGIME_ENCODING["trending_up"])
+        # market_regime_encoded is at index 11 in FEATURE_NAMES
+        assert features[11] == float(REGIME_ENCODING["trending_up"])
 
     def test_strategy_regime_fit(self, predictor, sample_trade):
         # ema_crossover_rsi + trending_up should give fit=1.0
         features = predictor.extract_features(sample_trade)
+        # strategy_regime_fit is at index 12 in FEATURE_NAMES
         expected = STRATEGY_REGIME_FIT.get(("ema_crossover_rsi", "trending_up"), 0.0)
-        assert features[10] == expected
+        assert features[12] == expected
 
     def test_fear_greed_normalized(self, predictor, sample_trade):
         features = predictor.extract_features(sample_trade)
-        # v4: strategy_specific_wr_10 added at pos 15, so fear_greed shifted to 17
-        assert features[17] == 0.65  # 65 / 100
+        # fear_greed_normalized is at index 19 in FEATURE_NAMES
+        assert features[19] == 0.65  # 65 / 100
 
     def test_no_forward_looking_bias(self, predictor):
         """N-3: extract_features now delegates to extract_features_batch.
@@ -104,7 +106,7 @@ class TestExtractFeatures:
         # Only pass old_trade (correctly excluding future data)
         features = predictor.extract_features(current, [old_trade])
         # Win rate = 1.0 (only old_trade counted, which is a win)
-        assert features[11] == 1.0  # recent_win_rate
+        assert features[13] == 1.0  # recent_win_rate_10 at index 13
 
     def test_zero_entry_price_safe(self, predictor):
         trade = _make_trade(entry_price=0.0)
@@ -165,11 +167,12 @@ class TestPredict:
 
     def test_predict_reduce_zone(self, predictor):
         """Probability between block (thr*0.85) and reduce (thr) should return 'reduce'.
-        With default threshold=0.5: block < 0.425, reduce 0.425..0.5, allow > 0.5.
+        With default threshold=0.55: block < 0.4675, reduce 0.4675..0.55, allow >= 0.55.
         """
         mock_model = MagicMock()
-        mock_model.predict_proba.return_value = [[0.55, 0.45]]  # 0.425 < 0.45 < 0.5
+        mock_model.predict_proba.return_value = [[0.50, 0.50]]  # 0.4675 < 0.50 < 0.55 → reduce
         predictor._model = mock_model
+        predictor._ensemble = None
         predictor._scaler = None
         predictor._rollout_mode = "block"
         result = predictor.predict([0.0] * N_FEATURES)

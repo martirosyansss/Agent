@@ -28,6 +28,7 @@ class SizingInput:
     max_order_usd: float = 100.0        # hard cap from config
     symbol: str = ""                    # trading symbol
     open_symbols: list[str] | None = None  # already open positions' symbols
+    consecutive_losses: int = 0         # current loss streak
 
 
 @dataclass(slots=True)
@@ -108,6 +109,23 @@ def correlation_factor(symbol: str, open_symbols: list[str] | None) -> float:
     return 1.0
 
 
+def loss_streak_dampener(consecutive_losses: int) -> float:
+    """Reduce position size after consecutive losses.
+
+    0 losses: 1.0 (full size)
+    1 loss: 0.85
+    2 losses: 0.65
+    3+ losses: 0.50 (minimum — preserve capital)
+    """
+    if consecutive_losses <= 0:
+        return 1.0
+    if consecutive_losses == 1:
+        return 0.85
+    if consecutive_losses == 2:
+        return 0.65
+    return 0.50
+
+
 def calculate_position_size(inp: SizingInput) -> SizingResult:
     """Calculate position size using Kelly + ATR + regime + correlation.
 
@@ -130,14 +148,17 @@ def calculate_position_size(inp: SizingInput) -> SizingResult:
     # 4. Correlation factor (reduce when correlated assets already held)
     cf = correlation_factor(inp.symbol, inp.open_symbols)
 
-    # Combine: kelly-based pct, scaled by vol, regime, and correlation
+    # 5. Loss streak dampener (reduce after consecutive losses)
+    ld = loss_streak_dampener(inp.consecutive_losses)
+
+    # Combine: kelly-based pct, scaled by vol, regime, correlation, and loss streak
     if kf > 0.01:
         base_pct = kf * 100  # kelly as percentage
-        adjusted_pct = base_pct * vf * rd * cf
+        adjusted_pct = base_pct * vf * rd * cf * ld
         method = "kelly_atr"
     else:
         # Insufficient edge, use minimum fixed size
-        adjusted_pct = 5.0 * vf * rd * cf
+        adjusted_pct = 5.0 * vf * rd * cf * ld
         method = "fixed"
 
     # Clamp to hard limits

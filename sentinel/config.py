@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     trading_symbols: list[str] = ["BTCUSDT", "ETHUSDT"]
 
     # === Risk Limits (настраиваемые, но ≤ absolute limits) ===
-    max_daily_loss_usd: float = 50.0
+    max_daily_loss_usd: float = 25.0     # 5% of $500 — professional max daily drawdown
     max_daily_loss_pct: float = 5.0
     max_position_pct: float = 10.0
     max_total_exposure_pct: float = 30.0
@@ -133,7 +133,7 @@ class Settings(BaseSettings):
 
     # === Strategy (V1.2: swing trading) ===
     stop_loss_pct: float = 3.0
-    take_profit_pct: float = 5.0
+    take_profit_pct: float = 7.0           # R:R = 2.33 (was 5% = R:R 1.67)
     min_confidence: float = 0.75
     signal_timeframe: str = "1h"
     trend_timeframe: str = "4h"

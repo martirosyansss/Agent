@@ -302,7 +302,7 @@ class TestEMACrossoverRSI:
         f1 = self._make_features()
         strat.generate_signal(f1, has_open_position=True, entry_price=64000.0)
 
-        profit_price = 64000.0 * 1.06
+        profit_price = 64000.0 * 1.07  # +7% exceeds TP 6.25% (R:R 2.5)
         f2 = self._make_features(close=profit_price)
         result = strat.generate_signal(f2, has_open_position=True, entry_price=64000.0)
         assert result is not None

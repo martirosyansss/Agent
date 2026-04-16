@@ -406,6 +406,12 @@ class Repository:
             total = d.get("total_trades", 0)
             w = d.get("wins", 0)
             d["win_rate"] = round(w / total * 100, 1) if total > 0 else 0.0
+            # Profit factor: gross_profit / gross_loss
+            avg_win_val = abs(d.get("avg_win") or 0)
+            avg_loss_val = abs(d.get("avg_loss") or 0)
+            gross_profit = avg_win_val * w if avg_win_val and w else 0
+            gross_loss = avg_loss_val * (total - w) if avg_loss_val and (total - w) else 0.001
+            d["profit_factor"] = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 0.0
             result.append(d)
         return result
 

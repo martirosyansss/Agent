@@ -81,7 +81,7 @@ class TestMarketRegime:
     def test_trending_down(self):
         from strategy.market_regime import detect_regime, reset_hysteresis
         reset_hysteresis()
-        f = make_fv(ema_9=95, ema_21=97, ema_50=99, adx=28)
+        f = make_fv(ema_9=95, ema_21=97, ema_50=99, adx=28, close=94)
         detect_regime(f)
         detect_regime(f)
         r = detect_regime(f)
@@ -135,8 +135,8 @@ class TestGridTrading:
         # First build grid
         f1 = make_fv(close=96.0, bb_lower=95.0, bb_upper=105.0)
         s.generate_signal(f1, has_open_position=False)
-        # Now sell at profit
-        f2 = make_fv(close=97.0, bb_lower=95.0, bb_upper=105.0)
+        # Now sell at profit — need >= min_profit_pct + commission (1.2% + 0.2% = 1.4%)
+        f2 = make_fv(close=97.5, bb_lower=95.0, bb_upper=105.0)
         sig = s.generate_signal(f2, has_open_position=True, entry_price=96.0)
         assert sig is not None
         assert sig.direction == Direction.SELL
@@ -249,8 +249,9 @@ class TestBollingerBreakout:
         s = BollingerBreakout()
         sym = "BTCUSDT"
         # Simulate price going up then dropping
+        # trailing_activate=3%, trailing_stop=1.5%
         s._max_price[sym] = 106.0  # Was at 106
-        f = make_fv(close=102.5)  # pnl=2.5%>=2% activate, drop=3.3%>=3% trail
+        f = make_fv(close=104.3)  # pnl=4.3%>=3% activate, drop from 106→104.3=1.6%>=1.5% trail
         sig = s.generate_signal(f, has_open_position=True, entry_price=100.0)
         assert sig is not None
         assert sig.direction == Direction.SELL
@@ -638,10 +639,12 @@ class TestMLPredictor:
         current.timestamp_close = "2026-01-01T13:00:00"
 
         features = ml.extract_features(current, previous_trades=[prev_1, prev_2, prev_3])
-        assert features[11] == pytest.approx(1 / 3, abs=1e-6)
-        assert features[12] == pytest.approx(1.0, abs=1e-6)
-        assert features[13] == pytest.approx(0.25, abs=1e-6)
-        assert features[14] == 2.0
+        # Indices: 13=recent_win_rate_10, 14=hours_since_last_trade,
+        #          15=rolling_avg_pnl_pct_20, 16=consecutive_losses
+        assert features[13] == pytest.approx(1 / 3, abs=1e-6)   # 1 win / 3 trades
+        assert features[14] == pytest.approx(1.0, abs=1e-6)      # 12:00 - 11:00 = 1h
+        assert features[15] == pytest.approx(1 / 120, abs=1e-6)  # avg pnl normalized
+        assert features[16] == 2.0                                 # 2 consecutive losses
 
     def test_insufficient_trades_for_train(self):
         from analyzer.ml_predictor import MLPredictor

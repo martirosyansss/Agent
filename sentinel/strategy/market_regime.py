@@ -20,19 +20,28 @@ from typing import Optional
 from core.models import FeatureVector, MarketRegime, MarketRegimeType
 
 
-# Module-level state for hysteresis
-_prev_regime: MarketRegimeType = MarketRegimeType.UNKNOWN
-_pending_regime: MarketRegimeType | None = None
-_pending_count: int = 0
+# Per-symbol hysteresis state (prevents cross-symbol regime confusion)
 _HYSTERESIS_CONFIRMS: int = 2  # require 2 consecutive signals to switch
 
+_prev_regime: dict[str, MarketRegimeType] = {}
+_pending_regime: dict[str, MarketRegimeType | None] = {}
+_pending_count: dict[str, int] = {}
 
-def reset_hysteresis() -> None:
-    """Reset hysteresis state (for testing or regime recalibration)."""
-    global _prev_regime, _pending_regime, _pending_count
-    _prev_regime = MarketRegimeType.UNKNOWN
-    _pending_regime = None
-    _pending_count = 0
+
+def reset_hysteresis(symbol: str | None = None) -> None:
+    """Reset hysteresis state (for testing or regime recalibration).
+
+    Args:
+        symbol: Reset for specific symbol. None resets all symbols.
+    """
+    if symbol is None:
+        _prev_regime.clear()
+        _pending_regime.clear()
+        _pending_count.clear()
+    else:
+        _prev_regime.pop(symbol, None)
+        _pending_regime.pop(symbol, None)
+        _pending_count.pop(symbol, None)
 
 
 def detect_regime(
@@ -40,8 +49,8 @@ def detect_regime(
     adx_trending: float = 25.0,
     adx_sideways: float = 20.0,
 ) -> MarketRegime:
-    """Определить текущий рыночный режим по FeatureVector с гистерезисом."""
-    global _prev_regime, _pending_regime, _pending_count
+    """Определить текущий рыночный режим по FeatureVector с per-symbol гистерезисом."""
+    sym = features.symbol
 
     adx = features.adx
     atr = features.atr
@@ -69,28 +78,33 @@ def detect_regime(
     else:
         raw_regime = MarketRegimeType.UNKNOWN
 
+    prev = _prev_regime.get(sym, MarketRegimeType.UNKNOWN)
+    pending = _pending_regime.get(sym)
+    count = _pending_count.get(sym, 0)
+
     # Hysteresis logic: require N consecutive confirmations to change regime
-    if raw_regime == _prev_regime:
+    if raw_regime == prev:
         # Still in current regime — reset pending
-        _pending_regime = None
-        _pending_count = 0
-        final_regime = _prev_regime
-    elif raw_regime == _pending_regime:
+        _pending_regime[sym] = None
+        _pending_count[sym] = 0
+        final_regime = prev
+    elif raw_regime == pending:
         # Same new regime again — increment counter
-        _pending_count += 1
-        if _pending_count >= _HYSTERESIS_CONFIRMS:
+        count += 1
+        _pending_count[sym] = count
+        if count >= _HYSTERESIS_CONFIRMS:
             # Confirmed regime change
-            _prev_regime = raw_regime
-            _pending_regime = None
-            _pending_count = 0
+            _prev_regime[sym] = raw_regime
+            _pending_regime[sym] = None
+            _pending_count[sym] = 0
             final_regime = raw_regime
         else:
-            final_regime = _prev_regime  # stay in old regime
+            final_regime = prev  # stay in old regime
     else:
         # Different new regime — start fresh count
-        _pending_regime = raw_regime
-        _pending_count = 1
-        final_regime = _prev_regime  # stay in old regime
+        _pending_regime[sym] = raw_regime
+        _pending_count[sym] = 1
+        final_regime = prev  # stay in old regime
 
     return MarketRegime(
         regime=final_regime,

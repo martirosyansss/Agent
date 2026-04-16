@@ -77,7 +77,7 @@ class EMACrossoverRSI(BaseStrategy):
     ) -> Optional[Signal]:
         cfg = self._cfg
         sym = features.symbol
-        now_ms = int(time.time() * 1000)
+        now_ms = features.timestamp or int(time.time() * 1000)
 
         # ── SELL логика (если есть позиция) ──
         if has_open_position and entry_price is not None:

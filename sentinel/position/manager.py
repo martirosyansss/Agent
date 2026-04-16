@@ -374,6 +374,33 @@ class PositionManager:
     # State for Telegram / Dashboard
     # ──────────────────────────────────────────────
 
+    @property
+    def profit_factor(self) -> float:
+        """Gross profit / gross loss. >1.0 = profitable system."""
+        gross_profit = sum(p.realized_pnl for p in self._closed_positions if p.realized_pnl > 0) or 0.0
+        gross_loss = abs(sum(p.realized_pnl for p in self._closed_positions if p.realized_pnl < 0)) or 0.001
+        return round(gross_profit / gross_loss, 2)
+
+    @property
+    def avg_rr_ratio(self) -> float:
+        """Average risk:reward ratio from closed positions."""
+        ratios = []
+        for p in self._closed_positions:
+            if p.realized_pnl > 0:
+                ratios.append(abs(p.realized_pnl))
+        avg_win = sum(ratios) / len(ratios) if ratios else 0.0
+        losses = [abs(p.realized_pnl) for p in self._closed_positions if p.realized_pnl < 0]
+        avg_loss = sum(losses) / len(losses) if losses else 1.0
+        return round(avg_win / avg_loss, 2) if avg_loss > 0 else 0.0
+
+    @property
+    def total_wins(self) -> int:
+        return sum(1 for p in self._closed_positions if p.realized_pnl > 0)
+
+    @property
+    def total_losses(self) -> int:
+        return sum(1 for p in self._closed_positions if p.realized_pnl <= 0)
+
     def get_state(self) -> dict:
         """Состояние для Telegram/Dashboard."""
         stats = self.get_daily_stats()
@@ -391,6 +418,11 @@ class PositionManager:
             "max_drawdown_pct": self.max_drawdown_pct,
             "current_drawdown_pct": self.current_drawdown_pct,
             "exposure_pct": exposure_pct,
+            "profit_factor": self.profit_factor,
+            "avg_rr_ratio": self.avg_rr_ratio,
+            "total_wins": self.total_wins,
+            "total_losses": self.total_losses,
+            "peak_balance": self._peak_balance,
             "positions": self.open_positions,
             "recent_trades": [
                 {

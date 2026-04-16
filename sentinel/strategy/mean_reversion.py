@@ -30,7 +30,7 @@ class MeanRevConfig:
     rsi_oversold: float = 25.0
     rsi_overbought: float = 75.0
     stop_loss_pct: float = 3.0
-    take_profit_pct: float = 5.0          # realistic for mean reversion
+    take_profit_pct: float = 6.5          # R:R = 2.17 (was 5% = R:R 1.67)
     trailing_activate_pct: float = 3.0
     trailing_stop_pct: float = 1.5
     min_volume_ratio: float = 1.8
@@ -62,7 +62,7 @@ class MeanReversion(BaseStrategy):
     def generate_signal(self, features: FeatureVector, has_open_position: bool = False, entry_price: float | None = None) -> Optional[Signal]:
         cfg = self._cfg
         sym = features.symbol
-        now_ms = int(time.time() * 1000)
+        now_ms = features.timestamp or int(time.time() * 1000)
 
         if has_open_position and entry_price is not None:
             if entry_price <= 0:
@@ -117,7 +117,8 @@ class MeanReversion(BaseStrategy):
 
         if features.rsi_14 >= cfg.rsi_oversold:
             return None
-        if features.bb_lower > 0 and features.close >= features.bb_lower:
+        # Allow 1% tolerance above lower BB — RSI extreme + near BB is valid entry
+        if features.bb_lower > 0 and features.close >= features.bb_lower * 1.01:
             return None
         if features.volume_ratio < cfg.min_volume_ratio:
             return None

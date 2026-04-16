@@ -91,7 +91,7 @@ class TestFromFeatureVector:
         assert trade.hist_volatility_at_entry == fv.hist_volatility
         assert trade.dmi_spread_at_entry == fv.dmi_spread
         assert trade.stoch_rsi_at_entry == fv.stoch_rsi
-        assert trade.price_change_5h_at_entry == fv.price_change_5m
+        assert trade.price_change_5h_at_entry == fv.price_change_5h
         assert trade.momentum_at_entry == fv.momentum
         assert trade.rsi_daily_at_entry == fv.rsi_14_daily
 

@@ -33,6 +33,7 @@ class RiskLimits:
     max_order_usd: float = 100.0
     max_loss_per_trade_pct: float = 3.0
     mandatory_stop_loss: bool = True
+    min_rr_ratio: float = 1.5               # minimum risk:reward ratio for BUY
     max_daily_commission_pct: float = 1.0
 
 
@@ -224,9 +225,21 @@ class RiskSentinel:
                     reason=f"Stop-loss too wide: {sl_pct:.1f}% > {self._limits.max_loss_per_trade_pct}%",
                 )
 
-        # [7] Sanity Check
+        # [7] Minimum Risk:Reward ratio
         if signal.direction == Direction.BUY and current_market_price > 0:
-            # Если цена сигнала сильно отличается от текущей рыночной
+            if signal.stop_loss_price > 0 and signal.take_profit_price > 0:
+                risk = abs(current_market_price - signal.stop_loss_price)
+                reward = abs(signal.take_profit_price - current_market_price)
+                if risk > 0:
+                    rr_ratio = reward / risk
+                    if rr_ratio < self._limits.min_rr_ratio:
+                        return RiskCheckResult(
+                            approved=False,
+                            reason=f"R:R too low: {rr_ratio:.2f} < {self._limits.min_rr_ratio}",
+                        )
+
+        # [8] Sanity Check
+        if signal.direction == Direction.BUY and current_market_price > 0:
             if signal.suggested_quantity <= 0:
                 return RiskCheckResult(
                     approved=False,

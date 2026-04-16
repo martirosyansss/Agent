@@ -62,7 +62,7 @@ N_FEATURES = 32  # v5: +2 cyclical temporal (sin/cos), -1 adx_normalized (redund
 # Encoding maps
 REGIME_ENCODING = {
     "trending_up": 0, "trending_down": 1, "sideways": 2,
-    "volatile": 3, "unknown": 4,
+    "volatile": 3, "transitioning": 4, "unknown": 5,
 }
 
 # strategy_regime_fit: how well each strategy fits each market regime (-1..1).
@@ -100,6 +100,13 @@ STRATEGY_REGIME_FIT: dict[tuple[str, str], float] = {
     ("dca_bot", "trending_down"):           -0.3,
     ("dca_bot", "sideways"):                 0.3,
     ("dca_bot", "volatile"):                -0.2,
+    # TRANSITIONING regime — dangerous, most strategies perform poorly
+    ("ema_crossover_rsi", "transitioning"):  -0.2,
+    ("bollinger_breakout", "transitioning"):  0.1,
+    ("mean_reversion", "transitioning"):      0.0,
+    ("macd_divergence", "transitioning"):    -0.1,
+    ("grid_trading", "transitioning"):       -0.3,
+    ("dca_bot", "transitioning"):             0.2,
 }
 
 FEATURE_NAMES = [
@@ -698,7 +705,7 @@ class MLPredictor:
                 # Cyclical temporal (4 features)
                 hour_sin, hour_cos, day_sin, day_cos,
                 # Encoding
-                float(REGIME_ENCODING.get(trade.market_regime, 4)),
+                float(REGIME_ENCODING.get(trade.market_regime, 5)),
                 strat_fit,
                 # Historical
                 recent_win_rate,

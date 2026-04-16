@@ -213,14 +213,16 @@ class TestRiskSentinel:
         )
         assert result.approved is True
 
-    def test_stop_state_blocks_all(self, sentinel):
+    def test_stop_state_blocks_buy(self, sentinel):
+        """STOP state blocks BUY. SELL is never blocked (must close positions)."""
         sentinel._sm._state = RiskState.STOP
-        signal = self._make_sell_signal()
+        signal = self._make_buy_signal()
         result = sentinel.check_signal(
-            signal, daily_pnl=-50.0, open_positions_count=0,
-            total_exposure_pct=0.0, balance=450.0, current_market_price=67000.0,
+            signal, daily_pnl=-25.0, open_positions_count=0,
+            total_exposure_pct=0.0, balance=475.0, current_market_price=67000.0,
         )
         assert result.approved is False
+        assert "STOP" in result.reason
 
     def test_safe_state_blocks_buy(self, sentinel):
         sentinel._sm._state = RiskState.SAFE

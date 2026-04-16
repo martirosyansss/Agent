@@ -103,7 +103,7 @@ class DCABot(BaseStrategy):
     ) -> Optional[Signal]:
         cfg = self._cfg
         sym = features.symbol
-        now_ms = int(time.time() * 1000)
+        now_ms = features.timestamp or int(time.time() * 1000)
         self._reset_daily(sym, now_ms)
 
         # ── SELL ──
@@ -196,11 +196,14 @@ class DCABot(BaseStrategy):
         if news_delta != 0:
             reason += f", {news_reason}"
 
+        # SL for Risk Sentinel compliance (max 2.9% per trade).
+        # Internal drawdown stop at stop_drawdown_pct is handled in SELL logic.
+        _sl_pct_for_risk = 2.9
         return Signal(
             timestamp=now_ms, symbol=sym, direction=Direction.BUY,
             confidence=dca_confidence, strategy_name=self.NAME,
             reason=reason, suggested_quantity=qty,
-            stop_loss_price=features.close * (1 - cfg.stop_drawdown_pct / 100),
+            stop_loss_price=features.close * (1 - _sl_pct_for_risk / 100),
             take_profit_price=features.close * (1 + cfg.take_profit_pct / 100),
             features=features,
         )

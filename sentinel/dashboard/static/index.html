@@ -245,7 +245,7 @@
         /* ═══════════════════ METRIC CARDS ═══════════════════ */
         .metrics-grid {
             display: grid;
-            grid-template-columns: repeat(6, 1fr);
+            grid-template-columns: repeat(3, 1fr);
             gap: 12px;
         }
         .metric-card {
@@ -2659,7 +2659,67 @@
                     </span>
                 </div>
                 <div class="metric-value neutral" id="win-rate">0%</div>
-                <div class="metric-sub">Процент прибыльных сделок</div>
+                <div class="metric-sub" id="win-rate-sub">Процент прибыльных сделок</div>
+            </div>
+
+            <!-- Max Drawdown -->
+            <div class="metric-card metric-card--amber">
+                <div class="metric-header">
+                    <div class="metric-icon metric-icon--amber">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>
+                    </div>
+                    <span class="metric-label">Max Drawdown</span>
+                    <span class="has-tooltip" style="margin-left:auto" tabindex="0" aria-label="Max Drawdown">
+                        <span class="info-btn" aria-hidden="true">?</span>
+                        <div class="tooltip-box" role="tooltip">
+                            <div class="tooltip-title">Max Drawdown</div>
+                            <div class="tooltip-body">Максимальное падение баланса от пикового значения. Показывает худший сценарий за всё время. Профессиональный стандарт: не более 10-20%.</div>
+                            <div class="tooltip-range">Хорошо: &lt;5% | Норма: 5-10% | Опасно: &gt;15%</div>
+                        </div>
+                    </span>
+                </div>
+                <div class="metric-value neutral" id="max-drawdown">0.0%</div>
+                <div class="metric-sub" id="max-drawdown-sub">Макс. падение от пика</div>
+            </div>
+
+            <!-- Profit Factor -->
+            <div class="metric-card metric-card--cyan">
+                <div class="metric-header">
+                    <div class="metric-icon metric-icon--cyan">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M16 8l-4 4-4-4"/><path d="M12 16V8"/></svg>
+                    </div>
+                    <span class="metric-label">Profit Factor</span>
+                    <span class="has-tooltip" style="margin-left:auto" tabindex="0" aria-label="Profit Factor">
+                        <span class="info-btn" aria-hidden="true">?</span>
+                        <div class="tooltip-box" role="tooltip">
+                            <div class="tooltip-title">Profit Factor</div>
+                            <div class="tooltip-body">Отношение суммы всех прибыльных сделок к сумме убыточных. PF &gt; 1.0 = система зарабатывает. PF &gt; 1.5 = хорошая система. PF &gt; 2.0 = отличная.</div>
+                            <div class="tooltip-range">Плохо: &lt;1.0 | Норма: 1.2-1.5 | Отлично: &gt;2.0</div>
+                        </div>
+                    </span>
+                </div>
+                <div class="metric-value neutral" id="profit-factor">0.00</div>
+                <div class="metric-sub" id="profit-factor-sub">Прибыль / Убыток</div>
+            </div>
+
+            <!-- Avg R:R -->
+            <div class="metric-card metric-card--purple">
+                <div class="metric-header">
+                    <div class="metric-icon metric-icon--purple">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                    </div>
+                    <span class="metric-label">Avg R:R</span>
+                    <span class="has-tooltip" style="margin-left:auto" tabindex="0" aria-label="Risk Reward Ratio">
+                        <span class="info-btn" aria-hidden="true">?</span>
+                        <div class="tooltip-box" role="tooltip">
+                            <div class="tooltip-title">Risk:Reward Ratio</div>
+                            <div class="tooltip-body">Среднее отношение выигрыша к проигрышу. R:R 2.0 = средний выигрыш в 2 раза больше среднего проигрыша. При R:R &gt; 1.5 можно быть прибыльным даже с win rate 40%.</div>
+                            <div class="tooltip-range">Плохо: &lt;1.0 | Норма: 1.5-2.0 | Отлично: &gt;2.5</div>
+                        </div>
+                    </span>
+                </div>
+                <div class="metric-value neutral" id="avg-rr">0.00</div>
+                <div class="metric-sub" id="avg-rr-sub">Средний выигрыш / проигрыш</div>
             </div>
         </div>
 
@@ -2773,6 +2833,22 @@
                 </div>
             </div>
             <div id="pnlChartNote" style="margin-top:8px;color:var(--text-secondary);font-size:12px;min-height:18px;">&nbsp;</div>
+        </div>
+
+        <!-- Equity Curve -->
+        <div class="panel fade-in fade-in-delay-2" style="margin-top: 20px;">
+            <div class="panel-title">
+                <h3>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    Equity Curve
+                </h3>
+                <span class="badge badge-paper" id="equity-peak-badge" style="font-size:10px;">Peak: $0</span>
+            </div>
+            <p class="panel-desc">Кривая роста баланса с отображением просадок. <strong>Зелёная линия</strong> = баланс. <strong>Красная зона</strong> = drawdown от пика. Чем меньше красного, тем стабильнее система.</p>
+            <div class="chart-wrap" style="position:relative;height:220px;">
+                <canvas id="equityChart" aria-label="Equity curve chart" role="img"></canvas>
+                <div id="equityNoData" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;pointer-events:none;">Collecting data...</div>
+            </div>
         </div>
 
         <div class="dashboard-row" style="margin-top: 20px;">
@@ -4166,6 +4242,35 @@
         var wrEl = document.getElementById('win-rate');
         wrEl.textContent = wr.toFixed(1) + '%';
         wrEl.className = 'metric-value ' + (wr >= 50 ? 'positive' : wr > 0 ? 'negative' : 'neutral');
+        var twins = data.total_wins || 0, tlosses = data.total_losses || 0;
+        if (twins + tlosses > 0) document.getElementById('win-rate-sub').textContent = twins + 'W / ' + tlosses + 'L';
+
+        /* Max Drawdown */
+        var dd = data.max_drawdown_pct || 0;
+        var ddEl = document.getElementById('max-drawdown');
+        ddEl.textContent = dd.toFixed(1) + '%';
+        ddEl.className = 'metric-value ' + (dd > 10 ? 'negative' : dd > 5 ? 'neutral' : 'positive');
+        var curDD = data.current_drawdown_pct || 0;
+        document.getElementById('max-drawdown-sub').textContent = 'Current: ' + curDD.toFixed(1) + '%';
+
+        /* Profit Factor */
+        var pf = data.profit_factor || 0;
+        var pfEl = document.getElementById('profit-factor');
+        pfEl.textContent = pf.toFixed(2);
+        pfEl.className = 'metric-value ' + (pf >= 1.5 ? 'positive' : pf >= 1.0 ? 'neutral' : pf > 0 ? 'negative' : 'neutral');
+        document.getElementById('profit-factor-sub').textContent = pf >= 1.5 ? 'Strong system' : pf >= 1.0 ? 'Breakeven+' : pf > 0 ? 'Losing system' : 'No data';
+
+        /* Avg R:R */
+        var rr = data.avg_rr_ratio || 0;
+        var rrEl = document.getElementById('avg-rr');
+        rrEl.textContent = rr.toFixed(2);
+        rrEl.className = 'metric-value ' + (rr >= 2.0 ? 'positive' : rr >= 1.0 ? 'neutral' : rr > 0 ? 'negative' : 'neutral');
+        document.getElementById('avg-rr-sub').textContent = rr >= 2.0 ? 'Excellent R:R' : rr >= 1.0 ? 'Acceptable R:R' : 'Improve R:R';
+
+        /* Peak balance badge */
+        var peakBal = data.peak_balance || data.balance || 0;
+        var peakEl = document.getElementById('equity-peak-badge');
+        if (peakEl) peakEl.textContent = 'Peak: $' + peakBal.toFixed(2);
 
         /* Uptime */
         if (data.uptime) document.getElementById('uptime-label').textContent = data.uptime;
@@ -5104,6 +5209,109 @@
 
     async function fetchConfig() {}
 
+    /* ── Equity Curve Chart ────────────────────── */
+    var _equityChart = null;
+    function renderEquityCurve(data) {
+        var canvas = document.getElementById('equityChart');
+        var noDataEl = document.getElementById('equityNoData');
+        if (!canvas || !data || data.length < 2) return;
+        if (noDataEl) noDataEl.style.display = 'none';
+
+        var labels = data.map(function(d) { return d.label || ''; });
+        var balances = data.map(function(d) { return d.balance || 0; });
+        // Calculate drawdown series from balance
+        var peak = balances[0];
+        var drawdowns = balances.map(function(b) {
+            if (b > peak) peak = b;
+            return peak > 0 ? -((peak - b) / peak * 100) : 0;
+        });
+
+        if (_equityChart) { _equityChart.destroy(); }
+        var ctx = canvas.getContext('2d');
+
+        _equityChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Balance ($)',
+                        data: balances,
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        borderWidth: 2,
+                        yAxisID: 'y',
+                    },
+                    {
+                        label: 'Drawdown (%)',
+                        data: drawdowns,
+                        borderColor: 'rgba(239, 68, 68, 0.6)',
+                        backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        borderWidth: 1.5,
+                        yAxisID: 'y1',
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: { color: '#8892a8', font: { size: 11 }, boxWidth: 12, padding: 15, usePointStyle: true }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(10, 15, 28, 0.92)',
+                        titleColor: '#f5f7ff',
+                        bodyColor: '#b8c0d4',
+                        borderColor: 'rgba(90, 110, 150, 0.3)',
+                        borderWidth: 1,
+                        callbacks: {
+                            label: function(ctx) {
+                                if (ctx.datasetIndex === 0) return 'Balance: $' + ctx.raw.toFixed(2);
+                                return 'Drawdown: ' + ctx.raw.toFixed(1) + '%';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        display: true,
+                        ticks: { color: '#6a7590', font: { size: 10 }, maxTicksLimit: 8 },
+                        grid: { color: 'rgba(56, 68, 91, 0.15)' }
+                    },
+                    y: {
+                        position: 'left',
+                        ticks: { color: '#10b981', font: { size: 10 }, callback: function(v) { return '$' + v.toFixed(0); } },
+                        grid: { color: 'rgba(56, 68, 91, 0.15)' }
+                    },
+                    y1: {
+                        position: 'right',
+                        ticks: { color: '#ef4444', font: { size: 10 }, callback: function(v) { return v.toFixed(0) + '%'; } },
+                        grid: { display: false },
+                        max: 0,
+                    }
+                }
+            }
+        });
+    }
+
+    async function fetchEquityCurve() {
+        try {
+            var r = await fetch('/api/pnl-history');
+            var data = await r.json();
+            if (data && data.length >= 2) renderEquityCurve(data);
+        } catch(e) {}
+    }
+
     /* ── News & Sentiment — PRO MAX ────────────────────── */
     function fgiColor(val) {
         if (val <= 20) return '#ef4444';
@@ -5415,6 +5623,7 @@
                         <div class="sp-stats">
                             <span>Trades<span class="sp-val">${s.total_trades}</span></span>
                             <span>Win Rate<span class="sp-val" style="color:${wrColor}">${wr.toFixed(0)}%</span></span>
+                            <span>PF<span class="sp-val" style="color:${(s.profit_factor||0) >= 1.5 ? 'var(--green)' : (s.profit_factor||0) >= 1.0 ? 'var(--amber)' : 'var(--red)'}">${(s.profit_factor||0).toFixed(2)}</span></span>
                             <span>Avg PnL<span class="sp-val">${(s.avg_pnl||0) >= 0 ? '+' : ''}$${(s.avg_pnl||0).toFixed(2)}</span></span>
                             <span>Best<span class="sp-val" style="color:var(--green)">+$${(s.best_trade||0).toFixed(2)}</span></span>
                             <span>Worst<span class="sp-val" style="color:var(--red)">$${(s.worst_trade||0).toFixed(2)}</span></span>
@@ -5432,12 +5641,14 @@
     fetchPositions();
     fetchTrades();
     fetchPnlHistory();
+    fetchEquityCurve();
     fetchStrategyPerformance();
     fetchNews();
     setInterval(fetchStatus, 5000);
     setInterval(fetchPositions, 8000);
     setInterval(fetchTrades, 8000);
     setInterval(function() { renderMarketSeries(activeInterval); }, 30000);
+    setInterval(fetchEquityCurve, 30000);
     setInterval(fetchStrategyPerformance, 60000);
     setInterval(fetchNews, 120000);
 
@@ -5478,7 +5689,11 @@
         "API": "Подключение к бирже.",
         "Database": "Статус БД.",
         "Collector": "Сборщик рыночных данных.",
-        "PnL": "Ваш текущий финансовый результат."
+        "PnL": "Ваш текущий финансовый результат.",
+        "Max Drawdown": "Максимальное падение баланса от пикового значения. Показывает наихудший сценарий. Профи: до 10%.",
+        "Profit Factor": "Отношение общей прибыли к общим убыткам. >1.5 = сильная система, <1.0 = убыточная.",
+        "Avg R:R": "Средний Risk:Reward — отношение среднего выигрыша к среднему проигрышу. >1.5 = профессиональный уровень.",
+        "Equity Curve": "Кривая роста капитала с наложением просадок. Идеальная — плавный рост без глубоких провалов."
     };
 
     function createBlockInfoModal() {

@@ -1073,6 +1073,9 @@ async def run() -> None:
                 features.news_critical_alert = news_signal.get("critical_alert", False)
                 features.news_actionable = news_signal.get("actionable", False)
                 features.news_dominant_category = news_signal.get("dominant_category", "")
+                # Update news timestamp for time decay in confidence adjustment
+                from strategy.base_strategy import update_news_timestamp
+                update_news_timestamp()
             except Exception as e:
                 log.debug("News sentiment enrichment failed: {}", e)
 
@@ -1103,6 +1106,11 @@ async def run() -> None:
         entry_price = pos.entry_price if pos else None
 
         # 6. Генерировать сигналы от каждой активной стратегии
+        # Sort: strategy that opened current position goes first (SELL priority),
+        # so exit signals are evaluated before new entries from other strategies.
+        _pos_strategy = pos.strategy_name if pos else None
+        if _pos_strategy and _pos_strategy in active_names:
+            active_names = [_pos_strategy] + [n for n in active_names if n != _pos_strategy]
         signal_found = False
         strat_results = []
         for strat_name in active_names:
@@ -1154,6 +1162,16 @@ async def run() -> None:
                     except Exception as _kelly_err:
                         log.debug("Kelly stats fetch failed: {}", _kelly_err)
 
+                    # Collect currently open position symbols for correlation correction
+                    _open_syms = [p.symbol for p in position_manager.open_positions] if position_manager else []
+                    # Count consecutive losses from recent trades (for loss streak dampener)
+                    _consec_losses = 0
+                    if _recent:
+                        for _t in reversed(_recent):
+                            if _t.get("pnl_pct", 0) <= 0:
+                                _consec_losses += 1
+                            else:
+                                break
                     sizing = calculate_position_size(SizingInput(
                         balance=balance,
                         price=features.close,
@@ -1164,6 +1182,9 @@ async def run() -> None:
                         regime_adx=features.adx,
                         max_position_pct=settings.max_position_pct,
                         max_order_usd=settings.max_order_usd,
+                        symbol=symbol,
+                        open_symbols=_open_syms,
+                        consecutive_losses=_consec_losses,
                     ))
                     signal.suggested_quantity = sizing.quantity
                     log.debug("Position sizer: {} budget=${:.2f} ({:.1f}%) kelly={:.3f}",
@@ -1178,7 +1199,8 @@ async def run() -> None:
                     if features.close > 0:
                         signal.suggested_quantity = budget_usd / features.close
 
-            # Dynamic SL/TP
+            # Dynamic SL/TP — merge with strategy-calculated values (news-adjusted)
+            # Use tighter SL (higher price = closer to entry) and wider TP (higher price)
             if _position_sizer and signal.direction == Direction.BUY:
                 sltp = calculate_dynamic_sltp(
                     entry_price=features.close,
@@ -1187,11 +1209,18 @@ async def run() -> None:
                     fallback_sl_pct=settings.stop_loss_pct,
                     fallback_tp_pct=settings.take_profit_pct,
                 )
-                signal.stop_loss_price = sltp.stop_loss_price
-                signal.take_profit_price = sltp.take_profit_price
-                log.debug("Dynamic SL/TP [{}]: SL={:.2f} ({:.1f}%) TP={:.2f} ({:.1f}%)",
-                          sltp.method, sltp.stop_loss_price, sltp.stop_loss_pct,
-                          sltp.take_profit_price, sltp.take_profit_pct)
+                # Merge: keep the tighter (more protective) SL and wider TP
+                if signal.stop_loss_price > 0:
+                    signal.stop_loss_price = max(signal.stop_loss_price, sltp.stop_loss_price)
+                else:
+                    signal.stop_loss_price = sltp.stop_loss_price
+                if signal.take_profit_price > 0:
+                    signal.take_profit_price = max(signal.take_profit_price, sltp.take_profit_price)
+                else:
+                    signal.take_profit_price = sltp.take_profit_price
+                log.debug("Dynamic SL/TP [{}]: SL={:.2f} ({:.1f}%) TP={:.2f} ({:.1f}%) (merged with strategy)",
+                          sltp.method, signal.stop_loss_price, sltp.stop_loss_pct,
+                          signal.take_profit_price, sltp.take_profit_pct)
 
             # 6.5 ML Predictor filter (per-symbol model with unified fallback)
             _active_ml = _ml_predictors.get(symbol, _ml_predictor)
@@ -1246,6 +1275,14 @@ async def run() -> None:
                         continue
                 except Exception as e:
                     log.debug("ML prediction failed: {}", e)
+
+            # 6.7 Global min_confidence enforcement (catches edge cases)
+            if signal.direction == Direction.BUY and signal.confidence < settings.min_confidence:
+                log.debug("Signal SKIPPED: {} conf={:.2f} < min {:.2f}",
+                          strat_name, signal.confidence, settings.min_confidence)
+                strat_results.append({"strategy": strat_name, "result": "low_confidence",
+                                      "detail": f"conf={signal.confidence:.2f} < {settings.min_confidence}"})
+                continue
 
             # 7. Risk check
             daily_pnl = position_manager.total_realized_pnl
@@ -1814,6 +1851,13 @@ async def run() -> None:
             "trades_today": int(position_state.get("trades_today", 0)),
             "balance": balance,
             "win_rate": float(position_state.get("win_rate", 0.0)),
+            "profit_factor": float(position_state.get("profit_factor", 0.0)),
+            "avg_rr_ratio": float(position_state.get("avg_rr_ratio", 0.0)),
+            "max_drawdown_pct": float(position_state.get("max_drawdown_pct", 0.0)),
+            "current_drawdown_pct": float(position_state.get("current_drawdown_pct", 0.0)),
+            "peak_balance": float(position_state.get("peak_balance", balance)),
+            "total_wins": int(position_state.get("total_wins", 0)),
+            "total_losses": int(position_state.get("total_losses", 0)),
             "positions": position_state.get("positions", []),
             "recent_trades": position_state.get("recent_trades", []),
             "pnl_history": position_state.get("pnl_history", []),
