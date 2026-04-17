@@ -143,7 +143,7 @@
         </div>
 
         <!-- ── Open Positions (приоритетно — сразу после управления) ── -->
-        <div class="table-panel positions-panel fade-in fade-in-delay-1" id="positions-panel-wrap" class="u-mt-20">
+        <div class="table-panel positions-panel fade-in fade-in-delay-1 u-mt-20" id="positions-panel-wrap">
             <div class="panel-title">
                 <h3>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -390,7 +390,7 @@
                 </div>
             </div>
             <!-- Price hero row -->
-            <div class="chart-price-header" id="chartPriceHeader" class="u-hidden">
+            <div class="chart-price-header u-hidden" id="chartPriceHeader">
                 <div class="chart-price-main">
                     <span class="chart-price-now" id="chartPriceNow">—</span>
                     <span class="chart-price-change" id="chartPriceChange">—</span>
@@ -406,7 +406,7 @@
                 <canvas id="pnlChart" aria-label="Price chart" role="img"></canvas>
                 <div id="pnlNoData" class="chart-no-data-overlay">Собираем данные…</div>
             </div>
-            <div class="chart-legend-row" id="emaLegendRow" class="u-hidden">
+            <div class="chart-legend-row u-hidden" id="emaLegendRow">
                 <span class="chart-indicators-label">Indicators</span>
                 <div class="chart-legend-item" id="legendEma9" data-ema-toggle="2" title="Toggle EMA 9">
                     <span class="chart-legend-line chart-legend-line--ema9"></span>
@@ -429,7 +429,7 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
                     Equity Curve
                 </h3>
-                <span class="badge badge-paper" id="equity-peak-badge" class="equity-peak-badge">Пик: $0</span>
+                <span class="badge badge-paper equity-peak-badge" id="equity-peak-badge">Пик: $0</span>
             </div>
             <p class="panel-desc">Кривая роста баланса с отображением просадок. <strong>Зелёная линия</strong> = баланс. <strong>Красная зона</strong> = drawdown от пика. Чем меньше красного, тем стабильнее система.</p>
             <div class="chart-wrap u-chart-wrap-220">
