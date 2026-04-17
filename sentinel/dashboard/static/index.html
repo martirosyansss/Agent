@@ -20,6 +20,9 @@
     <!-- ═══ Header ═══ -->
     <header class="header" role="banner">
         <div class="header-left">
+            <button class="mobile-menu-toggle" id="mobile-menu-toggle" aria-label="Открыть меню" aria-expanded="false" aria-controls="sidebar">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
             <div class="header-logo">
                 <div class="header-logo-icon">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -53,7 +56,8 @@
     </header>
 
     <!-- ═══ Sidebar ═══ -->
-    <nav class="sidebar" role="navigation" aria-label="Main navigation">
+    <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop" aria-hidden="true"></div>
+    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation">
         <a href="/" class="sidebar-link active">
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
             <span>Dashboard</span>
@@ -70,6 +74,10 @@
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
             <span>Новости</span>
         </a>
+        <a href="/logs" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg>
+            <span>Логи</span>
+        </a>
         <div class="sidebar-divider"></div>
         <div class="sidebar-section">Система</div>
         <a href="/settings" class="sidebar-link">
@@ -82,23 +90,100 @@
     <div class="app-layout">
     <main class="container" role="main">
 
+        <!-- ── Controls ── -->
+        <div class="controls-bar fade-in">
+            <div class="controls-actions">
+                <button class="btn btn-start" id="btn-start" onclick="controlAction('resume')" aria-label="Запустить торговлю">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    Запустить
+                </button>
+                <button class="btn btn-stop" id="btn-stop" onclick="controlAction('stop')" aria-label="Приостановить торговлю">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                    Пауза
+                </button>
+                <button class="btn btn-kill" id="btn-kill" onclick="confirmKill()" aria-label="Аварийная остановка">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    Авар. стоп
+                </button>
+            </div>
+            <div class="controls-help">
+                <ul class="controls-help-list">
+                    <li>
+                        <span class="ctrl-tag ctrl-tag-start">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            Запустить
+                        </span>
+                        <span>начать торговлю</span>
+                    </li>
+                    <li>
+                        <span class="ctrl-tag ctrl-tag-stop">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                            Пауза
+                        </span>
+                        <span>пауза входа, позиции остаются</span>
+                    </li>
+                    <li>
+                        <span class="ctrl-tag ctrl-tag-kill">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            Авар. стоп
+                        </span>
+                        <span>закрыть <strong>ВСЕ</strong> позиции</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- ── Data Age warning banner (показывается при data_age_sec > 10s) ── -->
+        <div class="data-age-banner" id="data-age-banner" role="alert" aria-live="polite">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span id="data-age-banner-text">Устаревшие данные биржи</span>
+        </div>
+
+        <!-- ── Open Positions (приоритетно — сразу после управления) ── -->
+        <div class="table-panel positions-panel fade-in fade-in-delay-1" id="positions-panel-wrap" style="margin-top:20px;">
+            <div class="panel-title">
+                <h3>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    Открытые позиции
+                </h3>
+                <span class="panel-desc-inline" style="font-size:11.5px;color:var(--text-dim);margin-left:8px;">BUY — ждём роста · SELL — ждём падения · SL/TP — стоп/тейк</span>
+            </div>
+            <div class="positions-header-row">
+                <div class="positions-header-left">
+                    <span class="positions-count-badge" id="positions-count">0 позиций</span>
+                    <div class="positions-total-pnl" id="positions-total-pnl">
+                        <span class="pnl-label">Общий PnL</span>
+                        <span class="neutral">$0.00</span>
+                    </div>
+                </div>
+            </div>
+            <div class="positions-grid" id="positions-container" data-loading="true">
+                <div class="skeleton-row" aria-hidden="true">
+                    <div class="skeleton skeleton-block skeleton-block--lg"></div>
+                    <div class="skeleton skeleton-block skeleton-block--md"></div>
+                    <div class="skeleton skeleton-block skeleton-block--sm"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- ── Market Overview (top widget) ── -->
         <section class="market-overview fade-in" id="market-overview" aria-label="Состояние рынка">
             <div class="market-overview-header">
                 <div class="market-overview-title">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-6"/></svg>
                     <span>Состояние рынка прямо сейчас</span>
+                    <span class="mo-tf-badge" title="Таймфрейм: индикаторы и ML рассчитаны на 1-часовых свечах">TF 1h</span>
                 </div>
                 <span class="market-overview-hint">Куда идёт рынок по торгуемым символам и почему. Обновляется каждые 2 сек.</span>
             </div>
             <div class="market-overview-grid" id="market-overview-grid">
-                <div class="market-overview-empty">Ждём данные индикаторов…</div>
+                <div class="market-overview-empty">Loading market data…</div>
             </div>
         </section>
 
         <!-- ── Key Metrics ── -->
         <p class="metrics-intro fade-in">Главные показатели вашего бота за сегодня. <strong>Зелёный</strong> = в плюсе, <span class="red"><strong>красный</strong></span> = в минусе. Наведите на <span class="info-btn" style="display:inline-flex;vertical-align:middle">?</span> рядом с метрикой для подробного объяснения.</p>
-        <div class="metrics-grid fade-in">
+        <div class="metrics-grid fade-in" id="metrics-grid" data-loading="true">
 
             <!-- PnL Today -->
             <div class="metric-card metric-card--green">
@@ -118,26 +203,6 @@
                 </div>
                 <div class="metric-value neutral" id="pnl-today">$0.00</div>
                 <div class="metric-sub">Реализованная прибыль за день</div>
-            </div>
-
-            <!-- PnL Total -->
-            <div class="metric-card metric-card--blue">
-                <div class="metric-header">
-                    <div class="metric-icon metric-icon--blue">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                    </div>
-                    <span class="metric-label">PnL Всего</span>
-                    <span class="has-tooltip" style="margin-left:auto" tabindex="0" aria-label="Что такое общий PnL?">
-                        <span class="info-btn" aria-hidden="true">?</span>
-                        <div class="tooltip-box" role="tooltip">
-                            <div class="tooltip-title">💰 Суммарный PnL</div>
-                            <div class="tooltip-body">Накопленный результат за всё время работы бота. Включает все закрытые сделки с момента запуска. Не учитывает открытые позиции.</div>
-                            <div class="tooltip-range">Растёт → бот зарабатывает · Падает → пересмотри стратегию</div>
-                        </div>
-                    </span>
-                </div>
-                <div class="metric-value neutral" id="pnl-total">$0.00</div>
-                <div class="metric-sub">Общий накопленный результат</div>
             </div>
 
             <!-- Balance -->
@@ -283,27 +348,6 @@
 
 
 
-        <!-- ── Controls ── -->
-        <div class="controls-bar fade-in" style="margin-top: 20px;">
-            <div class="controls-help" style="width:100%; margin-bottom:10px;">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                <strong style="color:var(--text-secondary)">Управление:</strong> Start — запускает торговлю. Stop — пауза, сделки остаются открытыми. Emergency Stop — немедленно закрывает ВСЕ позиции.
-            </div>
-            <button class="btn btn-start" id="btn-start" onclick="controlAction('resume')" aria-label="Запустить торговлю">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                Запустить
-            </button>
-            <button class="btn btn-stop" id="btn-stop" onclick="controlAction('stop')" aria-label="Приостановить торговлю">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-                Пауза
-            </button>
-            <div class="controls-spacer"></div>
-            <button class="btn btn-kill" id="btn-kill" onclick="confirmKill()" aria-label="Аварийная остановка">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                Аварийная остановка
-            </button>
-        </div>
-
         <div class="section-divider"><h2>^ Анализ рынка</h2></div>
         <p style="font-size:12px;color:var(--text-dim);margin:-12px 0 20px;line-height:1.5;">
             График цен, риски и индикаторы — если ты новичок, прокрути каждую карточку — по значку <span class="info-btn" style="display:inline-flex;vertical-align:middle">?</span> появится подсказка с объяснением.
@@ -417,6 +461,7 @@
                         <span class="risk-metric-value neutral" id="risk-daily-loss">$0.00</span>
                     </div>
                     <div class="risk-bar-track"><div class="risk-bar-fill risk-bar-fill--green" id="risk-daily-loss-bar" style="width: 0%"></div></div>
+                    <div class="risk-metric-threshold" id="risk-daily-loss-threshold">Лимит: —</div>
                 </div>
                 <div class="risk-metric">
                     <div class="risk-metric-head">
@@ -431,6 +476,7 @@
                         <span class="risk-metric-value neutral" id="risk-max-dd">0.0%</span>
                     </div>
                     <div class="risk-bar-track"><div class="risk-bar-fill risk-bar-fill--green" id="risk-max-dd-bar" style="width: 0%"></div></div>
+                    <div class="risk-metric-threshold" id="risk-max-dd-threshold">Опасно при &gt;15%</div>
                 </div>
                 <div class="risk-metric">
                     <div class="risk-metric-head">
@@ -445,6 +491,7 @@
                         <span class="risk-metric-value neutral" id="risk-exposure">0.0%</span>
                     </div>
                     <div class="risk-bar-track"><div class="risk-bar-fill risk-bar-fill--green" id="risk-exposure-bar" style="width: 0%"></div></div>
+                    <div class="risk-metric-threshold" id="risk-exposure-threshold">Лимит: —</div>
                 </div>
                 <div class="risk-metric">
                     <div class="risk-metric-head">
@@ -459,6 +506,7 @@
                         <span class="risk-metric-value neutral" id="risk-freq">0/h</span>
                     </div>
                     <div class="risk-bar-track"><div class="risk-bar-fill risk-bar-fill--green" id="risk-freq-bar" style="width: 0%"></div></div>
+                    <div class="risk-metric-threshold" id="risk-freq-threshold">Лимит: —</div>
                 </div>
                 <div class="risk-metric">
                     <div class="risk-metric-head">
@@ -473,6 +521,7 @@
                         <span class="risk-metric-value neutral" id="risk-data-age">&mdash;</span>
                     </div>
                     <div class="risk-bar-track"><div class="risk-bar-fill risk-bar-fill--green" id="risk-data-age-bar" style="width: 0%"></div></div>
+                    <div class="risk-metric-threshold">Норма &lt;5с · Опасно &gt;30с</div>
                 </div>
                 <div class="risk-metric">
                     <div class="risk-metric-head">
@@ -487,6 +536,7 @@
                         <span class="risk-metric-value neutral" id="risk-commission">$0.00</span>
                     </div>
                     <div class="risk-bar-track"><div class="risk-bar-fill risk-bar-fill--green" id="risk-commission-bar" style="width: 0%"></div></div>
+                    <div class="risk-metric-threshold" id="risk-commission-threshold">Доля от PnL: —</div>
                 </div>
             </div>
             <div class="risk-legend">
@@ -508,54 +558,14 @@
             <p class="panel-desc">Системные предупреждения: превышение рисков, проблемы с подключением, ошибки стратегий. Красные — критические, жёлтые — предупреждения.</p>
             <div class="alerts-list" id="alerts-list">
                 <div class="strat-log-empty">
-                    <div>Алертов нет — всё спокойно ✓</div>
+                    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:24px;height:24px;opacity:0.35;"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/></svg>
+                    <div>Нет активных алертов — система работает штатно</div>
                 </div>
             </div>
         </div>
             </div>
         </div>
 
-
-        <div class="section-divider">
-            <h2>
-                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;vertical-align:-2px;margin-right:4px;opacity:0.6;"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                Торговая активность
-            </h2>
-        </div>
-        <p class="trading-activity-desc">
-            Текущие позиции и история закрытых сделок.
-            <span class="tag-hl">BUY</span> = купил актив, ждём роста.
-            <span class="tag-hl">SELL</span> = продал, ждём падения.
-            <span class="tag-hl">SL</span> = Stop-Loss (макс. убыток),
-            <span class="tag-hl">TP</span> = Take-Profit (целевая прибыль).
-        </p>
-
-
-<!-- ── Open Positions (Redesigned) ── -->
-        <div class="table-panel positions-panel fade-in fade-in-delay-3" id="positions-panel-wrap">
-            <div class="panel-title">
-                <h3>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    Открытые позиции
-                </h3>
-            </div>
-            <div class="positions-header-row">
-                <div class="positions-header-left">
-                    <span class="positions-count-badge" id="positions-count">0 позиций</span>
-                    <div class="positions-total-pnl" id="positions-total-pnl">
-                        <span class="pnl-label">Общий PnL</span>
-                        <span class="neutral">$0.00</span>
-                    </div>
-                </div>
-            </div>
-            <div class="positions-grid" id="positions-container" data-loading="true">
-                <div class="skeleton-row" aria-hidden="true">
-                    <div class="skeleton skeleton-block skeleton-block--lg"></div>
-                    <div class="skeleton skeleton-block skeleton-block--md"></div>
-                    <div class="skeleton skeleton-block skeleton-block--sm"></div>
-                </div>
-            </div>
-        </div>
 
         <div class="section-divider">
             <h2>
@@ -632,7 +642,10 @@
     </footer>
 
     <!-- ═══ Toast ═══ -->
-    <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <!-- ═══ Confirmation modal root (Emergency Stop / Close Position) ═══ -->
+    <div id="confirm-modal-root" aria-live="polite"></div>
 
     <!-- ═══════════════════════════════════════════
          JAVASCRIPT

@@ -75,17 +75,23 @@
     }
 
     /* ── Chart ───────────────────────────────── */
-    var ctx = document.getElementById('pnlChart').getContext('2d');
+    /* Canvas pnlChart отсутствует на страницах, отличных от index.html */
+    var _pnlCanvas = document.getElementById('pnlChart');
+    var ctx = _pnlCanvas ? _pnlCanvas.getContext('2d') : null;
 
-    var gradientUp = ctx.createLinearGradient(0, 0, 0, 340);
-    gradientUp.addColorStop(0, 'rgba(99, 102, 241, 0.30)');
-    gradientUp.addColorStop(0.5, 'rgba(99, 102, 241, 0.08)');
-    gradientUp.addColorStop(1, 'rgba(99, 102, 241, 0.0)');
+    var gradientUp = ctx ? ctx.createLinearGradient(0, 0, 0, 340) : null;
+    if (gradientUp) {
+        gradientUp.addColorStop(0, 'rgba(99, 102, 241, 0.30)');
+        gradientUp.addColorStop(0.5, 'rgba(99, 102, 241, 0.08)');
+        gradientUp.addColorStop(1, 'rgba(99, 102, 241, 0.0)');
+    }
 
-    var gradientGreen = ctx.createLinearGradient(0, 0, 0, 340);
-    gradientGreen.addColorStop(0, 'rgba(34, 197, 94, 0.25)');
-    gradientGreen.addColorStop(0.5, 'rgba(34, 197, 94, 0.06)');
-    gradientGreen.addColorStop(1, 'rgba(34, 197, 94, 0.0)');
+    var gradientGreen = ctx ? ctx.createLinearGradient(0, 0, 0, 340) : null;
+    if (gradientGreen) {
+        gradientGreen.addColorStop(0, 'rgba(34, 197, 94, 0.25)');
+        gradientGreen.addColorStop(0.5, 'rgba(34, 197, 94, 0.06)');
+        gradientGreen.addColorStop(1, 'rgba(34, 197, 94, 0.0)');
+    }
 
     var chartSeriesMode = 'pnl';
     var activeInterval = '1m';
@@ -260,7 +266,7 @@
         }
     };
 
-    var pnlChart = new Chart(ctx, {
+    var pnlChart = ctx ? new Chart(ctx, {
         type: 'line',
         data: {
             labels: [],
@@ -437,13 +443,14 @@
                 }
             }
         }
-    });
+    }) : null;
 
     /* Store OHLC data for tooltip */
     window._chartOhlcData = null;
 
     /* ── EMA Legend Toggle ── */
     window.toggleEmaLine = function(dsIndex) {
+        if (!pnlChart) return;
         var ds = pnlChart.data.datasets[dsIndex];
         if (!ds) return;
         ds.hidden = !ds.hidden;
@@ -523,6 +530,7 @@
     }
 
     function renderPnlSeries(labels, values) {
+        if (!pnlChart) return false;
         var chartNoteEl = document.getElementById('pnlChartNote');
         var isFlat = values.every(function(v) { return v === values[0]; });
         chartSeriesMode = 'pnl';
@@ -573,6 +581,7 @@
     }
 
     async function renderMarketSeries(interval) {
+        if (!pnlChart) return;
         interval = interval || activeInterval;
         var r = await fetch('/api/market-chart?interval=' + encodeURIComponent(interval) + '&symbol=' + encodeURIComponent(activeSymbol));
         var market = await r.json();
@@ -893,118 +902,196 @@
 
     /* ── UI Updates ──────────────────────────── */
     function updateUI(data) {
-        /* PnL Today */
+        /* Dashboard-only метрики (index.html). На других страницах их нет. */
         var pt = document.getElementById('pnl-today');
-        pt.textContent = formatPnl(data.pnl_today || 0);
-        pt.className = 'metric-value ' + pnlClass(data.pnl_today || 0);
+        if (pt) {
+            /* Снимаем skeleton-состояние metrics-grid после первого данных */
+            var mg = document.getElementById('metrics-grid');
+            if (mg && mg.dataset.loading === 'true') mg.dataset.loading = 'false';
 
-        /* PnL Total */
-        var pp = document.getElementById('pnl-total');
-        pp.textContent = formatPnl(data.pnl_total || 0);
-        pp.className = 'metric-value ' + pnlClass(data.pnl_total || 0);
+            pt.textContent = formatPnl(data.pnl_today || 0);
+            pt.className = 'metric-value ' + pnlClass(data.pnl_today || 0);
 
-        /* Balance */
-        document.getElementById('balance').textContent = formatUsd(data.balance || 0);
+            document.getElementById('balance').textContent = formatUsd(data.balance || 0);
+            document.getElementById('open-positions').textContent = data.open_positions || 0;
+            document.getElementById('trades-today').textContent = data.trades_today || 0;
 
-        /* Counters */
-        document.getElementById('open-positions').textContent = data.open_positions || 0;
-        document.getElementById('trades-today').textContent = data.trades_today || 0;
+            var wr = data.win_rate || 0;
+            var wrEl = document.getElementById('win-rate');
+            wrEl.textContent = wr.toFixed(1) + '%';
+            wrEl.className = 'metric-value ' + (wr >= 50 ? 'positive' : wr > 0 ? 'negative' : 'neutral');
+            var twins = data.total_wins || 0, tlosses = data.total_losses || 0;
+            if (twins + tlosses > 0) document.getElementById('win-rate-sub').textContent = twins + 'W / ' + tlosses + 'L';
 
-        /* Win Rate */
-        var wr = data.win_rate || 0;
-        var wrEl = document.getElementById('win-rate');
-        wrEl.textContent = wr.toFixed(1) + '%';
-        wrEl.className = 'metric-value ' + (wr >= 50 ? 'positive' : wr > 0 ? 'negative' : 'neutral');
-        var twins = data.total_wins || 0, tlosses = data.total_losses || 0;
-        if (twins + tlosses > 0) document.getElementById('win-rate-sub').textContent = twins + 'W / ' + tlosses + 'L';
+            var dd = data.max_drawdown_pct || 0;
+            var ddEl = document.getElementById('max-drawdown');
+            ddEl.textContent = dd.toFixed(1) + '%';
+            ddEl.className = 'metric-value ' + (dd > 10 ? 'negative' : dd > 5 ? 'neutral' : 'positive');
+            var curDD = data.current_drawdown_pct || 0;
+            document.getElementById('max-drawdown-sub').textContent = 'Current: ' + curDD.toFixed(1) + '%';
 
-        /* Max Drawdown */
-        var dd = data.max_drawdown_pct || 0;
-        var ddEl = document.getElementById('max-drawdown');
-        ddEl.textContent = dd.toFixed(1) + '%';
-        ddEl.className = 'metric-value ' + (dd > 10 ? 'negative' : dd > 5 ? 'neutral' : 'positive');
-        var curDD = data.current_drawdown_pct || 0;
-        document.getElementById('max-drawdown-sub').textContent = 'Current: ' + curDD.toFixed(1) + '%';
+            var pf = data.profit_factor || 0;
+            var pfEl = document.getElementById('profit-factor');
+            pfEl.textContent = pf.toFixed(2);
+            pfEl.className = 'metric-value ' + (pf >= 1.5 ? 'positive' : pf >= 1.0 ? 'neutral' : pf > 0 ? 'negative' : 'neutral');
+            document.getElementById('profit-factor-sub').textContent = pf >= 1.5 ? 'Strong system' : pf >= 1.0 ? 'Breakeven+' : pf > 0 ? 'Losing system' : 'No data';
 
-        /* Profit Factor */
-        var pf = data.profit_factor || 0;
-        var pfEl = document.getElementById('profit-factor');
-        pfEl.textContent = pf.toFixed(2);
-        pfEl.className = 'metric-value ' + (pf >= 1.5 ? 'positive' : pf >= 1.0 ? 'neutral' : pf > 0 ? 'negative' : 'neutral');
-        document.getElementById('profit-factor-sub').textContent = pf >= 1.5 ? 'Strong system' : pf >= 1.0 ? 'Breakeven+' : pf > 0 ? 'Losing system' : 'No data';
+            var rr = data.avg_rr_ratio || 0;
+            var rrEl = document.getElementById('avg-rr');
+            rrEl.textContent = rr.toFixed(2);
+            rrEl.className = 'metric-value ' + (rr >= 2.0 ? 'positive' : rr >= 1.0 ? 'neutral' : rr > 0 ? 'negative' : 'neutral');
+            document.getElementById('avg-rr-sub').textContent = rr >= 2.0 ? 'Excellent R:R' : rr >= 1.0 ? 'Acceptable R:R' : 'Improve R:R';
 
-        /* Avg R:R */
-        var rr = data.avg_rr_ratio || 0;
-        var rrEl = document.getElementById('avg-rr');
-        rrEl.textContent = rr.toFixed(2);
-        rrEl.className = 'metric-value ' + (rr >= 2.0 ? 'positive' : rr >= 1.0 ? 'neutral' : rr > 0 ? 'negative' : 'neutral');
-        document.getElementById('avg-rr-sub').textContent = rr >= 2.0 ? 'Excellent R:R' : rr >= 1.0 ? 'Acceptable R:R' : 'Improve R:R';
+            var peakBal = data.peak_balance || data.balance || 0;
+            var peakEl = document.getElementById('equity-peak-badge');
+            if (peakEl) peakEl.textContent = 'Peak: $' + peakBal.toFixed(2);
+        }
 
-        /* Peak balance badge */
-        var peakBal = data.peak_balance || data.balance || 0;
-        var peakEl = document.getElementById('equity-peak-badge');
-        if (peakEl) peakEl.textContent = 'Peak: $' + peakBal.toFixed(2);
+        /* Uptime — общий для всех страниц */
+        var upEl = document.getElementById('uptime-label');
+        if (upEl && data.uptime) upEl.textContent = data.uptime;
 
-        /* Uptime */
-        if (data.uptime) document.getElementById('uptime-label').textContent = data.uptime;
+        /* Version — обновляется из бэкенда */
+        if (data.version) {
+            var verLabel = document.getElementById('version-label');
+            var verFooter = document.getElementById('footer-version');
+            if (verLabel) verLabel.textContent = 'v' + data.version;
+            if (verFooter) verFooter.textContent = 'v' + data.version;
+        }
 
-        /* Mode badge */
+        /* Mode badge — общий */
         var mb = document.getElementById('mode-badge');
         var mode = (data.mode || 'paper').toLowerCase();
-        mb.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(mode.toUpperCase());
-        mb.className = 'badge badge-' + mode;
+        if (mb) {
+            mb.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(mode.toUpperCase());
+            mb.className = 'badge badge-' + mode;
+        }
 
         /* Risk state badges */
         var rs = (data.risk_state || 'NORMAL').toLowerCase();
         var rsText = (data.risk_state || 'NORMAL').toUpperCase();
 
         var sb = document.getElementById('state-badge');
-        sb.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(rsText);
-        sb.className = 'badge badge-' + rs;
+        if (sb) {
+            sb.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(rsText);
+            sb.className = 'badge badge-' + rs;
+        }
 
         var rb = document.getElementById('risk-state-big');
-        rb.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(rsText);
-        rb.className = 'badge badge-' + rs;
+        if (rb) {
+            rb.innerHTML = '<span class="badge-dot"></span>' + escapeHtml(rsText);
+            rb.className = 'badge badge-' + rs;
+        }
 
-        /* Risk details with progress bars */
-        if (data.risk_details) {
+        /* Risk details with progress bars — только на dashboard */
+        var dlEl = data.risk_details ? document.getElementById('risk-daily-loss') : null;
+        if (dlEl) {
             var rd = data.risk_details;
+            var lim = rd.limits || {};
 
-            var dlEl = document.getElementById('risk-daily-loss');
+            /* Helper: красит значение + надпись-порог по % использования лимита */
+            function _riskClass(pctUsed) {
+                if (pctUsed >= 75) return 'risk-red';
+                if (pctUsed >= 40) return 'risk-amber';
+                return 'risk-green';
+            }
+            function _setThreshold(id, text) {
+                var el = document.getElementById(id);
+                if (el) el.innerHTML = text;
+            }
+
+            /* Daily loss */
+            var dailyLossAbs = Math.abs(rd.daily_loss || 0);
+            var dailyLimit = lim.max_daily_loss_usd || 0;
+            var dailyPct = dailyLimit > 0 ? (dailyLossAbs / dailyLimit) * 100 : 0;
             dlEl.textContent = formatPnl(rd.daily_loss || 0);
-            dlEl.className = 'risk-metric-value ' + pnlClass(-(Math.abs(rd.daily_loss || 0)));
-            updateRiskBar('risk-daily-loss-bar', Math.min(Math.abs(rd.daily_loss || 0) * 10, 100));
+            dlEl.className = 'risk-metric-value ' + _riskClass(dailyPct);
+            updateRiskBar('risk-daily-loss-bar', Math.min(dailyPct, 100));
+            _setThreshold('risk-daily-loss-threshold',
+                dailyLimit > 0
+                    ? 'Лимит: <b>$' + dailyLimit.toFixed(0) + '</b> · использовано ' + dailyPct.toFixed(0) + '%'
+                    : 'Лимит не задан');
 
+            /* Max drawdown */
             var ddPct = ((rd.max_drawdown || 0) * 100);
-            document.getElementById('risk-max-dd').textContent = ddPct.toFixed(1) + '%';
-            updateRiskBar('risk-max-dd-bar', ddPct * 5);
+            var ddEl = document.getElementById('risk-max-dd');
+            ddEl.textContent = ddPct.toFixed(1) + '%';
+            var ddNorm = (ddPct / 15) * 100; /* 15% считаем "красной" зоной */
+            ddEl.className = 'risk-metric-value ' + _riskClass(Math.min(ddNorm, 100));
+            updateRiskBar('risk-max-dd-bar', Math.min(ddNorm, 100));
 
+            /* Exposure */
             var expPct = ((rd.exposure || 0) * 100);
-            document.getElementById('risk-exposure').textContent = expPct.toFixed(1) + '%';
-            updateRiskBar('risk-exposure-bar', expPct);
+            var expLimit = lim.max_total_exposure_pct || 50;
+            var expUsedPct = (expPct / expLimit) * 100;
+            var expEl = document.getElementById('risk-exposure');
+            expEl.textContent = expPct.toFixed(1) + '%';
+            expEl.className = 'risk-metric-value ' + _riskClass(expUsedPct);
+            updateRiskBar('risk-exposure-bar', Math.min(expUsedPct, 100));
+            _setThreshold('risk-exposure-threshold',
+                'Лимит: <b>' + expLimit.toFixed(0) + '%</b> · использовано ' + expUsedPct.toFixed(0) + '%');
 
-            document.getElementById('risk-freq').textContent = (rd.trade_freq || 0) + '/h';
-            updateRiskBar('risk-freq-bar', Math.min((rd.trade_freq || 0) * 10, 100));
+            /* Trade frequency */
+            var freq = rd.trade_freq || 0;
+            var freqLimit = lim.max_trades_per_hour || 8;
+            var freqPct = (freq / freqLimit) * 100;
+            var freqEl = document.getElementById('risk-freq');
+            freqEl.textContent = freq + '/ч';
+            freqEl.className = 'risk-metric-value ' + _riskClass(freqPct);
+            updateRiskBar('risk-freq-bar', Math.min(freqPct, 100));
+            _setThreshold('risk-freq-threshold',
+                'Лимит: <b>' + freqLimit + '/ч</b>');
 
+            /* Data age — критичный сигнал: торговля по устаревшим ценам = слив */
             var dataAge = rd.market_data_age_sec;
-            document.getElementById('risk-data-age').textContent = dataAge >= 0 ? Number(dataAge).toFixed(1) + 's' : '\u2014';
-            updateRiskBar('risk-data-age-bar', dataAge >= 0 ? Math.min(dataAge * 3.3, 100) : 0);
+            var dataAgePct = dataAge >= 0 ? Math.min((dataAge / 30) * 100, 100) : 0;
+            var dataAgeEl = document.getElementById('risk-data-age');
+            dataAgeEl.textContent = dataAge >= 0 ? Number(dataAge).toFixed(1) + 's' : '\u2014';
+            dataAgeEl.className = 'risk-metric-value ' + _riskClass(dataAgePct);
+            updateRiskBar('risk-data-age-bar', dataAgePct);
 
-            document.getElementById('risk-commission').textContent = formatUsd(rd.daily_commission || 0);
-            updateRiskBar('risk-commission-bar', Math.min((rd.daily_commission || 0) * 5, 100));
+            /* Обновляем body[data-stale] + баннер */
+            var staleState = '';
+            if (dataAge >= 30) staleState = 'critical';
+            else if (dataAge >= 10) staleState = 'warn';
+            if (staleState) {
+                document.body.setAttribute('data-stale', staleState);
+                var banner = document.getElementById('data-age-banner-text');
+                if (banner) {
+                    banner.textContent = staleState === 'critical'
+                        ? 'КРИТИЧНО: данные биржи устарели на ' + dataAge.toFixed(0) + 'с — торговля приостановлена'
+                        : 'Внимание: задержка данных биржи ' + dataAge.toFixed(0) + 'с (норма <5с)';
+                }
+            } else {
+                document.body.removeAttribute('data-stale');
+            }
+
+            /* Commission */
+            var commission = rd.daily_commission || 0;
+            var totalPnl = Math.abs(data.pnl_today || 0) + commission;
+            var commRatio = totalPnl > 0 ? (commission / totalPnl) * 100 : 0;
+            var commEl = document.getElementById('risk-commission');
+            commEl.textContent = formatUsd(commission);
+            commEl.className = 'risk-metric-value ' + _riskClass(commRatio >= 20 ? 80 : commRatio >= 5 ? 50 : 10);
+            /* Bar reflects commRatio (% of turnover), not raw $ amount */
+            updateRiskBar('risk-commission-bar', Math.min(commRatio * 2, 100));
+            _setThreshold('risk-commission-threshold',
+                commission > 0
+                    ? 'Доля от оборота: <b>' + commRatio.toFixed(1) + '%</b>'
+                    : 'Комиссий ещё не было');
         }
 
         /* Footer last update */
-        document.getElementById('footer-update').textContent = 'Last update: ' + new Date().toLocaleTimeString();
+        var fuEl = document.getElementById('footer-update');
+        if (fuEl) fuEl.textContent = 'Last update: ' + new Date().toLocaleTimeString();
 
-        /* Live Activity panel */
-        if (data.activity) {
+        /* Live Activity panel — dashboard-only */
+        var wsEl = data.activity ? document.getElementById('act-ws-status') : null;
+        if (wsEl) {
             var act = data.activity;
             var col = act.collector || {};
             var prices = col.last_prices || {};
 
-            // WS status
-            var wsEl = document.getElementById('act-ws-status');
             if (col.connected) {
                 wsEl.textContent = 'Connected';
                 wsEl.className = 'activity-value live';
@@ -1014,14 +1101,30 @@
                 wsEl.className = 'activity-value';
             }
 
-            // Prices
-            var btcP = prices['BTCUSDT'] || prices['btcusdt'];
-            if (btcP) {
-                document.getElementById('act-btc-price').textContent = '$' + Number(btcP).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-            }
-            var ethP = prices['ETHUSDT'] || prices['ethusdt'];
-            if (ethP) {
-                document.getElementById('act-eth-price').textContent = '$' + Number(ethP).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            // Prices — dynamic per trading symbols (not hardcoded BTC/ETH).
+            // Use closest('.activity-item') so label lookup is robust to grid reordering.
+            var syms = _tradingSymbols.length ? _tradingSymbols : ['BTCUSDT', 'ETHUSDT'];
+            var priceIds = ['act-btc-price', 'act-eth-price'];
+            var subIds = ['act-btc-sub', 'act-eth-sub'];
+            for (var pi = 0; pi < priceIds.length; pi++) {
+                var pel = document.getElementById(priceIds[pi]);
+                var sub = document.getElementById(subIds[pi]);
+                if (!pel) continue;
+                if (pi >= syms.length) {
+                    pel.textContent = '—';
+                    if (sub) sub.textContent = '';
+                    continue;
+                }
+                var sym = syms[pi];
+                var short = sym.replace('USDT', '').replace('BUSD', '');
+                var p = prices[sym] || prices[sym.toLowerCase()];
+                var item = pel.closest('.activity-item');
+                var lblNode = item ? item.querySelector('.activity-label') : null;
+                if (lblNode) lblNode.textContent = 'Цена ' + short;
+                pel.textContent = p
+                    ? '$' + Number(p).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                    : '—';
+                if (sub) sub.textContent = p ? (sym + ' · live') : 'ждём данные';
             }
 
             // Counters
@@ -1054,26 +1157,28 @@
             // Pulse dot
             var dot = document.getElementById('activity-dot');
             if (col.connected && msgCount > 0) {
-                dot.style.background = 'var(--positive)';
+                dot.style.background = 'var(--green)';
             } else {
-                dot.style.background = 'var(--muted)';
+                dot.style.background = 'var(--text-muted)';
             }
         }
 
-        /* Start/Stop button state */
+        /* Start/Stop button state — dashboard-only */
         var paused = data.trading_paused;
         var btnStart = document.getElementById('btn-start');
         var btnStop = document.getElementById('btn-stop');
-        if (paused) {
-            btnStart.disabled = false;
-            btnStart.style.opacity = '1';
-            btnStop.disabled = true;
-            btnStop.style.opacity = '0.5';
-        } else {
-            btnStart.disabled = true;
-            btnStart.style.opacity = '0.5';
-            btnStop.disabled = false;
-            btnStop.style.opacity = '1';
+        if (btnStart && btnStop) {
+            if (paused) {
+                btnStart.disabled = false;
+                btnStart.style.opacity = '1';
+                btnStop.disabled = true;
+                btnStop.style.opacity = '0.5';
+            } else {
+                btnStart.disabled = true;
+                btnStart.style.opacity = '0.5';
+                btnStop.disabled = false;
+                btnStop.style.opacity = '1';
+            }
         }
 
         /* ── Per-symbol indicators + symbol bar rebuild ── */
@@ -1104,7 +1209,7 @@
         updateForecast(data.strategy_log || [], selectedInd, data);
 
         /* ── Market Overview (top widget) ── */
-        updateMarketOverview(_indicatorsPerSymbol, data.trading_symbols || []);
+        updateMarketOverview(_indicatorsPerSymbol, data.trading_symbols || [], data.strategy_log || [], data.ml_status || {}, data.standing_ml_per_symbol || {}, data.last_cycle_ts_per_symbol || {});
     }
 
     /* ──────────────────────────────────────────────────────────
@@ -1222,7 +1327,7 @@
         return '$' + n.toFixed(4);
     }
 
-    function updateMarketOverview(perSym, tradingSymbols) {
+    function updateMarketOverview(perSym, tradingSymbols, strategyLog, mlStatus, standingMl, lastCycleTs) {
         var gridEl = document.getElementById('market-overview-grid');
         if (!gridEl) return;
 
@@ -1230,6 +1335,44 @@
         if (!symbols.length) {
             gridEl.innerHTML = '<div class="market-overview-empty">Нет торгуемых символов</div>';
             return;
+        }
+
+        // Fallback — latest ML snapshot per symbol from strategy_log
+        // (used only if standing ML is not available for the symbol, e.g. model loading).
+        var mlBySym = {};
+        var log = strategyLog || [];
+        for (var li = log.length - 1; li >= 0; li--) {
+            var ev = log[li];
+            if (!ev || !ev.symbol) continue;
+            if (mlBySym[ev.symbol]) continue;
+            if (typeof ev.ml_prob !== 'number') continue;
+            mlBySym[ev.symbol] = {
+                prob: ev.ml_prob,
+                decision: ev.ml_decision || '',
+                direction: ev.direction || '',
+                result: ev.result || '',
+                source: 'log'
+            };
+        }
+        var standing = standingMl || {};
+        var lastTs = lastCycleTs || {};
+        var mlInfo = mlStatus || {};
+        var mlEnabled = !!mlInfo.enabled;
+        var mlReady = !!mlInfo.is_ready;
+        var mlMode = (mlInfo.mode || 'off').toLowerCase();
+        var blockThr = Number(mlInfo.block_threshold) || 0.4;
+        var perSymMl = mlInfo.per_symbol_models || {};
+        var nowMs = Date.now();
+
+        function fmtAge(ms) {
+            if (!ms || ms < 0) return '';
+            var s = Math.floor(ms / 1000);
+            if (s < 2) return 'сейчас';
+            if (s < 60) return s + ' с назад';
+            var m = Math.floor(s / 60);
+            if (m < 60) return m + ' мин назад';
+            var h = Math.floor(m / 60);
+            return h + ' ч назад';
         }
 
         var cardsHtml = '';
@@ -1259,10 +1402,110 @@
             }).join('');
             if (!reasonsHtml) reasonsHtml = '<div class="mo-reason"><span class="mo-reason-dot"></span><span>Сигналы нейтральны</span></div>';
 
+            // ── ML прогноз для данного символа ──
+            // Приоритет: standing ML (всегда свежий, оценивается каждый цикл) → fallback на strategy_log
+            var mlHtml = '';
+            var mlSymCfg = perSymMl[sym] || {};
+            var mlSymReady = !!mlSymCfg.ready || mlReady;
+            var standingRec = standing[sym];
+            var hasStanding = standingRec && typeof standingRec.prob === 'number';
+            var mlRec = hasStanding
+                ? {
+                    prob: standingRec.prob,
+                    decision: standingRec.decision || '',
+                    direction: '',
+                    result: '',
+                    source: 'standing',
+                    ts_ms: Number(standingRec.ts_ms) || 0,
+                    ref_strategy: standingRec.ref_strategy || ''
+                }
+                : mlBySym[sym];
+
+            if (!mlEnabled) {
+                mlHtml = ''
+                    + '<div class="mo-ml off">'
+                    +   '<div class="mo-ml-head"><span class="mo-ml-title">ML прогноз</span>'
+                    +     '<span class="mo-ml-badge off">выключен</span></div>'
+                    +   '<div class="mo-ml-sub">Модель отключена в настройках</div>'
+                    + '</div>';
+            } else if (!mlSymReady) {
+                mlHtml = ''
+                    + '<div class="mo-ml loading">'
+                    +   '<div class="mo-ml-head"><span class="mo-ml-title">ML прогноз</span>'
+                    +     '<span class="mo-ml-badge loading">загрузка…</span></div>'
+                    +   '<div class="mo-ml-sub">Модель ещё не готова для ' + formatSymbolLabel(sym) + '</div>'
+                    + '</div>';
+            } else if (!mlRec) {
+                mlHtml = ''
+                    + '<div class="mo-ml wait">'
+                    +   '<div class="mo-ml-head"><span class="mo-ml-title">ML прогноз</span>'
+                    +     '<span class="mo-ml-badge wait">ждём данные</span></div>'
+                    +   '<div class="mo-ml-sub">Модель готова — ждём первый тик с индикаторами</div>'
+                    + '</div>';
+            } else {
+                var pct = Math.round(mlRec.prob * 100);
+                var isBlocked = mlRec.decision === 'block' || mlRec.result === 'ml_blocked';
+                var verdictText, verdictClass;
+                if (isBlocked) { verdictText = 'блок'; verdictClass = 'block'; }
+                else if (mlRec.prob >= 0.65) { verdictText = 'сильный сигнал'; verdictClass = 'allow-strong'; }
+                else if (mlRec.prob >= blockThr) { verdictText = 'разрешено'; verdictClass = 'allow'; }
+                else { verdictText = 'слабо'; verdictClass = 'weak'; }
+                var barColor = isBlocked ? 'var(--red)' : (mlRec.prob >= 0.65 ? 'var(--green-bright)' : (mlRec.prob >= blockThr ? 'var(--green)' : 'var(--amber)'));
+                var dirLabel = mlRec.direction ? (mlRec.direction === 'BUY' ? 'BUY' : (mlRec.direction === 'SELL' ? 'SELL' : '')) : '';
+                var modeTag = '';
+                if (mlMode === 'shadow') modeTag = '<span class="mo-ml-mode shadow" title="Shadow: модель предсказывает, но не блокирует сделки">shadow</span>';
+                else if (mlMode === 'off') modeTag = '<span class="mo-ml-mode off" title="Off: модель только наблюдает, сделки не фильтрует">наблюдение</span>';
+
+                // Freshness: standing records carry ts_ms — compute age and flag stale (>90s)
+                var ageHtml = '';
+                var staleClass = '';
+                if (mlRec.source === 'standing' && mlRec.ts_ms) {
+                    var ageMs = Math.max(0, nowMs - mlRec.ts_ms);
+                    var isStale = ageMs > 90000;
+                    staleClass = isStale ? ' stale' : ' live';
+                    var dotTitle = isStale ? 'Оценка устарела (>90 с) — бот, возможно, не обновляет данные' : 'Свежая оценка';
+                    ageHtml = '<span class="mo-ml-freshness' + staleClass + '" title="' + dotTitle + '">'
+                        + '<span class="mo-ml-dot"></span>' + fmtAge(ageMs) + '</span>';
+                } else if (mlRec.source === 'log') {
+                    ageHtml = '<span class="mo-ml-freshness log" title="Исторический сигнал из лога стратегий">'
+                        + '<span class="mo-ml-dot"></span>из лога</span>';
+                }
+
+                mlHtml = ''
+                    + '<div class="mo-ml ' + verdictClass + '">'
+                    +   '<div class="mo-ml-head">'
+                    +     '<span class="mo-ml-title">ML прогноз' + (dirLabel ? ' · ' + dirLabel : '') + '</span>'
+                    +     modeTag
+                    +     '<span class="mo-ml-pct">' + pct + '%</span>'
+                    +   '</div>'
+                    +   '<div class="mo-ml-bar"><div class="mo-ml-bar-fill" style="width:' + Math.min(100, Math.max(0, pct)) + '%; background:' + barColor + ';"></div></div>'
+                    +   '<div class="mo-ml-sub">'
+                    +     '<span class="mo-ml-badge ' + verdictClass + '">' + verdictText + '</span>'
+                    +     '<span class="mo-ml-sep">порог ' + Math.round(blockThr * 100) + '%</span>'
+                    +     ageHtml
+                    +   '</div>'
+                    + '</div>';
+            }
+
+            // Data freshness per symbol — when was this symbol last processed by the bot
+            var cycleTs = Number(lastTs[sym]) || 0;
+            var cycleAgeHtml = '';
+            if (cycleTs) {
+                var cycleAge = Math.max(0, nowMs - cycleTs);
+                var cycleStale = cycleAge > 60000;      // >60s: data pipeline likely stalled
+                var cycleWarn = cycleAge > 15000;       // >15s: worth surfacing
+                var cycleCls = cycleStale ? 'stale' : (cycleWarn ? 'warn' : 'live');
+                var cycleTitle = cycleStale ? 'Данные устарели (>60 с): сбой пайплайна?'
+                               : cycleWarn ? 'Данные немного запаздывают'
+                               : 'Данные свежие';
+                cycleAgeHtml = '<span class="mo-freshness ' + cycleCls + '" title="' + cycleTitle + '">'
+                    + '<span class="mo-freshness-dot"></span>' + fmtAge(cycleAge) + '</span>';
+            }
+
             cardsHtml += ''
                 + '<div class="mo-card ' + r.verdict + '">'
                 +   '<div class="mo-card-head">'
-                +     '<div><span class="mo-symbol">' + formatSymbolLabel(sym) + '</span> <span class="mo-price">' + formatPriceMo(ind.close) + '</span></div>'
+                +     '<div class="mo-card-head-main"><span class="mo-symbol">' + formatSymbolLabel(sym) + '</span> <span class="mo-price">' + formatPriceMo(ind.close) + '</span>' + cycleAgeHtml + '</div>'
                 +     '<span class="mo-verdict ' + r.verdict + '"><span class="mo-verdict-arrow">' + verdictArrow + '</span>' + verdictLabel + ' ' + r.score + '%</span>'
                 +   '</div>'
                 +   '<div>'
@@ -1275,6 +1518,7 @@
                 +     '<div class="mo-stat"><span class="mo-stat-label">MACD h</span><span class="mo-stat-value ' + histClass + '">' + histVal.toFixed(2) + '</span></div>'
                 +     '<div class="mo-stat"><span class="mo-stat-label">ADX</span><span class="mo-stat-value">' + (Number(ind.adx) || 0).toFixed(1) + '</span></div>'
                 +   '</div>'
+                +   mlHtml
                 +   '<div class="mo-reasons">'
                 +     '<div class="mo-reasons-title">Почему ' + verdictLabel + '</div>'
                 +     reasonsHtml
@@ -1303,8 +1547,19 @@
 
         if (!pctEl || !ringFill) return;
 
-        // ── Show active symbol ──
-        if (symEl) { symEl.textContent = activeSymbol.replace('USDT', ''); }
+        // ── Show active symbol + обновить цвет chip-точки ──
+        if (symEl) {
+            symEl.textContent = activeSymbol.replace('USDT', '');
+            var chip = symEl.closest('.fv2-symbol-chip');
+            if (chip) {
+                var c = _getSymColor(activeSymbol);
+                chip.style.background = c.bg;
+                chip.style.borderColor = c.border;
+                chip.style.color = c.text;
+                var dot = chip.querySelector('.symbol-dot');
+                if (dot) dot.style.background = c.dot;
+            }
+        }
 
         // ── Determine and show direction ──
         var forecastDir = 'HOLD';
@@ -1320,9 +1575,12 @@
         }
         if (dirEl) {
             dirEl.style.display = 'inline-flex';
-            if (forecastDir === 'BUY') { dirEl.className = 'forecast-direction-badge buy'; dirEl.textContent = 'BUY (LONG)'; }
-            else if (forecastDir === 'SELL') { dirEl.className = 'forecast-direction-badge sell'; dirEl.textContent = 'SELL (SHORT)'; }
-            else { dirEl.className = 'forecast-direction-badge hold'; dirEl.textContent = 'HOLD — нет сигнала'; }
+            /* SVG-стрелка поворачивается через CSS по классу .buy/.sell/.hold */
+            var arrowSvg = '<svg class="fv2-dir-arrow" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
+            var holdSvg  = '<svg class="fv2-dir-arrow" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+            if (forecastDir === 'BUY')       { dirEl.className = 'forecast-direction-badge buy';  dirEl.innerHTML = arrowSvg + ' BUY (LONG)'; }
+            else if (forecastDir === 'SELL') { dirEl.className = 'forecast-direction-badge sell'; dirEl.innerHTML = arrowSvg + ' SELL (SHORT)'; }
+            else                              { dirEl.className = 'forecast-direction-badge hold'; dirEl.innerHTML = holdSvg + ' HOLD'; }
         }
         var rd = (fullData || {}).risk_details || {};
         var ml = (fullData || {}).ml_status || {};
@@ -1652,41 +1910,46 @@
         }
 
         // ── Decision text ──
-        // 1. Actual signal → green, show strategy + real confidence
-        // 2. Any blocker active (risk / news / ML / strategy reject) → red, list them
-        // 3. Clean scan → neutral, list what's positive vs. missing
-        var decHTML = '<div class="forecast-decision-title">РЕШЕНИЕ БОТА</div>';
+        // Заполняем новую структуру .fv2-takeaway (head + body)
+        var takeawayHead = 'Решение бота';
+        var takeawayBody = '';
         if (isSignal) {
             var sigStrat = (latest.strategies || []).find(function(s) { return s.result === 'signal'; });
             var sigDir = (sigStrat && sigStrat.direction) ? sigStrat.direction.toUpperCase() : 'BUY';
             var dirLabel = sigDir === 'SELL' ? 'SELL (SHORT)' : 'BUY (LONG)';
             var confTxt = signalConfidence !== null
-                ? ' <span class="green">confidence ' + (signalConfidence*100).toFixed(0) + '%</span>'
+                ? ' · <span class="green">confidence ' + (signalConfidence*100).toFixed(0) + '%</span>'
                 : '';
-            decHTML += '<strong class="green">✅ Бот вошёл в сделку ' + escapeHtml(activeSymbol) + ' ' + dirLabel + '</strong>'
+            takeawayHead = 'Сигнал исполнен';
+            takeawayBody = '<strong class="green">Бот вошёл в сделку ' + escapeHtml(activeSymbol) + ' ' + dirLabel + '</strong>'
                     + ' через <strong>' + escapeHtml((sigStrat || {}).strategy || '—') + '</strong>' + confTxt
-                    + '. Цена: <strong>$' + (latest.price || 0).toLocaleString()
-                    + '</strong>, режим: <strong>' + escapeHtml(latest.regime || '—') + '</strong>.';
+                    + '. Цена: <strong>$' + (latest.price || 0).toLocaleString() + '</strong>.';
         } else if (activeBlockers.length > 0 || wasBlocked) {
             var reasons = activeBlockers.slice();
             if (wasBlocked && blockReason) reasons.push(blockReason);
-            decHTML += '<strong class="red">⛔ Вход заблокирован</strong> — '
+            takeawayHead = 'Вход заблокирован';
+            takeawayBody = '<strong class="red">Блокеры:</strong> '
                     + reasons.map(escapeHtml).join(' · ')
-                    + '. Бот подождёт, пока условия улучшатся.';
+                    + '. Бот ждёт, пока условия улучшатся.';
         } else if (isScanned) {
             var wf = factors.filter(function(f){ return f.scoreNum <= -0.3; });
             var sf = factors.filter(function(f){ return f.scoreNum >= 0.3; });
-            decHTML += '<strong>' + escapeHtml(activeSymbol) + ' — HOLD</strong>'
-                    + ' (просканировано ' + (latest.active_strategies||[]).length + ' стратегий, сигнала нет).';
-            if (sf.length) decHTML += '<br><span class="green">✓ В пользу входа:</span> ' + sf.map(function(f){return escapeHtml(f.name)}).join(', ') + '.';
-            if (wf.length) decHTML += '<br><span class="amber">✗ Против:</span> ' + wf.map(function(f){return escapeHtml(f.name)}).join(', ') + '.';
+            takeawayHead = 'HOLD — сигнала нет';
+            takeawayBody = 'Проверено <strong>' + (latest.active_strategies||[]).length + '</strong> стратегий на ' + escapeHtml(activeSymbol) + '.';
+            if (sf.length) takeawayBody += '<br><span class="green">За вход:</span> ' + sf.map(function(f){return escapeHtml(f.name)}).join(', ') + '.';
+            if (wf.length) takeawayBody += '<br><span class="amber">Против:</span> ' + wf.map(function(f){return escapeHtml(f.name)}).join(', ') + '.';
         } else {
-            decHTML += 'Бот ещё не завершил первый цикл. Стратегии запускаются при закрытии 1h свечи.';
+            takeawayBody = 'Бот ещё не завершил первый цикл сканирования. Стратегии запускаются при закрытии 1-часовой свечи.';
         }
-        decisionEl.innerHTML = decHTML;
+        decisionEl.innerHTML =
+            '<div class="fv2-takeaway-head">' +
+                '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
+                '<span>' + escapeHtml(takeawayHead) + '</span>' +
+            '</div>' +
+            '<div class="fv2-takeaway-body">' + takeawayBody + '</div>';
 
-        if (latest && latest.ts) scanTimeEl.textContent = 'Последний скан: ' + new Date(latest.ts).toLocaleTimeString();
-        if (latest && latest.regime) regimeEl.textContent = 'Режим: ' + latest.regime;
+        if (latest && latest.ts) scanTimeEl.textContent = new Date(latest.ts).toLocaleTimeString();
+        if (latest && latest.regime) regimeEl.textContent = 'Режим: ' + latest.regime.toUpperCase();
 
         // ═══════════════════════════════════════════════════
         // DECISION PIPELINE — collapsible accordion
@@ -1832,8 +2095,7 @@
 
     function updateStrategyLog(entries) {
         var listEl = document.getElementById('strat-log-list');
-        if (!entries || entries.length === 0) {
-            // keep the empty state
+        if (!listEl || !entries || entries.length === 0) {
             return;
         }
 
@@ -1887,6 +2149,9 @@
         var barEl = document.getElementById('readiness-bar');
         var stepsEl = document.getElementById('readiness-steps');
         var infoEl = document.getElementById('readiness-info-text');
+
+        // Панель готовности есть не на всех страницах
+        if (!pctEl || !barEl || !stepsEl || !infoEl) return;
 
         if (!r || !r.steps || r.steps.length === 0) {
             pctEl.textContent = '—';
@@ -1949,14 +2214,80 @@
         }
     }
 
+    /* Sparkline history buffers per symbol. Keep last 60 values (~2 min at 2s updates) */
+    var _sparkHistory = {}; // { symbol: { rsi: [], macd: [] } }
+    var SPARK_MAX = 60;
+
+    function _pushSpark(symbol, key, value) {
+        if (value == null || isNaN(value)) return;
+        if (!_sparkHistory[symbol]) _sparkHistory[symbol] = {};
+        if (!_sparkHistory[symbol][key]) _sparkHistory[symbol][key] = [];
+        var arr = _sparkHistory[symbol][key];
+        /* Skip duplicate consecutive values — avoids false "movement" at rest */
+        if (arr.length && arr[arr.length - 1] === value) return;
+        arr.push(value);
+        if (arr.length > SPARK_MAX) arr.shift();
+    }
+
+    function _renderSparkline(svgId, values, opts) {
+        var svg = document.getElementById(svgId);
+        if (!svg) return;
+        opts = opts || {};
+        if (!values || values.length < 2) {
+            svg.innerHTML = '';
+            return;
+        }
+        var W = 100, H = 22;
+        var min = opts.min != null ? opts.min : Math.min.apply(null, values);
+        var max = opts.max != null ? opts.max : Math.max.apply(null, values);
+        if (max === min) max = min + 1;
+
+        var n = values.length;
+        var dx = W / (n - 1);
+        var points = values.map(function(v, i) {
+            var x = i * dx;
+            var y = H - ((v - min) / (max - min)) * (H - 2) - 1;
+            return [x, y];
+        });
+
+        var pathD = 'M ' + points.map(function(p) { return p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' L ');
+        var last = points[points.length - 1];
+
+        /* Colour stroke by last vs first */
+        var lastVal = values[values.length - 1];
+        var firstVal = values[0];
+        var color = opts.color || (lastVal > firstVal ? '#4ade80' : lastVal < firstVal ? '#ef4444' : '#818cf8');
+
+        var zoneRect = '';
+        if (opts.overbought != null && opts.oversold != null) {
+            var obY = H - ((opts.overbought - min) / (max - min)) * (H - 2) - 1;
+            var osY = H - ((opts.oversold - min) / (max - min)) * (H - 2) - 1;
+            zoneRect = '<rect class="sparkline-zone" x="0" y="0" width="' + W + '" height="' + Math.max(obY, 0).toFixed(1) + '"/>' +
+                       '<rect class="sparkline-zone" x="0" y="' + Math.min(osY, H).toFixed(1) + '" width="' + W + '" height="' + (H - Math.min(osY, H)).toFixed(1) + '"/>';
+        }
+
+        svg.innerHTML =
+            zoneRect +
+            '<path class="sparkline-path" d="' + pathD + '" style="stroke:' + color + ';"/>' +
+            '<circle class="sparkline-dot" cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="1.8" style="fill:' + color + ';"/>';
+    }
+
     function updateIndicators(ind, winRate, tradesToday) {
         if (!ind || !ind.symbol) {
             // Нет данных — оставляем "—"
             return;
         }
 
-        // Trend badge
+        // Trend badge — элементы индикаторов существуют не на всех страницах
         var tb = document.getElementById('trend-badge');
+        if (!tb) return;
+
+        // Накапливаем историю для sparklines
+        _pushSpark(ind.symbol, 'rsi', ind.rsi_14);
+        _pushSpark(ind.symbol, 'macd', ind.macd);
+        var hist = _sparkHistory[ind.symbol] || {};
+        _renderSparkline('spark-rsi', hist.rsi, { min: 0, max: 100, overbought: 70, oversold: 30 });
+        _renderSparkline('spark-macd', hist.macd, {});
         var trend = ind.trend || 'neutral';
         var arrows = { bullish: '↑', bearish: '↓', neutral: '→' };
         tb.innerHTML = '<span class="trend-arrow">' + (arrows[trend] || '→') + '</span> ' + escapeHtml(trend.toUpperCase());
@@ -2062,7 +2393,8 @@
             fc.className = 'footer-dot offline';
             setBackendOnline(false);
             var delay = Math.min(1000 * Math.pow(2, wsRetry), MAX_RETRY_DELAY);
-            wsRetry++;
+            /* Cap at 10 so Math.pow(2, wsRetry) can't overflow on long outages */
+            if (wsRetry < 10) wsRetry++;
             setTimeout(connectWS, delay);
         };
 
@@ -2077,6 +2409,11 @@
         var btnStart = document.getElementById('btn-start');
         var btnStop = document.getElementById('btn-stop');
         var btnKill = document.getElementById('btn-kill');
+        /* Кнопки управления есть только на index.html */
+        if (!btnStart || !btnStop || !btnKill) {
+            if (online) fetchStatus();
+            return;
+        }
         if (!online) {
             btnStart.disabled = true; btnStart.style.opacity = '0.5';
             btnStop.disabled = true; btnStop.style.opacity = '0.5';
@@ -2100,8 +2437,9 @@
 
     function parseOpenedAt(val) {
         if (!val) return null;
-        // Unix ms as string (e.g. "1713180000000")
-        if (/^\d{10,13}$/.test(val)) return new Date(Number(val));
+        // Unix ms (13 digits) or Unix seconds (10 digits) — promote seconds to ms.
+        if (/^\d{13}$/.test(val)) return new Date(Number(val));
+        if (/^\d{10}$/.test(val)) return new Date(Number(val) * 1000);
         // ISO or datetime string
         var d = new Date(val);
         return isNaN(d.getTime()) ? null : d;
@@ -2223,6 +2561,7 @@
             var container = document.getElementById('positions-container');
             var countBadge = document.getElementById('positions-count');
             var totalPnlEl = document.getElementById('positions-total-pnl');
+            if (!container || !countBadge || !totalPnlEl) return;
             /* First successful fetch: drop skeleton shimmer */
             if (container.dataset.loading === 'true') container.dataset.loading = 'false';
 
@@ -2268,12 +2607,14 @@
     }
 
     async function fetchTrades() {
+        /* Skip entirely if the trades table isn't on this page (e.g. dashboard) */
+        var tbody = document.getElementById('trades-table');
+        if (!tbody) return;
         try {
             var r = await fetch('/api/trades');
             var allTrades = await r.json();
             /* Apply symbol filter */
             var data = _posTradeFilter ? allTrades.filter(function(t) { return t.symbol === _posTradeFilter; }) : allTrades;
-            var tbody = document.getElementById('trades-table');
             if (tbody.dataset.loading === 'true') tbody.dataset.loading = 'false';
 
             /* Build symbol filter bar */
@@ -2330,7 +2671,6 @@
         }
     }
 
-    async function fetchConfig() {}
 
     /* ── Equity Curve Chart ────────────────────── */
     var _equityChart = null;
@@ -2349,7 +2689,14 @@
             return peak > 0 ? -((peak - b) / peak * 100) : 0;
         });
 
-        if (_equityChart) { _equityChart.destroy(); }
+        /* Update existing chart instead of destroy/recreate to avoid memory leaks */
+        if (_equityChart) {
+            _equityChart.data.labels = labels;
+            _equityChart.data.datasets[0].data = balances;
+            _equityChart.data.datasets[1].data = drawdowns;
+            _equityChart.update('none');
+            return;
+        }
         var ctx = canvas.getContext('2d');
 
         _equityChart = new Chart(ctx, {
@@ -2594,6 +2941,9 @@
     }
 
     async function fetchNews() {
+        /* Skip entirely if the news panel isn't on this page (e.g. dashboard) */
+        var fgiEl = document.getElementById('news-fgi-value');
+        if (!fgiEl) return;
         try {
             var r = await fetch('/api/news');
             var data = await r.json();
@@ -2605,7 +2955,6 @@
 
             // ── Gauge ──
             var fgi = sentiment.fear_greed_index || 50;
-            var fgiEl = document.getElementById('news-fgi-value');
             fgiEl.textContent = fgi;
             fgiEl.style.color = fgiColor(fgi);
             document.getElementById('news-fgi-label').textContent = fgiLabel(fgi);
@@ -2715,47 +3064,19 @@
         }
     }
 
-    function confirmKill() {
-        if (confirm('EMERGENCY STOP\n\nThis will immediately cancel all orders and close all positions.\n\nAre you sure?')) {
-            controlAction('kill');
-        }
-    }
-
-    async function closePosition(symbol) {
-        if (!symbol) return;
-        if (!_backendOnline) {
-            showToast('Backend не запущен — запустите main.py', 'error');
-            return;
-        }
-        if (!confirm('Закрыть позицию ' + symbol + ' вручную?\n\nОрдер уйдёт на исполнение немедленно по рыночной цене.')) {
-            return;
-        }
-        try {
-            var r = await fetch('/api/positions/' + encodeURIComponent(symbol) + '/close', { method: 'POST' });
-            var data = {};
-            try { data = await r.json(); } catch (_) { /* ignore */ }
-            if (r.ok && data.ok !== false) {
-                showToast('Закрываю ' + symbol + '...', 'success');
-                fetchPositions();
-                fetchStatus();
-            } else {
-                showToast(data.error || ('Не удалось закрыть ' + symbol), 'error');
-            }
-        } catch (e) {
-            setBackendOnline(false);
-            showToast('Ошибка закрытия: ' + (e && e.message ? e.message : e), 'error');
-        }
-    }
+    /* confirmKill & closePosition — определены через window.* ниже (с кастомной модалью) */
 
     /* ══════════════════════════════════════════
        STRATEGY PERFORMANCE
        ══════════════════════════════════════════ */
 
     async function fetchStrategyPerformance() {
+        /* Skip entirely if the grid isn't on this page (e.g. dashboard) */
+        const grid = document.getElementById('strat-perf-grid');
+        if (!grid) return;
         try {
             const res = await fetch('/api/strategy-performance');
             const data = await res.json();
-            const grid = document.getElementById('strat-perf-grid');
             if (!data || !data.length) {
                 grid.innerHTML = '<div class="strat-log-empty"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:32px;height:32px;opacity:0.2;"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg><div>Данных по стратегиям пока нет</div></div>';
                 return;
@@ -2769,7 +3090,7 @@
                 return `
                     <div class="strat-perf-card">
                         <div class="sp-name">
-                            <span>${s.strategy_name}</span>
+                            <span>${escapeHtml(s.strategy_name || '')}</span>
                             <span class="sp-pnl" style="color:${pnlColor}">${pnlSign}$${pnl.toFixed(2)}</span>
                         </div>
                         <div class="sp-stats">
@@ -2824,6 +3145,216 @@
         _activeTimers.forEach(id => clearInterval(id));
         _activeTimers.length = 0;
     });
+
+    /* ══════════════════════════════════════════
+       Mobile hamburger sidebar (<768px)
+       ══════════════════════════════════════════ */
+    (function initMobileSidebar() {
+        var toggle = document.getElementById('mobile-menu-toggle');
+        var sidebar = document.getElementById('sidebar');
+        var backdrop = document.getElementById('mobile-sidebar-backdrop');
+        if (!toggle || !sidebar || !backdrop) return;
+
+        function openMenu() {
+            sidebar.classList.add('open');
+            backdrop.classList.add('active');
+            toggle.setAttribute('aria-expanded', 'true');
+            var firstLink = sidebar.querySelector('.sidebar-link');
+            if (firstLink) firstLink.focus();
+        }
+        function closeMenu() {
+            sidebar.classList.remove('open');
+            backdrop.classList.remove('active');
+            toggle.setAttribute('aria-expanded', 'false');
+        }
+        toggle.addEventListener('click', function() {
+            sidebar.classList.contains('open') ? closeMenu() : openMenu();
+        });
+        backdrop.addEventListener('click', closeMenu);
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && sidebar.classList.contains('open')) closeMenu();
+        });
+        /* Auto-close on link click (navigates away anyway) */
+        sidebar.querySelectorAll('.sidebar-link').forEach(function(link) {
+            link.addEventListener('click', closeMenu);
+        });
+    })();
+
+    /* ══════════════════════════════════════════
+       Keyboard nav for role=radiogroup bars
+       (symbolBar, chartTypeBar, intervalBar)
+       ══════════════════════════════════════════ */
+    (function initRadioKeyboardNav() {
+        document.querySelectorAll('[role="radiogroup"]').forEach(function(group) {
+            group.addEventListener('keydown', function(e) {
+                if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' &&
+                    e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+                var buttons = Array.prototype.slice.call(group.querySelectorAll('[role="radio"]'));
+                if (buttons.length < 2) return;
+                var current = buttons.indexOf(document.activeElement);
+                if (current === -1) current = buttons.findIndex(function(b) { return b.getAttribute('aria-checked') === 'true'; });
+                if (current === -1) current = 0;
+                var next = (e.key === 'ArrowLeft' || e.key === 'ArrowUp')
+                    ? (current - 1 + buttons.length) % buttons.length
+                    : (current + 1) % buttons.length;
+                e.preventDefault();
+                buttons[next].focus();
+                buttons[next].click();
+            });
+        });
+    })();
+
+    /* ══════════════════════════════════════════
+       Custom confirmation modal
+       Replaces window.confirm() for Emergency Stop
+       ══════════════════════════════════════════ */
+    function showConfirmModal(opts) {
+        return new Promise(function(resolve) {
+            var root = document.getElementById('confirm-modal-root');
+            if (!root) { resolve(window.confirm(opts.title + '\n\n' + (opts.body || ''))); return; }
+
+            var positionsHtml = '';
+            if (opts.positions && opts.positions.length > 0) {
+                var rows = opts.positions.map(function(p) {
+                    var pnl = p.unrealized_pnl || 0;
+                    var pnlCls = pnl >= 0 ? 'positive' : 'negative';
+                    var pnlStr = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+                    return '<div class="pos-row"><span>' + escapeHtml(p.symbol || '?') + ' · ' + escapeHtml(p.side || '') + '</span>' +
+                           '<span class="' + pnlCls + '">' + pnlStr + '</span></div>';
+                }).join('');
+                positionsHtml =
+                    '<div class="confirm-modal-positions">' +
+                    '<div class="confirm-modal-positions-title">Закроются позиции (' + opts.positions.length + '):</div>' +
+                    '<div class="confirm-modal-positions-list">' + rows + '</div>' +
+                    '</div>';
+            }
+
+            var typePhrase = opts.requireTypeConfirm ? String(opts.requireTypeConfirm) : '';
+            var typeInputHtml = typePhrase
+                ? '<div class="confirm-modal-typelock">' +
+                  '  <label class="confirm-modal-typelock-label" for="confirm-modal-type">' +
+                  '    Чтобы подтвердить, введите <code>' + escapeHtml(typePhrase) + '</code>' +
+                  '  </label>' +
+                  '  <input id="confirm-modal-type" class="confirm-modal-typelock-input" type="text" autocomplete="off" spellcheck="false" placeholder="Введите ' + escapeHtml(typePhrase) + '" aria-label="Подтверждение ввода">' +
+                  '</div>'
+                : '';
+
+            var html =
+                '<div class="confirm-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">' +
+                '  <div class="confirm-modal confirm-modal--warn" tabindex="-1">' +
+                '    <div class="confirm-modal-header">' +
+                '      <div class="confirm-modal-icon">' +
+                '        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+                '      </div>' +
+                '      <div class="confirm-modal-title" id="confirm-modal-title">' + escapeHtml(opts.title) + '</div>' +
+                '    </div>' +
+                '    <div class="confirm-modal-body">' + (opts.body || '') + positionsHtml + typeInputHtml + '</div>' +
+                '    <div class="confirm-modal-actions">' +
+                '      <button type="button" class="btn btn-cancel" data-action="cancel">Отмена</button>' +
+                '      <button type="button" class="btn btn-danger" data-action="confirm"' + (typePhrase ? ' disabled' : '') + '>' + escapeHtml(opts.confirmText || 'Подтвердить') + '</button>' +
+                '    </div>' +
+                '  </div>' +
+                '</div>';
+            root.innerHTML = html;
+
+            var backdrop = root.querySelector('.confirm-modal-backdrop');
+            var modal = root.querySelector('.confirm-modal');
+            var btnConfirm = root.querySelector('[data-action="confirm"]');
+            var btnCancel = root.querySelector('[data-action="cancel"]');
+            var typeInput = root.querySelector('#confirm-modal-type');
+            var prevFocus = document.activeElement;
+
+            function isPhraseOk() {
+                if (!typePhrase) return true;
+                return typeInput && typeInput.value.trim().toUpperCase() === typePhrase.toUpperCase();
+            }
+            function refreshConfirmState() {
+                if (!typePhrase) return;
+                var ok = isPhraseOk();
+                btnConfirm.disabled = !ok;
+                if (ok) btnConfirm.classList.add('armed');
+                else btnConfirm.classList.remove('armed');
+            }
+
+            function close(result) {
+                root.innerHTML = '';
+                document.removeEventListener('keydown', onKey);
+                if (prevFocus && prevFocus.focus) prevFocus.focus();
+                resolve(result);
+            }
+            function tryConfirm() {
+                if (!isPhraseOk()) return;
+                close(true);
+            }
+            function onKey(e) {
+                if (e.key === 'Escape') { e.preventDefault(); close(false); }
+                if (e.key === 'Enter' && document.activeElement !== btnCancel) {
+                    e.preventDefault(); tryConfirm();
+                }
+            }
+            btnConfirm.addEventListener('click', tryConfirm);
+            btnCancel.addEventListener('click', function() { close(false); });
+            backdrop.addEventListener('click', function(e) { if (e.target === backdrop) close(false); });
+            document.addEventListener('keydown', onKey);
+            if (typeInput) {
+                typeInput.addEventListener('input', refreshConfirmState);
+                /* For type-lock: focus the input so user can type right away */
+                setTimeout(function() { typeInput.focus(); }, 50);
+            } else {
+                /* Initial focus on Cancel for safety (destructive action) */
+                setTimeout(function() { btnCancel.focus(); }, 50);
+            }
+        });
+    }
+
+    /* Override confirmKill & closePosition to use the custom modal */
+    window.confirmKill = async function() {
+        var positions = [];
+        try {
+            var r = await fetch('/api/positions');
+            if (r.ok) positions = await r.json();
+        } catch (_) { /* ignore */ }
+        var hasPositions = positions.length > 0;
+        var ok = await showConfirmModal({
+            title: 'Аварийная остановка',
+            body: 'Все открытые позиции будут закрыты <strong>немедленно</strong> по рыночной цене, все активные ордера отменены.' +
+                  (hasPositions ? '' : '<br><br>Сейчас нет открытых позиций — команда просто остановит бота.'),
+            positions: positions,
+            /* Pro-grade safety: require typing STOP when real money is at risk */
+            requireTypeConfirm: hasPositions ? 'STOP' : '',
+            confirmText: hasPositions ? 'Закрыть ВСЁ' : 'Остановить бота'
+        });
+        if (ok) controlAction('kill');
+    };
+
+    window.closePosition = async function(symbol) {
+        if (!symbol) return;
+        if (!_backendOnline) {
+            showToast('Backend не запущен — запустите main.py', 'error');
+            return;
+        }
+        var ok = await showConfirmModal({
+            title: 'Закрыть позицию ' + symbol + '?',
+            body: 'Ордер уйдёт на исполнение <strong>немедленно</strong> по рыночной цене.',
+            confirmText: 'Закрыть позицию'
+        });
+        if (!ok) return;
+        try {
+            var r = await fetch('/api/positions/' + encodeURIComponent(symbol) + '/close', { method: 'POST' });
+            var data = {};
+            try { data = await r.json(); } catch (_) { /* ignore */ }
+            if (r.ok && data.ok !== false) {
+                showToast('Закрываю ' + symbol + '...', 'success');
+                fetchPositions();
+                fetchStatus();
+            } else {
+                showToast(data.error || ('Не удалось закрыть ' + symbol), 'error');
+            }
+        } catch (e) {
+            setBackendOnline(false);
+            showToast('Ошибка закрытия: ' + (e && e.message ? e.message : e), 'error');
+        }
+    };
 
     /* --- Block Info Modals Script --- */
             const blockDescriptions = {
