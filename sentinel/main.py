@@ -73,15 +73,17 @@ def setup_logging(settings: Settings) -> None:
         rotation=LOG_ROTATION_SIZE,
         retention=LOG_ROTATION_COUNT,
         encoding="utf-8",
+        enqueue=True,
     )
-    # Только ошибки
+    # Ошибки и важные предупреждения
     logger.add(
         log_dir / "errors.log",
         format=fmt,
-        level="ERROR",
+        level="WARNING",
         rotation=LOG_ROTATION_SIZE,
         retention=LOG_ROTATION_COUNT,
         encoding="utf-8",
+        enqueue=True,
     )
     # Сделки
     logger.add(
@@ -100,7 +102,7 @@ def setup_logging(settings: Settings) -> None:
         level="INFO",
         rotation=LOG_ROTATION_SIZE,
         retention=LOG_ROTATION_COUNT,
-        filter=lambda r: r["extra"].get("module") in ("risk", "circuit_breaker"),
+        filter=lambda r: r["extra"].get("module") in ("risk", "circuit_breaker", "circuit_breakers"),
         encoding="utf-8",
     )
     # Консоль (кратко)
@@ -138,7 +140,12 @@ def acquire_pid_lock() -> bool:
     pid_path = BASE_DIR / PID_FILE
     if pid_path.exists():
         try:
-            old_pid = int(pid_path.read_text().strip())
+            raw = pid_path.read_bytes()
+            if raw.startswith(b"\xff\xfe") or b"\x00" in raw[:8]:
+                text = raw.decode("utf-16", errors="ignore")
+            else:
+                text = raw.decode("utf-8", errors="ignore")
+            old_pid = int(text.strip().lstrip("\ufeff"))
             # Проверяем жив ли процесс (Windows-совместимо)
             import ctypes
             kernel32 = ctypes.windll.kernel32
@@ -150,7 +157,7 @@ def acquire_pid_lock() -> bool:
         except (ValueError, OSError, AttributeError) as exc:
             logger.warning("PID файл будет перезаписан: {}", exc)
 
-    pid_path.write_text(str(os.getpid()))
+    pid_path.write_text(str(os.getpid()), encoding="utf-8")
     return True
 
 
@@ -781,6 +788,9 @@ async def run() -> None:
                 _signal_id = _pos_before.signal_id if _pos_before else ""
                 _signal_reason = _pos_before.signal_reason if _pos_before else ""
                 _pos_db_id = _pos_before.db_id if _pos_before else None
+                _entry_features = _pos_before.entry_features if _pos_before else None
+                _max_price_hold = _pos_before.max_price_during_hold if _pos_before else 0.0
+                _min_price_hold = _pos_before.min_price_during_hold if _pos_before else 0.0
 
                 closed = await position_manager.close_position(order)
                 if closed and risk_sentinel:
@@ -826,27 +836,67 @@ async def run() -> None:
                             except Exception:
                                 pass
 
-                        _st = _ST(
-                            trade_id=_uuid.uuid4().hex[:12],
-                            signal_id=_signal_id,
-                            symbol=order.symbol,
-                            strategy_name=_strat_name,
-                            market_regime=_regime_name,
-                            timestamp_open=_opened_at,
-                            timestamp_close=closed.closed_at or "",
-                            entry_price=_entry_px_pos,
-                            exit_price=_fill_px,
-                            quantity=_fill_qty,
-                            pnl_usd=round(_pnl, 4),
-                            pnl_pct=round(_pnl_pct, 4),
-                            is_win=_pnl > 0,
-                            confidence=_entry_conf,
-                            hour_of_day=int(time.strftime("%H")),
-                            day_of_week=int(time.strftime("%w")),
-                            exit_reason=order.signal_reason or "",
-                            hold_duration_hours=round(_hold_hours, 2),
-                            commission_usd=order.commission,
-                        )
+                        _trade_id = _uuid.uuid4().hex[:12]
+                        _hour = int(time.strftime("%H"))
+                        _dow = int(time.strftime("%w"))
+                        if _entry_features is not None:
+                            # Capture ALL indicator/sentiment fields from the entry-time
+                            # feature vector so downstream ML training sees real values
+                            # instead of zeros.
+                            _st = _ST.from_feature_vector(
+                                _entry_features,
+                                trade_id=_trade_id,
+                                strategy_name=_strat_name,
+                                market_regime=_regime_name,
+                                confidence=_entry_conf,
+                                hour_of_day=_hour,
+                                day_of_week=_dow,
+                            )
+                            _st.symbol = order.symbol
+                            _st.signal_id = _signal_id
+                            _st.timestamp_open = _opened_at
+                            _st.timestamp_close = closed.closed_at or ""
+                            _st.entry_price = _entry_px_pos
+                            _st.exit_price = _fill_px
+                            _st.quantity = _fill_qty
+                            _st.pnl_usd = round(_pnl, 4)
+                            _st.pnl_pct = round(_pnl_pct, 4)
+                            _st.is_win = _pnl > 0
+                            _st.exit_reason = order.signal_reason or ""
+                            _st.hold_duration_hours = round(_hold_hours, 2)
+                            _st.commission_usd = order.commission
+                        else:
+                            _st = _ST(
+                                trade_id=_trade_id,
+                                signal_id=_signal_id,
+                                symbol=order.symbol,
+                                strategy_name=_strat_name,
+                                market_regime=_regime_name,
+                                timestamp_open=_opened_at,
+                                timestamp_close=closed.closed_at or "",
+                                entry_price=_entry_px_pos,
+                                exit_price=_fill_px,
+                                quantity=_fill_qty,
+                                pnl_usd=round(_pnl, 4),
+                                pnl_pct=round(_pnl_pct, 4),
+                                is_win=_pnl > 0,
+                                confidence=_entry_conf,
+                                hour_of_day=_hour,
+                                day_of_week=_dow,
+                                exit_reason=order.signal_reason or "",
+                                hold_duration_hours=round(_hold_hours, 2),
+                                commission_usd=order.commission,
+                            )
+                        # Drawdown/profit excursion during hold (MAE / MFE in %).
+                        if _entry_px_pos > 0:
+                            if _max_price_hold > 0:
+                                _st.max_profit_during_trade = round(
+                                    (_max_price_hold - _entry_px_pos) / _entry_px_pos * 100, 4,
+                                )
+                            if _min_price_hold > 0:
+                                _st.max_drawdown_during_trade = round(
+                                    (_min_price_hold - _entry_px_pos) / _entry_px_pos * 100, 4,
+                                )
                         await asyncio.to_thread(repo.insert_strategy_trade, _st)
                         log.info("Trade saved to DB: {} {} PnL=${:.2f} ({:.2f}%)",
                                  order.symbol, _strat_name, _pnl, _pnl_pct)
@@ -1023,6 +1073,14 @@ async def run() -> None:
     _current_regime = None
     _last_features = None  # последний FeatureVector для дашборда (backward compat)
     _last_features_per_symbol: dict = {}  # symbol → FeatureVector
+    # Standing ML score per symbol — evaluated every cycle regardless of
+    # whether a strategy signal fired. Gives the dashboard a live, always-fresh
+    # probability + timestamp (instead of the stale "last ml_prob from strategy_log").
+    _standing_ml_per_symbol: dict = {}  # symbol → {"prob", "decision", "ref_strategy", "ts_ms", "model_version", "mode"}
+    # Per-symbol "last processed" timestamp — set each time a symbol finishes its
+    # trading cycle. Surfaces data-freshness per symbol on the dashboard so pro users
+    # can spot stale indicators (e.g., one symbol failing while others update).
+    _last_cycle_ts_per_symbol: dict = {}  # symbol → ts_ms
     _adaptive_allocator = None
     try:
         _adaptive_allocator = AdaptiveAllocator(lookback_trades=50)
@@ -1242,7 +1300,7 @@ async def run() -> None:
 
     async def _on_new_candle(candle):
         """Главный торговый цикл — вызывается при закрытии каждой свечи."""
-        nonlocal _current_regime, trading_paused, _last_features, _last_features_per_symbol
+        nonlocal _current_regime, trading_paused, _last_features, _last_features_per_symbol, _standing_ml_per_symbol, _last_cycle_ts_per_symbol
 
         if trading_paused:
             return
@@ -1317,6 +1375,7 @@ async def run() -> None:
 
         _last_features = features
         _last_features_per_symbol[symbol] = features
+        _last_cycle_ts_per_symbol[symbol] = int(time.time() * 1000)
 
         # 2.5 Update price-history cache for the correlation guard.
         # Cheap: replaces the deque each tick with the same closes feature_builder used.
@@ -1359,6 +1418,61 @@ async def run() -> None:
 
         # 3.5. Inject regime into FeatureVector for adaptive confidence thresholds
         features.market_regime = regime_name
+
+        # 3.6. Standing ML evaluation — runs every cycle, independent of signals.
+        # Gives the dashboard a fresh probability per symbol without waiting for
+        # a strategy to fire. We bypass MLPredictor.predict() (which short-circuits
+        # to 0.5 when rollout_mode == "off") and call the underlying ensemble
+        # directly, so the dashboard shows real model output even in shadow/off mode.
+        _active_ml_sym = _ml_predictors.get(symbol, _ml_predictor)
+        if _active_ml_sym and _active_ml_sym.is_ready and settings.analyzer_ml_enabled:
+            try:
+                from core.models import StrategyTrade as _ST_standing
+                _ref_strat = "ema_crossover_rsi" if "ema_crossover_rsi" in strategies else (next(iter(strategies.keys())) if strategies else "reference")
+                _standing_trade = _ST_standing.from_feature_vector(
+                    features,
+                    trade_id="standing",
+                    strategy_name=_ref_strat,
+                    market_regime=regime_name,
+                    confidence=0.5,
+                    hour_of_day=int(time.strftime("%H")),
+                    day_of_week=int(time.strftime("%w")),
+                )
+                _standing_feats = _active_ml_sym.extract_features(_standing_trade, [])
+                # Call predict() first — honours calibrated threshold. In "off" mode
+                # it returns prob=0.5 (short-circuit), so we detect that and fall
+                # back to raw ensemble inference for genuine probability surface.
+                _standing_pred = _active_ml_sym.predict(_standing_feats)
+                _standing_prob = float(_standing_pred.probability)
+                _standing_decision = str(_standing_pred.decision)
+                if _active_ml_sym.rollout_mode == "off":
+                    # Bypass short-circuit: run the ensemble directly for a real reading.
+                    try:
+                        import numpy as _np_standing
+                        _fv_arr = _np_standing.array([_standing_feats], dtype=_np_standing.float64)
+                        _fv_arr = _np_standing.nan_to_num(_fv_arr, nan=0.0, posinf=0.0, neginf=0.0)
+                        if _active_ml_sym._feature_selector.is_fitted and _active_ml_sym._feature_selector.dropped_names:
+                            _fv_arr = _active_ml_sym._feature_selector.transform(_fv_arr)
+                        if _active_ml_sym._scaler is not None:
+                            _fv_arr = _active_ml_sym._scaler.transform(_fv_arr)
+                        if _active_ml_sym._ensemble is not None and _active_ml_sym._ensemble.is_ready:
+                            _standing_prob = float(_active_ml_sym._ensemble.predict_proba_calibrated(_fv_arr)[0])
+                        elif _active_ml_sym._model is not None:
+                            _standing_prob = float(_active_ml_sym._model.predict_proba(_fv_arr)[0][1])
+                        _thr = max(_active_ml_sym._calibrated_threshold or 0.0, _active_ml_sym._cfg.block_threshold or 0.0) or 0.5
+                        _standing_decision = "block" if _standing_prob < _thr * 0.85 else ("reduce" if _standing_prob < _thr else "allow")
+                    except Exception as _raw_err:
+                        log.debug("Standing raw ensemble call failed for {}: {}", symbol, _raw_err)
+                _standing_ml_per_symbol[symbol] = {
+                    "prob": _standing_prob,
+                    "decision": _standing_decision,
+                    "ref_strategy": _ref_strat,
+                    "ts_ms": int(time.time() * 1000),
+                    "model_version": str(_standing_pred.model_version or ""),
+                    "mode": str(_active_ml_sym.rollout_mode or "off"),
+                }
+            except Exception as _standing_err:
+                log.warning("Standing ML eval failed for {}: {}", symbol, _standing_err)
 
         # 4. Определить активные стратегии
         if settings.auto_strategy_selection and _current_regime:
@@ -1872,8 +1986,70 @@ async def run() -> None:
                 now_ms = int(_time.time() * 1000)
 
                 if candle_close_time > now_ms:
-                    log.info("[Startup] Latest {} candle for {} is still OPEN (closes in {:.0f}s) — skipping",
+                    log.info("[Startup] Latest {} candle for {} is still OPEN (closes in {:.0f}s) — running standing ML warmup",
                              settings.signal_timeframe, sym, (candle_close_time - now_ms) / 1000)
+                    # Candle is open — run standing ML warmup using last closed candle data
+                    # so dashboard shows ML forecast immediately without waiting for next close.
+                    try:
+                        candles_1h_raw = await asyncio.to_thread(repo.get_candles, sym, "1h", limit=60)
+                        candles_4h_raw = await asyncio.to_thread(repo.get_candles, sym, "4h", limit=60)
+                        candles_1d_raw = await asyncio.to_thread(repo.get_candles, sym, "1d", limit=60)
+                        if candles_1h_raw and candles_4h_raw:
+                            _mk_candle = lambda c: CandleModel(
+                                timestamp=c["timestamp"], symbol=c["symbol"], interval=c["interval"],
+                                open=float(c["open"]), high=float(c["high"]), low=float(c["low"]),
+                                close=float(c["close"]), volume=float(c.get("volume", 0)),
+                                trades_count=int(c.get("trades_count", 0)),
+                            )
+                            _c1h = [_mk_candle(c) for c in candles_1h_raw]
+                            _c4h = [_mk_candle(c) for c in candles_4h_raw]
+                            _c1d = [_mk_candle(c) for c in candles_1d_raw] or None
+                            _wup_feats = feature_builder.build(sym, _c1h, _c4h, _c1d)
+                            if _wup_feats is not None:
+                                _last_features_per_symbol[sym] = _wup_feats
+                                _last_cycle_ts_per_symbol[sym] = int(_time.time() * 1000)
+                                _wup_ml = _ml_predictors.get(sym, _ml_predictor)
+                                if _wup_ml and _wup_ml.is_ready and settings.analyzer_ml_enabled:
+                                    _wup_regime = detect_regime(_wup_feats)
+                                    _wup_regime_name = _wup_regime.regime.value if _wup_regime else "unknown"
+                                    from core.models import StrategyTrade as _ST_wup
+                                    _wup_ref = "ema_crossover_rsi" if "ema_crossover_rsi" in strategies else (next(iter(strategies.keys())) if strategies else "reference")
+                                    _wup_trade = _ST_wup.from_feature_vector(
+                                        _wup_feats, trade_id="warmup", strategy_name=_wup_ref,
+                                        market_regime=_wup_regime_name, confidence=0.5,
+                                        hour_of_day=int(_time.strftime("%H")),
+                                        day_of_week=int(_time.strftime("%w")),
+                                    )
+                                    _wup_feat_vec = _wup_ml.extract_features(_wup_trade, [])
+                                    _wup_pred = _wup_ml.predict(_wup_feat_vec)
+                                    _wup_prob = float(_wup_pred.probability)
+                                    if _wup_ml.rollout_mode == "off":
+                                        try:
+                                            import numpy as _np_wup
+                                            _fv = _np_wup.nan_to_num(_np_wup.array([_wup_feat_vec], dtype=_np_wup.float64), nan=0.0, posinf=0.0, neginf=0.0)
+                                            if _wup_ml._feature_selector.is_fitted and _wup_ml._feature_selector.dropped_names:
+                                                _fv = _wup_ml._feature_selector.transform(_fv)
+                                            if _wup_ml._scaler is not None:
+                                                _fv = _wup_ml._scaler.transform(_fv)
+                                            if _wup_ml._ensemble is not None and _wup_ml._ensemble.is_ready:
+                                                _wup_prob = float(_wup_ml._ensemble.predict_proba_calibrated(_fv)[0])
+                                            elif _wup_ml._model is not None:
+                                                _wup_prob = float(_wup_ml._model.predict_proba(_fv)[0][1])
+                                        except Exception:
+                                            pass
+                                    _thr_wup = max(_wup_ml._calibrated_threshold or 0.0, _wup_ml._cfg.block_threshold or 0.0) or 0.5
+                                    _wup_dec = "block" if _wup_prob < _thr_wup * 0.85 else ("reduce" if _wup_prob < _thr_wup else "allow")
+                                    _standing_ml_per_symbol[sym] = {
+                                        "prob": _wup_prob,
+                                        "decision": _wup_dec,
+                                        "ref_strategy": _wup_ref,
+                                        "ts_ms": int(_time.time() * 1000),
+                                        "model_version": str(_wup_pred.model_version or ""),
+                                        "mode": str(_wup_ml.rollout_mode or "off"),
+                                    }
+                                    log.info("[Startup] Standing ML warmup for {}: prob={:.2f} decision={}", sym, _wup_prob, _wup_dec)
+                    except Exception as _wup_err:
+                        log.warning("[Startup] Standing ML warmup failed for {}: {}", sym, _wup_err)
                     continue
 
                 candle = CandleModel(
@@ -2346,6 +2522,8 @@ async def run() -> None:
                 for sym in (settings.trading_symbols or [])
             },
             "trading_symbols": settings.trading_symbols or [],
+            "standing_ml_per_symbol": dict(_standing_ml_per_symbol),
+            "last_cycle_ts_per_symbol": dict(_last_cycle_ts_per_symbol),
             "win_rate_per_symbol": _calc_win_rate_per_symbol(position_state.get("recent_trades", [])),
             "strategy_performance": repo.get_strategy_performance() if repo else [],
             "trades_export": repo.get_all_trades_for_export() if repo else [],
@@ -2482,7 +2660,7 @@ async def run() -> None:
             strats_str = ", ".join(strats) if strats else "нет"
             await telegram_bot.send_message(
                 f"🟢 <b>SENTINEL v{VERSION} — ЗАПУЩЕН</b>\n"
-                f"⏰ {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
                 f"\n"
                 f"{mode_icon} Режим торговли: <b>{settings.trading_mode.upper()}</b>\n"
                 f"📊 Торговые пары: <b>{symbols_str}</b>\n"
@@ -2664,7 +2842,7 @@ async def run() -> None:
             wr = wins / (wins + losses_count) * 100 if (wins + losses_count) > 0 else 0
             shutdown_msg = (
                 f"🔴 <b>SENTINEL — ОСТАНОВКА</b>\n"
-                f"⏰ {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
                 f"⏱️ Uptime: {uptime}\n"
                 f"\n"
                 f"💵 <b>P&amp;L за сегодня: {'+'if pnl_today >= 0 else ''}{pnl_today:.2f}$</b>  {pnl_icon}\n"

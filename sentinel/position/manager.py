@@ -228,6 +228,9 @@ class PositionManager:
                 is_paper=order.is_paper,
                 initial_quantity=fill_qty,
                 open_commission=order.commission,
+                entry_features=order.features,
+                max_price_during_hold=fill_price,
+                min_price_during_hold=fill_price,
             )
 
             # Сохранить SL/TP
@@ -521,6 +524,10 @@ class PositionManager:
             if pos:
                 pos.current_price = price
                 pos.unrealized_pnl = (price - pos.entry_price) * pos.quantity
+                if price > pos.max_price_during_hold:
+                    pos.max_price_during_hold = price
+                if pos.min_price_during_hold <= 0 or price < pos.min_price_during_hold:
+                    pos.min_price_during_hold = price
                 # Update trailing stop max price
                 if symbol in self._trailing:
                     act, trail, max_p = self._trailing[symbol]

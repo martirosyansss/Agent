@@ -93,6 +93,7 @@ class PaperExecutor(BaseExecutor):
             signal_reason=signal.reason,
             stop_loss_price=signal.stop_loss_price,
             take_profit_price=signal.take_profit_price,
+            features=signal.features,
         )
 
         logger.info(

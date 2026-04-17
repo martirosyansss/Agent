@@ -43,6 +43,7 @@ import hashlib
 import logging
 import pickle
 import time
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -1489,12 +1490,14 @@ class MLPredictor:
                 features_arr = self._scaler.transform(features_arr)
 
             # v3: Use ensemble if available, fallback to legacy single model
-            if self._ensemble is not None and self._ensemble.is_ready:
-                proba = float(self._ensemble.predict_proba_calibrated(features_arr)[0])
-            elif self._model is not None:
-                proba = float(self._model.predict_proba(features_arr)[0][1])
-            else:
-                proba = 0.5
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="X does not have valid feature names")
+                if self._ensemble is not None and self._ensemble.is_ready:
+                    proba = float(self._ensemble.predict_proba_calibrated(features_arr)[0])
+                elif self._model is not None:
+                    proba = float(self._model.predict_proba(features_arr)[0][1])
+                else:
+                    proba = 0.5
         except Exception as exc:
             logger.warning("ML predict failed (defaulting to allow): %s", exc, exc_info=True)
             proba = 0.5

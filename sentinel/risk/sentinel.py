@@ -597,23 +597,6 @@ class RiskSentinel:
                 )
             order_value = signal.suggested_quantity * current_market_price
             new_exposure_pct = total_exposure_pct + (order_value / balance * 100)
-            # Correlation cluster cap: BTC+ETH are ~0.85 correlated — treating
-            # them as independent diversifies the paper but not the risk. Block
-            # the second entry into the same cluster entirely.
-            correlated_symbols = {"BTCUSDT", "ETHUSDT"}
-            if signal.symbol in correlated_symbols and open_symbols:
-                cluster_overlap = [
-                    s for s in open_symbols
-                    if s in correlated_symbols and s != signal.symbol
-                ]
-                if cluster_overlap:
-                    return RiskCheckResult(
-                        approved=False,
-                        reason=(
-                            f"Correlated cluster exposure: already long "
-                            f"{','.join(cluster_overlap)} (~0.85 corr with {signal.symbol})"
-                        ),
-                    )
             if new_exposure_pct > self._limits.max_total_exposure_pct:
                 return RiskCheckResult(
                     approved=False,

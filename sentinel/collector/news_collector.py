@@ -288,6 +288,7 @@ Respond ONLY with a JSON array. No markdown, no text outside JSON."""
         self._groq_available = bool(groq_api_key)
         self._openrouter_available = bool(openrouter_api_key)
         self._llm_failures = 0  # подряд неудач LLM, после 3 → переключаемся
+        self._groq_disabled_until: float = 0.0  # epoch time; 0 = not disabled
         self._task: Optional[asyncio.Task] = None
         self._db = db  # Database instance for caching LLM results
 
@@ -535,8 +536,10 @@ Respond ONLY with a JSON array. No markdown, no text outside JSON."""
             lines.append(entry)
         user_msg = "Analyze these crypto news items:\n" + "\n".join(lines)
 
-        # Пробуем Groq первым
-        if self._groq_available:
+        # Пробуем Groq первым (пропускаем если дневной лимит исчерпан)
+        import time as _time
+        groq_rate_limited = self._groq_disabled_until > _time.time()
+        if self._groq_available and not groq_rate_limited:
             data = await self._call_llm_api(
                 url=self.GROQ_API_URL,
                 api_key=self._groq_api_key,
@@ -548,6 +551,8 @@ Respond ONLY with a JSON array. No markdown, no text outside JSON."""
                 return self._apply_llm_results(data, items)
             # Groq не сработал — пробуем OpenRouter
             logger.info("Groq failed, trying OpenRouter fallback")
+        elif groq_rate_limited:
+            logger.debug("Groq daily limit active, skipping until %.0f", self._groq_disabled_until)
 
         # OpenRouter fallback
         if self._openrouter_available:
@@ -589,6 +594,18 @@ Respond ONLY with a JSON array. No markdown, no text outside JSON."""
                 if resp.status != 200:
                     body = await resp.text()
                     logger.warning("%s API error %d: %s", provider, resp.status, body[:200])
+                    # Daily token limit exhausted — disable Groq until midnight UTC
+                    if resp.status == 429 and provider == "Groq" and "tokens per day" in body:
+                        import datetime as _dt
+                        now_utc = _dt.datetime.now(_dt.timezone.utc)
+                        midnight_utc = (now_utc + _dt.timedelta(days=1)).replace(
+                            hour=0, minute=0, second=0, microsecond=0
+                        )
+                        self._groq_disabled_until = midnight_utc.timestamp()
+                        logger.warning(
+                            "Groq daily token limit exhausted — disabling until %s UTC",
+                            midnight_utc.strftime("%H:%M"),
+                        )
                     return None
                 data = await resp.json()
         except Exception as e:

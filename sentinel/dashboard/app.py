@@ -453,7 +453,7 @@ class Dashboard:
                             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
                             "font-src 'self' https://fonts.gstatic.com data:; "
                             "img-src 'self' data: blob:; "
-                            "connect-src 'self' ws: wss:; "
+                            "connect-src 'self' ws: wss: https://cdn.jsdelivr.net; "
                             "frame-ancestors 'none'; "
                             "base-uri 'self'; "
                             "form-action 'self'"
@@ -810,6 +810,39 @@ class Dashboard:
                 "lines": lines,
                 "truncated": len(lines) >= tail,
             })
+
+        @app.delete("/api/logs")
+        async def logs_clear(name: str = ""):
+            """Очистить (truncate) лог-файл. Для events.jsonl и прочих .log/.jsonl."""
+            logs_dir = (pathlib.Path(__file__).parent.parent / "logs").resolve()
+            if "/" in name or "\\" in name or ".." in name or not name:
+                return JSONResponse(content={"error": "invalid log name"}, status_code=400)
+            log_path = (logs_dir / name).resolve()
+            try:
+                log_path.relative_to(logs_dir)
+            except ValueError:
+                return JSONResponse(content={"error": "path outside logs dir"}, status_code=400)
+            if not log_path.exists() or not log_path.is_file():
+                return JSONResponse(content={"error": "log not found", "name": name}, status_code=404)
+            if log_path.suffix.lower() not in {".log", ".jsonl"}:
+                return JSONResponse(content={"error": "only .log/.jsonl allowed"}, status_code=400)
+
+            try:
+                # Truncate in-place (loguru append handle продолжит писать с позиции 0+).
+                with log_path.open("r+b") as fh:
+                    fh.truncate(0)
+                logger.warning("Log file cleared via dashboard: {}", name)
+                return JSONResponse(content={"status": "ok", "name": name, "size": 0})
+            except PermissionError as exc:
+                return JSONResponse(
+                    content={"error": f"file busy / locked: {exc}"},
+                    status_code=409,
+                )
+            except OSError as exc:
+                return JSONResponse(
+                    content={"error": f"truncate failed: {exc}"},
+                    status_code=500,
+                )
 
         @app.get("/api/ml/status")
         async def ml_status():

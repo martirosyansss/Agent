@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+LOCAL_TZ = timezone(timedelta(hours=4))
 from typing import Optional
 
 from core.models import Direction, Order, Position, RiskState, Signal
@@ -45,8 +47,8 @@ def fmt_pnl(value: float) -> str:
 
 
 def _now_str() -> str:
-    """Текущее время UTC в читаемом формате."""
-    return datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    """Текущее локальное время (UTC+4) в читаемом формате."""
+    return datetime.now(LOCAL_TZ).strftime("%H:%M:%S GMT+4")
 
 
 def _risk_reward(entry: float, sl: float, tp: float, side: str) -> str:

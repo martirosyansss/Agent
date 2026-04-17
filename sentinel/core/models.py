@@ -230,6 +230,7 @@ class Order:
     stop_loss_price: float = 0.0
     take_profit_price: float = 0.0
     order_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    features: Optional[FeatureVector] = None
 
 
 # ──────────────────────────────────────────────
@@ -264,6 +265,9 @@ class Position:
     original_stop_loss: float = 0.0     # SL before breakeven adjustment
     partial_realized_pnl: float = 0.0   # PnL from partial closes
     open_commission: float = 0.0        # commission paid on entry; allocated pro-rata on close
+    entry_features: Optional[FeatureVector] = None
+    max_price_during_hold: float = 0.0
+    min_price_during_hold: float = 0.0
 
 
 # ──────────────────────────────────────────────
