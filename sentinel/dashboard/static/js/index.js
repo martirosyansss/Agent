@@ -7,6 +7,10 @@
        _logError so failures surface during development and
        can be wired to a client-side telemetry endpoint later.
        ══════════════════════════════════════════════════ */
+    /* Throttle: coalesce bursts of identical errors to avoid flooding the
+       server (e.g. a render loop crashing on every WS tick). */
+    var _lastErrSig = '';
+    var _lastErrAt = 0;
     function _logError(scope, err, extra) {
         var payload = {
             ts: new Date().toISOString(),
@@ -17,6 +21,29 @@
         };
         /* eslint-disable-next-line no-console */
         console.error('[SENTINEL]', payload);
+
+        var sig = payload.scope + '|' + payload.msg;
+        var now = Date.now();
+        if (sig === _lastErrSig && (now - _lastErrAt) < 5000) return;
+        _lastErrSig = sig;
+        _lastErrAt = now;
+
+        /* Fire-and-forget: use _csrfFetch if available (defined below) */
+        try {
+            var fn = (typeof _csrfFetch === 'function') ? _csrfFetch : fetch;
+            fn('/api/client-error', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    scope: payload.scope,
+                    msg: payload.msg,
+                    extra: { stack: payload.stack ? payload.stack.slice(0, 2000) : null, extra: payload.extra },
+                }),
+                /* Don't keep the tab alive for this beacon */
+                keepalive: true,
+            }).catch(function() { /* swallow — can't log-the-logger */ });
+        } catch (_) { /* swallow */ }
     }
     window.addEventListener('error', function(ev) {
         _logError('window.error', ev.error || ev.message, { file: ev.filename, line: ev.lineno, col: ev.colno });
@@ -44,7 +71,15 @@
             opts.headers = headers;
             opts.credentials = opts.credentials || 'same-origin';
         }
-        return fetch(url, opts);
+        return fetch(url, opts).then(function(r) {
+            if (r.status === 403) {
+                /* Surface expired CSRF cookie to the user so they can recover */
+                if (typeof showToast === 'function') {
+                    showToast('Сессия истекла — перезагрузите страницу (F5)', 'error');
+                }
+            }
+            return r;
+        });
     }
 
     /* ── Helpers ──────────────────────────────── */
@@ -958,7 +993,19 @@
     })();
 
     /* ── UI Updates ──────────────────────────── */
+    /* Coalesce rapid state_update ticks — if the WS reconnects while a
+       REST fallback fetch is in-flight, both would call updateUI back-to-back
+       with essentially identical payloads. 150ms is below human-perceptible. */
+    var _lastUpdateAt = 0;
     function updateUI(data) {
+        var now = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now() : Date.now();
+        if (now - _lastUpdateAt < 150) return;
+        _lastUpdateAt = now;
+        return _renderUI(data);
+    }
+
+    function _renderUI(data) {
         /* Dashboard-only метрики (index.html). На других страницах их нет. */
         var pt = document.getElementById('pnl-today');
         if (pt) {
@@ -2743,8 +2790,10 @@
     function renderEquityCurve(data) {
         var canvas = document.getElementById('equityChart');
         var noDataEl = document.getElementById('equityNoData');
+        var skelEl = document.getElementById('equitySkeleton');
         if (!canvas || !data || data.length < 2) return;
         if (noDataEl) noDataEl.style.display = 'none';
+        if (skelEl) skelEl.style.display = 'none';
 
         var labels = data.map(function(d) { return d.label || ''; });
         var balances = data.map(function(d) { return d.balance || 0; });
@@ -3115,13 +3164,13 @@
             var data = await r.json();
             if (r.ok) {
                 showToast(
-                    action === 'resume' ? 'Trading started' :
-                    action === 'stop' ? 'Trading stopped' :
-                    'Emergency stop executed',
+                    action === 'resume' ? 'Торговля запущена' :
+                    action === 'stop' ? 'Торговля приостановлена' :
+                    'Аварийная остановка выполнена',
                     action === 'kill' ? 'warning' : 'success'
                 );
             } else {
-                showToast(data.error || 'Action failed', 'error');
+                showToast(data.error || 'Действие не выполнено', 'error');
             }
             fetchStatus();
         } catch(e) {
@@ -3245,6 +3294,18 @@
             resetBtn.addEventListener('click', function() {
                 if (window.pnlChart && typeof window.pnlChart.resetZoom === 'function') {
                     window.pnlChart.resetZoom();
+                }
+            });
+        }
+        /* EMA legend toggles — replaces inline onclick="toggleEmaLine(N)" */
+        var emaRow = document.getElementById('emaLegendRow');
+        if (emaRow) {
+            emaRow.addEventListener('click', function(ev) {
+                var item = ev.target.closest('[data-ema-toggle]');
+                if (!item) return;
+                var idx = parseInt(item.getAttribute('data-ema-toggle'), 10);
+                if (!isNaN(idx) && typeof window.toggleEmaLine === 'function') {
+                    window.toggleEmaLine(idx);
                 }
             });
         }

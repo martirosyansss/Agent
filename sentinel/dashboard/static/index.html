@@ -405,12 +405,12 @@
             </div>
             <div class="chart-legend-row" id="emaLegendRow" style="display:none;">
                 <span style="color:var(--text-dim);font-size:10px;text-transform:uppercase;letter-spacing:0.06em;margin-right:2px;">Indicators</span>
-                <div class="chart-legend-item" id="legendEma9" onclick="toggleEmaLine(2)" title="Toggle EMA 9">
+                <div class="chart-legend-item" id="legendEma9" data-ema-toggle="2" title="Toggle EMA 9">
                     <span class="chart-legend-line" style="color:#e2a72f;"></span>
                     <span>EMA 9</span>
                     <span class="chart-legend-value" id="legendEma9Val">&mdash;</span>
                 </div>
-                <div class="chart-legend-item" id="legendEma21" onclick="toggleEmaLine(3)" title="Toggle EMA 21">
+                <div class="chart-legend-item" id="legendEma21" data-ema-toggle="3" title="Toggle EMA 21">
                     <span class="chart-legend-line dashed" style="color:#c084fc;"></span>
                     <span>EMA 21</span>
                     <span class="chart-legend-value" id="legendEma21Val">&mdash;</span>
@@ -431,6 +431,11 @@
             <p class="panel-desc">Кривая роста баланса с отображением просадок. <strong>Зелёная линия</strong> = баланс. <strong>Красная зона</strong> = drawdown от пика. Чем меньше красного, тем стабильнее система.</p>
             <div class="chart-wrap" style="position:relative;height:220px;">
                 <canvas id="equityChart" aria-label="Equity curve chart" role="img"></canvas>
+                <div id="equitySkeleton" class="equity-skeleton" aria-hidden="true">
+                    <div class="equity-skeleton-bar"></div>
+                    <div class="equity-skeleton-bar"></div>
+                    <div class="equity-skeleton-bar"></div>
+                </div>
                 <div id="equityNoData" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;pointer-events:none;">Собираем данные…</div>
             </div>
         </div>

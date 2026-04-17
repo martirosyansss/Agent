@@ -35,6 +35,43 @@ logger = logging.getLogger(__name__)
 _START_TIME = time.time()
 
 
+class _RateLimiter:
+    """Minimal in-memory sliding-window limiter keyed by (client_ip, action).
+
+    Keeps it simple: no external deps, no cleanup thread. Entries are
+    overwritten in place so memory stays bounded by number of distinct keys.
+    Good enough for a single-operator local dashboard.
+    """
+
+    def __init__(self, max_calls: int, window_sec: float) -> None:
+        self._max = int(max_calls)
+        self._window = float(window_sec)
+        self._hits: dict[tuple[str, str], list[float]] = {}
+
+    def allow(self, key: tuple[str, str]) -> tuple[bool, float]:
+        now = time.monotonic()
+        bucket = self._hits.get(key)
+        if bucket is None:
+            self._hits[key] = [now]
+            return True, 0.0
+        # Drop timestamps outside the window
+        cutoff = now - self._window
+        bucket = [t for t in bucket if t >= cutoff]
+        if len(bucket) >= self._max:
+            retry_after = max(0.0, bucket[0] + self._window - now)
+            self._hits[key] = bucket
+            return False, retry_after
+        bucket.append(now)
+        self._hits[key] = bucket
+        return True, 0.0
+
+
+# Mutating endpoints get their own limiter so a burst of /api/control/*
+# can't wedge the engine. Tuned for humans — 10 actions per minute is
+# plenty for manual clicks but blocks scripted abuse.
+_CONTROL_LIMITER = _RateLimiter(max_calls=10, window_sec=60.0)
+
+
 def _format_uptime() -> str:
     """Форматировать uptime системы."""
     elapsed = int(time.time() - _START_TIME)
@@ -212,8 +249,16 @@ class Dashboard:
         dashboard_password = self._password
 
         class AuthMiddleware(BaseHTTPMiddleware):
-            """Token auth for mutating endpoints when password is configured."""
-            _PUBLIC = {"/api/health", "/", "/settings", "/trades", "/analytics", "/news", "/logs", "/ws"}
+            """Token auth for mutating endpoints when password is configured.
+
+            Flow when password IS configured:
+              • /login, /api/login, /api/logout, /api/health, /ws → always public
+              • Other HTML pages → redirect to /login when no/invalid cookie
+              • Other /api/* → 401 JSON
+              • Read-only GETs in _READ_ONLY still work without auth for embed use
+            """
+            _ALWAYS_PUBLIC = {"/api/health", "/api/login", "/api/logout", "/login", "/ws"}
+            _HTML_PAGES = {"/", "/settings", "/trades", "/analytics", "/news", "/logs"}
             _READ_ONLY = {"/api/status", "/api/positions", "/api/trades",
                           "/api/pnl-history", "/api/market-chart",
                           "/api/backtest-results", "/api/config",
@@ -222,9 +267,10 @@ class Dashboard:
                           "/api/logs", "/api/logs/list"}
 
             async def dispatch(self, request: Request, call_next):
+                from starlette.responses import RedirectResponse
                 path = request.url.path
-                # Static files and public endpoints — no auth
-                if path.startswith("/static") or path in self._PUBLIC:
+                # Static files and always-public endpoints — no auth
+                if path.startswith("/static") or path in self._ALWAYS_PUBLIC:
                     return await call_next(request)
                 # If no password configured, allow everything
                 if not dashboard_password:
@@ -236,7 +282,10 @@ class Dashboard:
                          or request.cookies.get("sentinel_auth")
                          or "")
                 if not secrets.compare_digest(token, dashboard_password):
-                    # Allow read-only GET without auth for dashboard panels
+                    # HTML pages → send user to /login
+                    if request.method == "GET" and path in self._HTML_PAGES:
+                        return RedirectResponse(url="/login", status_code=303)
+                    # Allow read-only GET without auth for dashboard panels / embeds
                     if request.method == "GET" and path in self._READ_ONLY:
                         return await call_next(request)
                     return JSONResponse(
@@ -262,8 +311,10 @@ class Dashboard:
                 path = request.url.path
                 method = request.method.upper()
 
-                # WebSocket upgrades and static assets bypass CSRF
-                if path.startswith("/static") or path == "/ws":
+                # WebSocket upgrades, static assets, and login (pre-session) bypass CSRF
+                if (path.startswith("/static")
+                        or path == "/ws"
+                        or path == "/api/login"):
                     return await call_next(request)
 
                 # Enforce on mutating requests
@@ -279,18 +330,20 @@ class Dashboard:
 
                 response = await call_next(request)
 
-                # Issue/refresh CSRF cookie on HTML page loads
+                # Issue/refresh CSRF cookie on HTML page loads.
+                # Reuse existing value so open tabs keep working after a refresh;
+                # always bumps max_age so long-lived sessions don't silently expire.
                 if method == "GET" and path in self._HTML_PATHS:
-                    if not request.cookies.get(self._COOKIE):
-                        response.set_cookie(
-                            key=self._COOKIE,
-                            value=secrets.token_urlsafe(32),
-                            secure=False,   # local dashboard over http
-                            httponly=False, # JS must read it for header echo
-                            samesite="strict",
-                            max_age=60 * 60 * 24,
-                            path="/",
-                        )
+                    existing = request.cookies.get(self._COOKIE)
+                    response.set_cookie(
+                        key=self._COOKIE,
+                        value=existing or secrets.token_urlsafe(32),
+                        secure=False,   # local dashboard over http
+                        httponly=False, # JS must read it for header echo
+                        samesite="strict",
+                        max_age=60 * 60 * 24,
+                        path="/",
+                    )
                 return response
 
         app.add_middleware(CsrfMiddleware)
@@ -377,6 +430,64 @@ class Dashboard:
                 "uptime": _format_uptime(),
                 "timestamp": int(time.time() * 1000),
             }
+
+        # ── Auth: login / logout ─────────────────
+        # When dashboard_password is configured, the UI's AuthMiddleware
+        # requires the `sentinel_auth` cookie. These two endpoints set and
+        # clear that cookie; when no password is configured they succeed
+        # trivially so the flow works identically in paper/dev.
+        @app.post("/api/login")
+        async def login(request: Request):
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            submitted = str(body.get("password", "") or "")
+            if not dashboard_password:
+                # No password configured — auth is effectively disabled
+                return JSONResponse(content={"ok": True, "auth_required": False})
+            if not secrets.compare_digest(submitted, dashboard_password):
+                return JSONResponse(content={"ok": False, "error": "Invalid password"}, status_code=401)
+            response = JSONResponse(content={"ok": True, "auth_required": True})
+            # HttpOnly + SameSite=Strict: browser auto-sends to same origin
+            # (including WebSocket upgrade), but JS cannot read it → safer vs XSS.
+            response.set_cookie(
+                key="sentinel_auth",
+                value=dashboard_password,
+                httponly=True,
+                samesite="strict",
+                secure=False,
+                max_age=60 * 60 * 12,
+                path="/",
+            )
+            return response
+
+        @app.post("/api/logout")
+        async def logout():
+            response = JSONResponse(content={"ok": True})
+            response.delete_cookie(key="sentinel_auth", path="/")
+            return response
+
+        @app.post("/api/client-error")
+        async def client_error(request: Request):
+            """Collect frontend errors for server-side diagnostics.
+
+            Each payload is one error record from _logError() in index.js.
+            We log at WARNING so they appear in normal dashboard logs without
+            flooding ERROR channels used for backend faults.
+            """
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            scope = str(body.get("scope", "unknown"))[:64]
+            msg = str(body.get("msg", ""))[:400]
+            extra = body.get("extra")
+            logger.warning(
+                "client-error scope=%s msg=%s extra=%s",
+                scope, msg, extra,
+            )
+            return JSONResponse(content={"ok": True})
 
         @app.get("/api/status")
         async def status():
@@ -734,29 +845,58 @@ class Dashboard:
 
         # ── Control ──────────────────────────────
 
+        def _check_rate_limit(request: Request, action: str):
+            """Return a 429 JSONResponse when the caller exceeds the window,
+            otherwise None. Keyed by client IP so shared-office setups still
+            protect each other rather than globally locking on one user."""
+            client = request.client.host if request.client else "unknown"
+            ok, retry_after = _CONTROL_LIMITER.allow((client, action))
+            if ok:
+                return None
+            return JSONResponse(
+                content={
+                    "error": "Too many requests",
+                    "retry_after_sec": round(retry_after, 1),
+                },
+                status_code=429,
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+
         @app.post("/api/control/stop")
-        async def control_stop():
+        async def control_stop(request: Request):
+            limited = _check_rate_limit(request, "stop")
+            if limited is not None:
+                return limited
             if self.on_stop:
                 await self.on_stop()
                 return {"result": "stopped"}
             return JSONResponse(content={"error": "stop handler not set"}, status_code=503)
 
         @app.post("/api/control/resume")
-        async def control_resume():
+        async def control_resume(request: Request):
+            limited = _check_rate_limit(request, "resume")
+            if limited is not None:
+                return limited
             if self.on_resume:
                 await self.on_resume()
                 return {"result": "resumed"}
             return JSONResponse(content={"error": "resume handler not set"}, status_code=503)
 
         @app.post("/api/control/kill")
-        async def control_kill():
+        async def control_kill(request: Request):
+            limited = _check_rate_limit(request, "kill")
+            if limited is not None:
+                return limited
             if self.on_kill:
                 await self.on_kill()
                 return {"result": "killed"}
             return JSONResponse(content={"error": "kill handler not set"}, status_code=503)
 
         @app.post("/api/positions/{symbol}/close")
-        async def control_close_position(symbol: str):
+        async def control_close_position(symbol: str, request: Request):
+            limited = _check_rate_limit(request, "close")
+            if limited is not None:
+                return limited
             if not self.on_manual_close:
                 return JSONResponse(
                     content={"error": "manual close handler not set"},
@@ -833,6 +973,10 @@ class Dashboard:
                     self._ws_clients.remove(websocket)
 
         # ── HTML Dashboard ───────────────────────
+
+        @app.get("/login", response_class=HTMLResponse)
+        async def login_page():
+            return _LOGIN_HTML
 
         @app.get("/", response_class=HTMLResponse)
         async def dashboard_page():
@@ -936,3 +1080,4 @@ _TRADES_HTML = (_STATIC_DIR / "trades.html").read_text(encoding="utf-8") if (_ST
 _ANALYTICS_HTML = (_STATIC_DIR / "analytics.html").read_text(encoding="utf-8") if (_STATIC_DIR / "analytics.html").exists() else "<h1>Analytics HTML not found</h1>"
 _NEWS_HTML = (_STATIC_DIR / "news.html").read_text(encoding="utf-8") if (_STATIC_DIR / "news.html").exists() else "<h1>News HTML not found</h1>"
 _LOGS_HTML = (_STATIC_DIR / "logs.html").read_text(encoding="utf-8") if (_STATIC_DIR / "logs.html").exists() else "<h1>Logs HTML not found</h1>"
+_LOGIN_HTML = (_STATIC_DIR / "login.html").read_text(encoding="utf-8") if (_STATIC_DIR / "login.html").exists() else "<h1>Login HTML not found</h1>"

@@ -134,6 +134,42 @@
                 rgba(255,255,255,0.04) 63%) !important;
             background-size: 400% 100% !important;
         }
+        /* Equity chart skeleton — overlays the canvas with an animated
+           sparkline-shaped gradient until the first data arrives. */
+        .equity-skeleton {
+            position: absolute; inset: 0;
+            padding: 18px 24px;
+            display: flex; flex-direction: column; justify-content: flex-end;
+            pointer-events: none;
+        }
+        .equity-skeleton::before {
+            content: '';
+            position: absolute; inset: 0;
+            background:
+                linear-gradient(180deg, transparent 0%, rgba(16,185,129,0.05) 100%),
+                repeating-linear-gradient(
+                    90deg,
+                    transparent 0 40px,
+                    rgba(255,255,255,0.03) 40px 41px);
+            opacity: 0.7;
+        }
+        .equity-skeleton-bar {
+            position: relative;
+            height: 6px;
+            border-radius: 3px;
+            background: linear-gradient(90deg,
+                rgba(16,185,129,0.08) 0%,
+                rgba(16,185,129,0.22) 50%,
+                rgba(16,185,129,0.08) 100%);
+            background-size: 200% 100%;
+            animation: skeletonWave 1.4s ease-in-out infinite;
+            margin-bottom: 12px;
+        }
+        .equity-skeleton-bar:nth-child(2) { width: 70%; margin-left: 30%; }
+        .equity-skeleton-bar:nth-child(3) { width: 85%; margin-left: 15%; }
+        @media (prefers-reduced-motion: reduce) {
+            .equity-skeleton-bar { animation: none; }
+        }
         @keyframes skeletonWave {
             0%   { background-position: 100% 50%; }
             100% { background-position: 0 50%; }

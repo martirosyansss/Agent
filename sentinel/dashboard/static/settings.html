@@ -1703,10 +1703,10 @@
 
         var current = collectValues();
         if (!sectionHasChanges(section, current)) {
-            showToast('Section already clean', 'info');
+            showToast('В этой секции нет изменений', 'info');
             return;
         }
-        if (!confirm('Reset changes in the active section?')) return;
+        if (!confirm('Откатить изменения в активной секции?')) return;
 
         getSectionFields(section).forEach(function(f) {
             setFieldInputValue(f, baselineValues[f.name]);
@@ -1714,33 +1714,33 @@
         updateDirtyState();
 
         if (hasUnsavedChanges) {
-            setSaveStatus('Section reset, other changes remain', 'warning');
+            setSaveStatus('Секция откачена, остальные изменения сохранены', 'warning');
         } else {
-            setSaveStatus('Section reset');
+            setSaveStatus('Секция откачена');
         }
-        showToast('Section reset to saved values', 'info');
+        showToast('Секция откачена к сохранённым значениям', 'info');
     }
 
     /* ═══════════════════════════════════════════
        API
        ═══════════════════════════════════════════ */
     async function loadEditableSettings() {
-        if (hasUnsavedChanges && !confirm('You have unsaved changes. Reload values from disk anyway?')) return;
-        setSaveStatus('Loading…');
+        if (hasUnsavedChanges && !confirm('Есть несохранённые изменения. Перезагрузить значения с диска?')) return;
+        setSaveStatus('Загрузка…');
         try {
             var response = await fetch('/api/settings/editable');
             var payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || 'Failed to load settings');
+            if (!response.ok) throw new Error(payload.error || 'Не удалось загрузить настройки');
             renderSections(payload.values || {});
             baselineValues = payload.values || {};
             hasUnsavedChanges = false;
             renderBadge(payload.values && payload.values.trading_mode ? payload.values.trading_mode : 'paper');
-            setSaveStatus('Loaded');
-            showToast('Settings loaded successfully', 'success');
+            setSaveStatus('Загружено');
+            showToast('Настройки успешно загружены', 'success');
         } catch (error) {
             document.getElementById('settings-form').innerHTML =
                 '<div class="section active" data-section="control"><div style="padding:40px;text-align:center;color:var(--text-muted)">' + escapeHtml(error.message) + '</div></div>';
-            setSaveStatus('Load error', 'error');
+            setSaveStatus('Ошибка загрузки', 'error');
             showToast(error.message, 'error');
         }
     }
@@ -1748,7 +1748,7 @@
     async function saveSettings() {
         var btn = document.getElementById('save-btn');
         btn.disabled = true;
-        setSaveStatus('Saving…');
+        setSaveStatus('Сохранение…');
         try {
             var _csrf = (document.cookie.match(/(?:^|;\s*)sentinel_csrf=([^;]+)/) || [])[1] || '';
             var response = await fetch('/api/settings/update', {
@@ -1761,13 +1761,14 @@
                 body: JSON.stringify(collectValues())
             });
             var payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || 'Save failed');
+            if (response.status === 403) throw new Error('Сессия истекла — перезагрузите страницу (F5)');
+            if (!response.ok) throw new Error(payload.error || 'Не удалось сохранить');
             baselineValues = collectValues();
             hasUnsavedChanges = false;
             updateDirtyIndicators(baselineValues);
             renderBadge(payload.values && payload.values.trading_mode ? payload.values.trading_mode : 'paper');
-            setSaveStatus('Saved ✓', 'saved');
-            showToast('Settings saved. Restart to apply engine changes.', 'success');
+            setSaveStatus('Сохранено ✓', 'saved');
+            showToast('Настройки сохранены. Перезапустите для применения.', 'success');
         } catch (error) {
             setSaveStatus(error.message, 'error');
             showToast(error.message, 'error');
