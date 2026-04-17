@@ -61,6 +61,15 @@
         var m = document.cookie.match(/(?:^|;\s*)sentinel_csrf=([^;]+)/);
         return m ? decodeURIComponent(m[1]) : '';
     }
+    /* Dedup toast shown on 401/403 so rapid failures don't stack notifications. */
+    var _lastAuthToastAt = 0;
+    function _authToast(msg) {
+        var now = Date.now();
+        if (now - _lastAuthToastAt < 3000) return;
+        _lastAuthToastAt = now;
+        if (typeof showToast === 'function') showToast(msg, 'error');
+    }
+
     function _csrfFetch(url, opts) {
         opts = opts || {};
         var method = (opts.method || 'GET').toUpperCase();
@@ -72,11 +81,14 @@
             opts.credentials = opts.credentials || 'same-origin';
         }
         return fetch(url, opts).then(function(r) {
-            if (r.status === 403) {
-                /* Surface expired CSRF cookie to the user so they can recover */
-                if (typeof showToast === 'function') {
-                    showToast('Сессия истекла — перезагрузите страницу (F5)', 'error');
-                }
+            /* 401 = auth cookie expired/missing — send user to /login so they can recover.
+               Skip the redirect for the beacon endpoint to avoid bouncing during tab unload. */
+            if (r.status === 401 && url !== '/api/client-error') {
+                _authToast('Требуется вход — перенаправляем…');
+                setTimeout(function() { window.location.href = '/login'; }, 600);
+            } else if (r.status === 403 && url !== '/api/client-error') {
+                /* CSRF token mismatch — typically means the csrf cookie expired */
+                _authToast('Сессия истекла — перезагрузите страницу (F5)');
             }
             return r;
         });
@@ -995,8 +1007,10 @@
     /* ── UI Updates ──────────────────────────── */
     /* Coalesce rapid state_update ticks — if the WS reconnects while a
        REST fallback fetch is in-flight, both would call updateUI back-to-back
-       with essentially identical payloads. 150ms is below human-perceptible. */
-    var _lastUpdateAt = 0;
+       with essentially identical payloads. 150ms is below human-perceptible.
+       `_lastUpdateAt = -Infinity` so the VERY FIRST update always renders,
+       even if it arrives <150ms after page load. */
+    var _lastUpdateAt = -Infinity;
     function updateUI(data) {
         var now = (typeof performance !== 'undefined' && performance.now)
             ? performance.now() : Date.now();
@@ -3297,6 +3311,20 @@
                 }
             });
         }
+        /* Logout button in header */
+        var logoutBtn = document.getElementById('logout-btn');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', async function() {
+                try {
+                    await _csrfFetch('/api/logout', { method: 'POST' });
+                } catch (e) {
+                    _logError('logout', e);
+                }
+                /* Navigate regardless — cookie is either gone or never existed */
+                window.location.href = '/login';
+            });
+        }
+
         /* EMA legend toggles — replaces inline onclick="toggleEmaLine(N)" */
         var emaRow = document.getElementById('emaLegendRow');
         if (emaRow) {

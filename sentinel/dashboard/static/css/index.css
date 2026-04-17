@@ -480,6 +480,8 @@
             color: var(--text-muted); padding: 6px;
             border-radius: var(--radius-sm); transition: all 0.25s;
             display: flex; align-items: center;
+            background: transparent; border: none; cursor: pointer;
+            font: inherit;
         }
         .header-nav-link:hover { color: var(--text-primary); background: var(--bg-hover); }
         .header-nav-link svg { width: 16px; height: 16px; }

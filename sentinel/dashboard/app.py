@@ -38,31 +38,58 @@ _START_TIME = time.time()
 class _RateLimiter:
     """Minimal in-memory sliding-window limiter keyed by (client_ip, action).
 
-    Keeps it simple: no external deps, no cleanup thread. Entries are
-    overwritten in place so memory stays bounded by number of distinct keys.
-    Good enough for a single-operator local dashboard.
+    Backed by an OrderedDict so LRU eviction keeps memory bounded even when
+    many distinct clients hit the endpoint (otherwise a bot scanning IPs
+    could grow the dict unbounded).
+
+    Cleanup strategy:
+      1. On every `allow()`, entries with all timestamps outside the window
+         are dropped from the bucket.
+      2. Every `_CLEANUP_EVERY` calls, a full sweep removes empty/stale
+         buckets.
+      3. If total keys exceed `_MAX_KEYS`, oldest-touched keys are evicted.
     """
 
+    _MAX_KEYS = 4096
+    _CLEANUP_EVERY = 256
+
     def __init__(self, max_calls: int, window_sec: float) -> None:
+        from collections import OrderedDict
         self._max = int(max_calls)
         self._window = float(window_sec)
-        self._hits: dict[tuple[str, str], list[float]] = {}
+        self._hits: "OrderedDict[tuple[str, str], list[float]]" = OrderedDict()
+        self._calls_since_sweep = 0
+
+    def _sweep(self, now: float) -> None:
+        cutoff = now - self._window
+        stale = [k for k, ts in self._hits.items() if not ts or ts[-1] < cutoff]
+        for k in stale:
+            self._hits.pop(k, None)
 
     def allow(self, key: tuple[str, str]) -> tuple[bool, float]:
         now = time.monotonic()
+        self._calls_since_sweep += 1
+        if self._calls_since_sweep >= self._CLEANUP_EVERY:
+            self._sweep(now)
+            self._calls_since_sweep = 0
+
         bucket = self._hits.get(key)
+        cutoff = now - self._window
         if bucket is None:
             self._hits[key] = [now]
-            return True, 0.0
-        # Drop timestamps outside the window
-        cutoff = now - self._window
-        bucket = [t for t in bucket if t >= cutoff]
-        if len(bucket) >= self._max:
-            retry_after = max(0.0, bucket[0] + self._window - now)
+        else:
+            bucket = [t for t in bucket if t >= cutoff]
+            if len(bucket) >= self._max:
+                self._hits[key] = bucket
+                self._hits.move_to_end(key)
+                return False, max(0.0, bucket[0] + self._window - now)
+            bucket.append(now)
             self._hits[key] = bucket
-            return False, retry_after
-        bucket.append(now)
-        self._hits[key] = bucket
+        self._hits.move_to_end(key)
+
+        # LRU eviction — drop oldest-touched keys if we blew past the cap
+        while len(self._hits) > self._MAX_KEYS:
+            self._hits.popitem(last=False)
         return True, 0.0
 
 
@@ -306,6 +333,9 @@ class Dashboard:
             _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
             _COOKIE = "sentinel_csrf"
             _HEADER = "X-CSRF-Token"
+            _ISSUED = "sentinel_csrf_iat"        # companion cookie holding issue-time (unix seconds)
+            _ROTATE_AFTER_SEC = 60 * 60          # rotate once per hour to limit token lifetime
+            _MAX_AGE_SEC = 60 * 60 * 24
 
             async def dispatch(self, request: Request, call_next):
                 path = request.url.path
@@ -331,17 +361,41 @@ class Dashboard:
                 response = await call_next(request)
 
                 # Issue/refresh CSRF cookie on HTML page loads.
-                # Reuse existing value so open tabs keep working after a refresh;
-                # always bumps max_age so long-lived sessions don't silently expire.
+                # Rotates the token value once per hour — shortens the window in
+                # which a leaked cookie remains valid, while still re-using the
+                # same token across rapid navigations so open tabs don't break.
                 if method == "GET" and path in self._HTML_PATHS:
                     existing = request.cookies.get(self._COOKIE)
+                    issued_at_raw = request.cookies.get(self._ISSUED, "")
+                    try:
+                        issued_at = int(issued_at_raw) if issued_at_raw else 0
+                    except ValueError:
+                        issued_at = 0
+                    now_s = int(time.time())
+                    should_rotate = (
+                        not existing
+                        or issued_at <= 0
+                        or (now_s - issued_at) >= self._ROTATE_AFTER_SEC
+                    )
+                    token = secrets.token_urlsafe(32) if should_rotate else existing
                     response.set_cookie(
                         key=self._COOKIE,
-                        value=existing or secrets.token_urlsafe(32),
+                        value=token,
                         secure=False,   # local dashboard over http
                         httponly=False, # JS must read it for header echo
                         samesite="strict",
-                        max_age=60 * 60 * 24,
+                        max_age=self._MAX_AGE_SEC,
+                        path="/",
+                    )
+                    # Separate companion cookie tracks issue-time; we never
+                    # compare it in a digest check so timing-safety is moot here.
+                    response.set_cookie(
+                        key=self._ISSUED,
+                        value=str(now_s if should_rotate else issued_at),
+                        secure=False,
+                        httponly=False,
+                        samesite="strict",
+                        max_age=self._MAX_AGE_SEC,
                         path="/",
                     )
                 return response
@@ -845,12 +899,24 @@ class Dashboard:
 
         # ── Control ──────────────────────────────
 
+        def _client_ip(request: Request) -> str:
+            """Extract the real client IP, honoring reverse-proxy headers
+            so a shared nginx/cloudflare setup doesn't bucket all users
+            together. Takes the leftmost entry of X-Forwarded-For since
+            that's the originator (downstream proxies append to the right)."""
+            xff = request.headers.get("x-forwarded-for", "")
+            if xff:
+                return xff.split(",")[0].strip()
+            real = request.headers.get("x-real-ip", "")
+            if real:
+                return real.strip()
+            return request.client.host if request.client else "unknown"
+
         def _check_rate_limit(request: Request, action: str):
             """Return a 429 JSONResponse when the caller exceeds the window,
             otherwise None. Keyed by client IP so shared-office setups still
             protect each other rather than globally locking on one user."""
-            client = request.client.host if request.client else "unknown"
-            ok, retry_after = _CONTROL_LIMITER.allow((client, action))
+            ok, retry_after = _CONTROL_LIMITER.allow((_client_ip(request), action))
             if ok:
                 return None
             return JSONResponse(
@@ -974,9 +1040,15 @@ class Dashboard:
 
         # ── HTML Dashboard ───────────────────────
 
-        @app.get("/login", response_class=HTMLResponse)
-        async def login_page():
-            return _LOGIN_HTML
+        @app.get("/login")
+        async def login_page(request: Request):
+            from starlette.responses import RedirectResponse
+            # Already authenticated? Skip the form and go straight to the dashboard.
+            if dashboard_password:
+                tok = request.cookies.get("sentinel_auth", "")
+                if tok and secrets.compare_digest(tok, dashboard_password):
+                    return RedirectResponse(url="/", status_code=303)
+            return HTMLResponse(_LOGIN_HTML)
 
         @app.get("/", response_class=HTMLResponse)
         async def dashboard_page():

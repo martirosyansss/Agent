@@ -8,106 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/index.css">
-    <style>
-        .login-root {
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 24px;
-        }
-        .login-card {
-            width: 100%;
-            max-width: 420px;
-            padding: 32px;
-            background: var(--glass-1);
-            border: 1px solid var(--glass-border);
-            border-radius: var(--radius-xl);
-            backdrop-filter: blur(24px);
-            -webkit-backdrop-filter: blur(24px);
-            box-shadow: 0 24px 64px rgba(0,0,0,0.5);
-        }
-        .login-logo {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 24px;
-            font-size: 16px;
-            font-weight: 800;
-            letter-spacing: 0.08em;
-            color: var(--text-primary);
-        }
-        .login-logo-icon {
-            width: 36px; height: 36px;
-            display: flex; align-items: center; justify-content: center;
-            border-radius: 10px;
-            background: linear-gradient(135deg, var(--accent), var(--accent-light));
-            color: white;
-        }
-        .login-title {
-            font-size: 22px;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin-bottom: 6px;
-            letter-spacing: -0.01em;
-        }
-        .login-hint {
-            font-size: 13px;
-            color: var(--text-muted);
-            margin-bottom: 24px;
-        }
-        .login-form label {
-            display: block;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--text-dim);
-            margin-bottom: 8px;
-        }
-        .login-form input[type="password"] {
-            width: 100%;
-            padding: 12px 14px;
-            border-radius: var(--radius-md);
-            border: 1px solid var(--border-light);
-            background: var(--bg-input);
-            color: var(--text-primary);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 14px;
-            outline: none;
-            transition: border-color 0.15s;
-        }
-        .login-form input[type="password"]:focus {
-            border-color: var(--accent);
-        }
-        .login-btn {
-            width: 100%;
-            margin-top: 16px;
-            padding: 12px;
-            border-radius: var(--radius-md);
-            border: none;
-            background: linear-gradient(135deg, var(--accent), var(--accent-light));
-            color: white;
-            font-weight: 700;
-            font-size: 14px;
-            cursor: pointer;
-            transition: opacity 0.15s, transform 0.1s;
-        }
-        .login-btn:hover:not(:disabled) { opacity: 0.9; }
-        .login-btn:active:not(:disabled) { transform: translateY(1px); }
-        .login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .login-error {
-            margin-top: 14px;
-            padding: 10px 12px;
-            background: var(--red-dim);
-            border: 1px solid rgba(239,68,68,0.3);
-            border-radius: var(--radius-md);
-            color: var(--red);
-            font-size: 13px;
-            display: none;
-        }
-        .login-error.show { display: block; }
-    </style>
+    <link rel="stylesheet" href="/static/css/login.css">
 </head>
 <body>
     <div class="accent-bar" aria-hidden="true"></div>
@@ -115,7 +16,7 @@
         <form class="login-card login-form" id="login-form" autocomplete="off">
             <div class="login-logo">
                 <span class="login-logo-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:20px;height:20px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                     </svg>
                 </span>
@@ -132,6 +33,35 @@
     <script>
         (function() {
             'use strict';
+
+            /* Minimal error reporter — mirrors _logError() in index.js so
+               issues on the login page surface in backend logs even though
+               the main dashboard bundle isn't loaded here. */
+            function _reportError(scope, err, extra) {
+                var msg = (err && err.message) || String(err || '');
+                var stack = (err && err.stack) || null;
+                try {
+                    fetch('/api/client-error', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        keepalive: true,
+                        body: JSON.stringify({
+                            scope: 'login.' + String(scope || 'unknown'),
+                            msg: msg,
+                            extra: { stack: stack ? stack.slice(0, 2000) : null, extra: extra || null },
+                        }),
+                    }).catch(function() { /* swallow */ });
+                } catch (_) { /* swallow */ }
+            }
+            window.addEventListener('error', function(ev) {
+                _reportError('window.error', ev.error || ev.message,
+                    { file: ev.filename, line: ev.lineno, col: ev.colno });
+            });
+            window.addEventListener('unhandledrejection', function(ev) {
+                _reportError('unhandledrejection', ev.reason);
+            });
+
             var form = document.getElementById('login-form');
             var input = document.getElementById('password-input');
             var btn = document.getElementById('login-btn');
@@ -169,6 +99,7 @@
                         input.select();
                     }
                 } catch (e) {
+                    _reportError('login.submit', e);
                     showError('Ошибка сети. Проверьте что бот запущен.');
                     btn.disabled = false;
                     btn.textContent = 'Войти';
