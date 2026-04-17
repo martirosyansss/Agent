@@ -1,0 +1,1268 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTINEL — Логи</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/index.css">
+    <style>
+        /* ────── Layout ────── */
+        .logs-layout { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+        @media (max-width: 1024px) { .logs-layout { grid-template-columns: 1fr; } }
+
+        /* ────── Statbar ────── */
+        .log-statbar {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr) 220px;
+            gap: 12px;
+            padding: 14px 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            margin-bottom: 14px;
+        }
+        @media (max-width: 900px) { .log-statbar { grid-template-columns: repeat(3, 1fr); } .log-statbar .spark-cell { grid-column: 1 / -1; } }
+        .stat-cell { display: flex; flex-direction: column; gap: 2px; }
+        .stat-cell .stat-label {
+            font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+            text-transform: uppercase; color: var(--text-muted);
+        }
+        .stat-cell .stat-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 22px; font-weight: 700; line-height: 1.1;
+            color: var(--text-primary);
+        }
+        .stat-cell.critical .stat-value { color: var(--red); }
+        .stat-cell.error .stat-value    { color: #fca5a5; }
+        .stat-cell.warning .stat-value  { color: var(--amber); }
+        .stat-cell.info .stat-value     { color: var(--cyan); }
+        .stat-cell.debug .stat-value    { color: var(--text-dim); }
+        .stat-cell .stat-hint {
+            font-size: 10px; color: var(--text-dim);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .spark-cell {
+            display: flex; flex-direction: column; gap: 4px; justify-content: center;
+            border-left: 1px solid var(--border);
+            padding-left: 14px;
+        }
+        .spark-wrap {
+            position: relative; height: 42px;
+        }
+        #spark-canvas { width: 100%; height: 100%; display: block; }
+        .spark-legend {
+            display: flex; gap: 10px; font-size: 10px; color: var(--text-dim);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .spark-legend .dot {
+            display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+            vertical-align: middle; margin-right: 4px;
+        }
+
+        /* ────── Files panel ────── */
+        .logs-files-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            position: sticky; top: 14px;
+            max-height: calc(100vh - 140px);
+            overflow-y: auto;
+        }
+        .logs-files-panel h4 {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            margin: 0 0 10px 0;
+            font-weight: 700;
+        }
+        .log-file-btn {
+            display: flex; justify-content: space-between; align-items: center;
+            gap: 8px;
+            padding: 9px 11px;
+            border: 1px solid transparent;
+            background: var(--bg-inset);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background .15s, border-color .15s, color .15s;
+            text-align: left;
+            width: 100%;
+        }
+        .log-file-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+        .log-file-btn.active {
+            background: var(--accent-dim);
+            color: var(--accent-light);
+            border-color: var(--border-accent);
+        }
+        .log-file-btn .name-wrap {
+            display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1;
+        }
+        .log-file-btn .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .log-file-btn .meta {
+            font-size: 10px; color: var(--text-dim); font-weight: 400;
+        }
+        .log-file-btn.active .meta { color: var(--accent-light); opacity: .85; }
+        .log-file-btn .size-pill {
+            font-size: 10px; color: var(--text-dim); font-weight: 600;
+            padding: 2px 6px; border-radius: 4px;
+            background: rgba(255,255,255,0.04);
+            white-space: nowrap;
+        }
+
+        /* ────── Viewer panel ────── */
+        .logs-viewer-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            display: flex; flex-direction: column;
+            min-height: 600px;
+        }
+        .logs-toolbar {
+            display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-elevated);
+        }
+        .logs-toolbar .group {
+            display: inline-flex; gap: 6px; align-items: center;
+        }
+        .logs-toolbar label {
+            font-size: 10px; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.06em;
+            font-weight: 700;
+        }
+        .logs-toolbar select, .logs-toolbar input[type="text"] {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            padding: 6px 10px;
+            border-radius: var(--radius-sm);
+            outline: none;
+        }
+        .logs-toolbar select:focus, .logs-toolbar input[type="text"]:focus {
+            border-color: var(--border-accent);
+        }
+        .logs-toolbar input[type="text"] { min-width: 180px; }
+        .logs-btn {
+            background: var(--bg-inset);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            font-size: 12px; font-weight: 600;
+            padding: 6px 10px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: background .15s, color .15s, border-color .15s;
+            display: inline-flex; align-items: center; gap: 6px;
+            font-family: inherit;
+        }
+        .logs-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+        .logs-btn.on {
+            background: var(--green-dim); color: var(--green-bright); border-color: rgba(16,185,129,0.3);
+        }
+        .logs-btn.primary {
+            background: var(--accent-dim); color: var(--accent-light); border-color: var(--border-accent);
+        }
+        .logs-toolbar .spacer { flex: 1; }
+        .logs-meta {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px; color: var(--text-dim);
+            padding: 4px 10px;
+            background: var(--bg-inset);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+        }
+        .live-indicator {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-dim);
+            padding: 4px 8px; border-radius: var(--radius-sm);
+            background: var(--bg-inset); border: 1px solid var(--border);
+        }
+        .live-indicator .led {
+            width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim);
+        }
+        .live-indicator.on { color: var(--green-bright); border-color: rgba(16,185,129,0.3); }
+        .live-indicator.on .led {
+            background: var(--green); box-shadow: 0 0 8px var(--green);
+            animation: pulseSubtle 1.4s infinite;
+        }
+        .live-indicator.paused { color: var(--amber); border-color: rgba(245,158,11,0.3); }
+        .live-indicator.paused .led { background: var(--amber); }
+
+        /* Active chip filters */
+        .filter-chips {
+            display: flex; flex-wrap: wrap; gap: 6px;
+            padding: 8px 14px 0 14px;
+        }
+        .filter-chip {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 3px 8px;
+            background: var(--bg-inset);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .filter-chip button {
+            background: transparent; border: none; color: var(--text-dim);
+            cursor: pointer; padding: 0; line-height: 1;
+            font-size: 14px; margin-left: 2px;
+        }
+        .filter-chip button:hover { color: var(--text-primary); }
+
+        /* ────── Viewer (table) ────── */
+        .logs-viewer {
+            flex: 1;
+            overflow: auto;
+            background: var(--bg-void);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            min-height: 540px;
+            max-height: calc(100vh - 360px);
+            scroll-behavior: auto;
+        }
+        .log-rows {
+            display: grid;
+            grid-template-columns: 180px 92px 150px 1fr;
+            column-gap: 0;
+            padding-bottom: 10px;
+        }
+        .log-rows.wrap .log-msg { white-space: pre-wrap; word-break: break-word; }
+        .log-rows:not(.wrap) .log-msg { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+        .log-row {
+            display: contents;
+        }
+        .log-row > div {
+            padding: 4px 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+            transition: background .1s;
+            min-width: 0;
+        }
+        .log-row:hover > div { background: rgba(255,255,255,0.03); }
+        .log-row.lvl-error > div    { background: rgba(239,68,68,0.04); }
+        .log-row.lvl-error:hover > div { background: rgba(239,68,68,0.08); }
+        .log-row.lvl-critical > div { background: rgba(239,68,68,0.08); }
+        .log-row.lvl-critical:hover > div { background: rgba(239,68,68,0.14); }
+        .log-row.lvl-warning > div  { background: rgba(245,158,11,0.04); }
+        .log-row.lvl-warning:hover > div { background: rgba(245,158,11,0.08); }
+
+        .log-time {
+            color: var(--text-dim);
+            font-size: 11px;
+            user-select: all;
+        }
+        .log-time .date { opacity: 0.55; }
+
+        .log-lvl {
+            font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+        .log-lvl .pill {
+            display: inline-block;
+            padding: 2px 7px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.05);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: filter .1s;
+            min-width: 62px;
+            text-align: center;
+        }
+        .log-lvl .pill:hover { filter: brightness(1.3); }
+        .lvl-debug    .log-lvl .pill { background: rgba(138,150,176,0.12); color: var(--text-muted); }
+        .lvl-info     .log-lvl .pill { background: rgba(6,182,212,0.12);   color: var(--cyan); }
+        .lvl-warning  .log-lvl .pill { background: rgba(245,158,11,0.15);  color: var(--amber); }
+        .lvl-error    .log-lvl .pill { background: rgba(239,68,68,0.15);   color: #fca5a5; }
+        .lvl-critical .log-lvl .pill { background: rgba(239,68,68,0.25);   color: #fecaca; box-shadow: inset 0 0 0 1px rgba(239,68,68,0.4); }
+
+        .log-logger {
+            color: var(--accent-light);
+            font-size: 11px;
+            cursor: pointer;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .log-logger:hover { text-decoration: underline; }
+
+        .log-msg {
+            color: var(--text-secondary);
+        }
+        .log-msg mark {
+            background: rgba(245, 158, 11, 0.3);
+            color: #fde68a;
+            padding: 0 2px;
+            border-radius: 2px;
+        }
+        .log-msg .cont {
+            display: block;
+            padding-left: 12px;
+            border-left: 2px solid var(--border);
+            color: var(--text-dim);
+            margin-top: 2px;
+            font-size: 11px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .log-msg .json-pretty {
+            display: block; margin-top: 4px;
+            padding: 6px 8px;
+            background: rgba(255,255,255,0.02);
+            border-left: 2px solid var(--border-accent);
+            border-radius: 2px;
+            color: var(--text-muted);
+            white-space: pre-wrap;
+            font-size: 11px;
+            max-height: 300px; overflow: auto;
+        }
+        .log-msg .json-key { color: var(--cyan); }
+        .log-msg .json-str { color: #a7f3d0; }
+        .log-msg .json-num { color: var(--amber); }
+        .log-msg .json-bool { color: var(--purple); }
+        .log-msg .expand-btn {
+            font-size: 10px;
+            background: transparent; border: 1px solid var(--border);
+            color: var(--text-dim); padding: 1px 6px; border-radius: 4px;
+            cursor: pointer; margin-left: 6px;
+        }
+        .log-msg .expand-btn:hover { color: var(--text-primary); border-color: var(--border-light); }
+
+        .logs-empty {
+            padding: 60px 40px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 13px;
+            grid-column: 1 / -1;
+        }
+
+        .logs-header-row {
+            display: grid;
+            grid-template-columns: 180px 92px 150px 1fr;
+            position: sticky; top: 0; z-index: 2;
+            background: var(--bg-elevated);
+            border-bottom: 1px solid var(--border);
+            font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+            text-transform: uppercase; color: var(--text-muted);
+        }
+        .logs-header-row > div { padding: 7px 10px; }
+
+        .footer-info {
+            padding: 6px 14px;
+            background: var(--bg-elevated);
+            border-top: 1px solid var(--border);
+            display: flex; gap: 16px; align-items: center; justify-content: space-between;
+            font-size: 11px; color: var(--text-dim);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .kbd {
+            display: inline-block; padding: 1px 5px;
+            background: var(--bg-inset); border: 1px solid var(--border);
+            border-radius: 3px; font-size: 10px; color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ═══ Gradient Accent Bar ═══ -->
+    <div class="accent-bar" aria-hidden="true"></div>
+
+    <!-- ═══ Header ═══ -->
+    <header class="header" role="banner">
+        <div class="header-left">
+            <button class="mobile-menu-toggle" id="mobile-menu-toggle" aria-label="Открыть меню" aria-expanded="false" aria-controls="sidebar">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+            <div class="header-logo">
+                <div class="header-logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                </div>
+                SENTINEL
+            </div>
+            <span class="header-version" id="version-label">v1.5.0</span>
+        </div>
+        <div class="header-right">
+            <div class="header-uptime" aria-label="Uptime">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                </svg>
+                <span id="uptime-label">0m 0s</span>
+            </div>
+            <div class="header-sep"></div>
+            <span id="mode-badge" class="badge badge-paper"><span class="badge-dot"></span>PAPER</span>
+            <span id="state-badge" class="badge badge-normal"><span class="badge-dot"></span>NORMAL</span>
+            <div class="header-sep"></div>
+            <a href="/settings" class="header-nav-link" aria-label="Settings">
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </a>
+            <div class="header-sep"></div>
+            <div class="conn-indicator" aria-label="WebSocket">
+                <span class="conn-dot disconnected" id="conn-dot"></span>
+                <span id="conn-label">Offline</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- ═══ Sidebar ═══ -->
+    <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop" aria-hidden="true"></div>
+    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation">
+        <a href="/" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            <span>Dashboard</span>
+        </a>
+        <a href="/analytics" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-6"/></svg>
+            <span>Аналитика</span>
+        </a>
+        <a href="/trades" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>История сделок</span>
+        </a>
+        <a href="/news" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
+            <span>Новости</span>
+        </a>
+        <a href="/logs" class="sidebar-link active">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg>
+            <span>Логи</span>
+        </a>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-section">Система</div>
+        <a href="/settings" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <span>Настройки</span>
+        </a>
+    </nav>
+
+    <!-- ═══ Main Content ═══ -->
+    <div class="app-layout">
+    <main class="container" role="main">
+
+        <p class="metrics-intro fade-in">Живой просмотр системных логов. Парсинг формата <code>time | level | logger | msg</code>, фильтры по источнику, стриминг, поиск с подсветкой, sparkline активности за последние 60 минут.</p>
+
+        <!-- ── Stat strip ── -->
+        <div class="log-statbar fade-in">
+            <div class="stat-cell critical">
+                <span class="stat-label">Critical</span>
+                <span class="stat-value" id="stat-critical">0</span>
+                <span class="stat-hint" id="stat-critical-hint">—</span>
+            </div>
+            <div class="stat-cell error">
+                <span class="stat-label">Errors</span>
+                <span class="stat-value" id="stat-error">0</span>
+                <span class="stat-hint" id="stat-error-hint">—</span>
+            </div>
+            <div class="stat-cell warning">
+                <span class="stat-label">Warnings</span>
+                <span class="stat-value" id="stat-warning">0</span>
+                <span class="stat-hint" id="stat-warning-hint">—</span>
+            </div>
+            <div class="stat-cell info">
+                <span class="stat-label">Info</span>
+                <span class="stat-value" id="stat-info">0</span>
+                <span class="stat-hint" id="stat-info-hint">—</span>
+            </div>
+            <div class="stat-cell debug">
+                <span class="stat-label">Debug</span>
+                <span class="stat-value" id="stat-debug">0</span>
+                <span class="stat-hint" id="stat-debug-hint">—</span>
+            </div>
+            <div class="spark-cell">
+                <div class="stat-label">Активность (60 мин)</div>
+                <div class="spark-wrap"><canvas id="spark-canvas"></canvas></div>
+                <div class="spark-legend">
+                    <span><span class="dot" style="background:#06b6d4"></span>info</span>
+                    <span><span class="dot" style="background:#f59e0b"></span>warn</span>
+                    <span><span class="dot" style="background:#ef4444"></span>err</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="logs-layout fade-in">
+
+            <!-- ── Files panel ── -->
+            <aside class="logs-files-panel">
+                <h4>Файлы логов</h4>
+                <div id="logs-files-list">
+                    <div class="logs-empty" style="padding:16px 8px;">Загрузка...</div>
+                </div>
+            </aside>
+
+            <!-- ── Viewer ── -->
+            <section class="logs-viewer-panel">
+                <div class="logs-toolbar">
+                    <div class="group">
+                        <label for="log-level">Уровень</label>
+                        <select id="log-level">
+                            <option value="">Все</option>
+                            <option value="DEBUG">DEBUG+</option>
+                            <option value="INFO">INFO+</option>
+                            <option value="WARNING">WARNING+</option>
+                            <option value="ERROR">ERROR+</option>
+                        </select>
+                    </div>
+                    <div class="group">
+                        <label for="log-logger">Источник</label>
+                        <select id="log-logger">
+                            <option value="">Все</option>
+                        </select>
+                    </div>
+                    <div class="group">
+                        <label for="log-tail">Строк</label>
+                        <select id="log-tail">
+                            <option value="200">200</option>
+                            <option value="500" selected>500</option>
+                            <option value="1000">1000</option>
+                            <option value="2000">2000</option>
+                            <option value="5000">5000</option>
+                        </select>
+                    </div>
+                    <div class="group">
+                        <label for="log-search">Поиск</label>
+                        <input type="text" id="log-search" placeholder="подстрока или /regex/" autocomplete="off">
+                    </div>
+
+                    <div class="spacer"></div>
+
+                    <span class="logs-meta" id="log-meta">—</span>
+                    <span class="live-indicator" id="live-ind"><span class="led"></span><span id="live-label">Пауза</span></span>
+
+                    <button class="logs-btn" id="btn-refresh" title="Обновить (R)">
+                        <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>
+                    </button>
+                    <button class="logs-btn primary" id="btn-auto" title="Автообновление (A)">
+                        <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        <span id="btn-auto-label">Стрим</span>
+                    </button>
+                    <button class="logs-btn" id="btn-wrap" title="Перенос строк (W)">
+                        <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 3 6 21 6"/><path d="M3 12h15a3 3 0 0 1 0 6h-4"/><polyline points="16 16 14 18 16 20"/><line x1="3" y1="18" x2="10" y2="18"/></svg>
+                    </button>
+                    <button class="logs-btn" id="btn-bottom" title="В конец (End)">
+                        <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/><line x1="12" y1="4" x2="12" y2="15"/></svg>
+                    </button>
+                    <button class="logs-btn" id="btn-download" title="Скачать">
+                        <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </button>
+                    <button class="logs-btn" id="btn-clear" title="Очистить лог-файл" style="color:#fca5a5;border-color:rgba(239,68,68,0.25);">
+                        <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                </div>
+
+                <div class="filter-chips" id="filter-chips" style="display:none;"></div>
+
+                <div class="logs-header-row">
+                    <div>Время</div>
+                    <div>Уровень</div>
+                    <div>Источник</div>
+                    <div>Сообщение</div>
+                </div>
+
+                <div class="logs-viewer" id="logs-viewer" tabindex="0">
+                    <div class="log-rows" id="log-rows">
+                        <div class="logs-empty">Загрузка логов...</div>
+                    </div>
+                </div>
+
+                <div class="footer-info">
+                    <span id="render-info">—</span>
+                    <span>
+                        <span class="kbd">/</span> поиск ·
+                        <span class="kbd">A</span> стрим ·
+                        <span class="kbd">W</span> перенос ·
+                        <span class="kbd">End</span> вниз ·
+                        <span class="kbd">Esc</span> очистить
+                    </span>
+                </div>
+            </section>
+        </div>
+
+    </main>
+    </div><!-- /app-layout -->
+
+    <!-- ═══ Footer ═══ -->
+    <footer class="footer" role="contentinfo">
+        <div class="footer-left">
+            <span>SENTINEL Trading System</span>
+            <span id="footer-version">v1.5.0</span>
+            <span class="footer-dot" id="footer-conn">Подключено</span>
+        </div>
+        <div>
+            <span id="footer-update">Последнее обновление: —</span>
+        </div>
+    </footer>
+
+    <!-- ═══ Toast ═══ -->
+    <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
+
+    <script defer src="/static/js/lib/format.js"></script>
+    <script defer src="/static/js/lib/risk.js"></script>
+    <script defer src="/static/js/lib/time.js"></script>
+    <script defer src="/static/js/lib/market-score.js"></script>
+    <script defer src="/static/js/index.js"></script>
+    <script>
+    // ═══════════════════════════════════════════════
+    // LOGS PAGE — парсер формата Sentinel
+    // Формат: "YYYY-MM-DD HH:MM:SS.mmm | LEVEL | logger | message"
+    // ═══════════════════════════════════════════════
+    (function () {
+        const LS_KEY = "sentinel.logs.state.v1";
+        // Поддерживаемые форматы:
+        //  1) "YYYY-MM-DD HH:MM:SS.mmm | LEVEL | logger | msg"  (sentinel.log)
+        //  2) "HH:MM:SS | LEVEL | msg"                          (backend_err.log после strip ANSI — loguru default)
+        //  3) "HH:MM:SS.mmm | LEVEL | logger | msg"
+        const LINE_RE = /^(?:(\d{4}-\d{2}-\d{2})\s+)?(\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)\s*\|\s*(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\s*\|\s*(?:([^|]+?)\s*\|\s*)?(.*)$/;
+
+        const state = {
+            files: [],
+            current: null,
+            autoTimer: null,
+            wrapLines: false,
+            loggerFilter: "",
+            searchText: "",
+            searchRegex: null,
+            parsed: [],         // последний распарсенный набор
+            filesizePrev: 0,    // для детектирования новых строк
+            lastLoadedAt: 0,
+            isLoading: false,
+        };
+
+        const $ = id => document.getElementById(id);
+        const $files   = $("logs-files-list");
+        const $rows    = $("log-rows");
+        const $viewer  = $("logs-viewer");
+        const $meta    = $("log-meta");
+        const $level   = $("log-level");
+        const $logger  = $("log-logger");
+        const $tail    = $("log-tail");
+        const $search  = $("log-search");
+        const $btnRef  = $("btn-refresh");
+        const $btnAuto = $("btn-auto");
+        const $btnAutoLabel = $("btn-auto-label");
+        const $btnWrap = $("btn-wrap");
+        const $btnBot  = $("btn-bottom");
+        const $btnDl   = $("btn-download");
+        const $btnClr  = $("btn-clear");
+        const $liveInd = $("live-ind");
+        const $liveLbl = $("live-label");
+        const $chips   = $("filter-chips");
+        const $render  = $("render-info");
+
+        // ── Persist user prefs ──
+        function savePrefs() {
+            try {
+                localStorage.setItem(LS_KEY, JSON.stringify({
+                    current: state.current,
+                    level: $level.value,
+                    tail: $tail.value,
+                    wrap: state.wrapLines,
+                    auto: !!state.autoTimer,
+                    logger: state.loggerFilter,
+                }));
+            } catch {}
+        }
+        function loadPrefs() {
+            try {
+                const raw = localStorage.getItem(LS_KEY);
+                if (!raw) return {};
+                return JSON.parse(raw) || {};
+            } catch { return {}; }
+        }
+
+        // ── Formatters ──
+        function fmtSize(bytes) {
+            if (!bytes) return "0 B";
+            const u = ["B", "KB", "MB", "GB"];
+            let i = 0, n = bytes;
+            while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+            return n.toFixed(n >= 10 ? 0 : 1) + " " + u[i];
+        }
+        function fmtAgo(ms) {
+            if (!ms) return "—";
+            const d = Math.max(0, Date.now() - ms);
+            if (d < 60_000) return Math.floor(d/1000) + "с назад";
+            if (d < 3_600_000) return Math.floor(d/60_000) + "м назад";
+            if (d < 86_400_000) return Math.floor(d/3_600_000) + "ч назад";
+            return Math.floor(d/86_400_000) + "д назад";
+        }
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
+        function escapeRe(s) {
+            return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        }
+
+        // ── File list ──
+        async function loadFilesList() {
+            try {
+                const r = await fetch("/api/logs/list");
+                if (!r.ok) throw new Error("HTTP " + r.status);
+                const j = await r.json();
+                state.files = j.files || [];
+                renderFilesList();
+
+                if (!state.current && state.files.length) {
+                    const prefs = loadPrefs();
+                    const wanted = (prefs.current && state.files.find(f => f.name === prefs.current))
+                        || state.files.find(f => f.name === "sentinel.log")
+                        || state.files.find(f => f.size > 0)
+                        || state.files[0];
+                    selectFile(wanted.name);
+                }
+            } catch (e) {
+                $files.innerHTML = `<div class="logs-empty" style="padding:14px;">Ошибка: ${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        function renderFilesList() {
+            if (!state.files.length) {
+                $files.innerHTML = `<div class="logs-empty" style="padding:14px;">Нет лог-файлов</div>`;
+                return;
+            }
+            $files.innerHTML = state.files.map(f => `
+                <button class="log-file-btn ${f.name === state.current ? "active" : ""}" data-name="${escapeHtml(f.name)}">
+                    <span class="name-wrap">
+                        <span class="name">${escapeHtml(f.name)}</span>
+                        <span class="meta">${fmtAgo(f.modified)}</span>
+                    </span>
+                    <span class="size-pill">${fmtSize(f.size)}</span>
+                </button>
+            `).join("");
+            $files.querySelectorAll(".log-file-btn").forEach(btn => {
+                btn.addEventListener("click", () => selectFile(btn.dataset.name));
+            });
+        }
+
+        function selectFile(name) {
+            if (state.current === name) return;
+            state.current = name;
+            state.loggerFilter = "";
+            updateLoggerChip();
+            renderFilesList();
+            savePrefs();
+            loadLog(true);
+        }
+
+        // ── Parser ──
+        // Группируем многострочные записи: строки не совпавшие с регексом → continuation
+        function parseLines(lines) {
+            const out = [];
+            let last = null;
+            for (const line of lines) {
+                const m = LINE_RE.exec(line);
+                if (m) {
+                    let lvl = m[3].toUpperCase();
+                    if (lvl === "WARN") lvl = "WARNING";
+                    else if (lvl === "FATAL") lvl = "CRITICAL";
+                    last = {
+                        raw: line,
+                        date: m[1] || "",
+                        time: m[2],
+                        level: lvl,
+                        logger: (m[4] || "").trim() || "—",
+                        msg: m[5],
+                        cont: [],
+                    };
+                    out.push(last);
+                } else if (last) {
+                    // Continuation line (например traceback)
+                    last.cont.push(line);
+                } else {
+                    // Нет валидной первой строки — кладём как «сырой» INFO
+                    out.push({ raw: line, date: "", time: "", level: "INFO", logger: "raw", msg: line, cont: [] });
+                }
+            }
+            return out;
+        }
+
+        // Build a JS-parseable timestamp from date+time (or "today" if only time).
+        function recordTimestamp(r) {
+            if (!r.time) return NaN;
+            const t = r.time.replace(/,/g, ".");
+            const d = r.date || new Date().toISOString().slice(0, 10);
+            return Date.parse(d + "T" + t);
+        }
+
+        // ── Stats & sparkline ──
+        function computeStats(parsed) {
+            const counts = { CRITICAL: 0, ERROR: 0, WARNING: 0, INFO: 0, DEBUG: 0 };
+            const times  = { CRITICAL: 0, ERROR: 0, WARNING: 0, INFO: 0, DEBUG: 0 };
+            for (const r of parsed) {
+                if (counts[r.level] !== undefined) {
+                    counts[r.level]++;
+                    const t = recordTimestamp(r);
+                    if (!isNaN(t) && t > times[r.level]) times[r.level] = t;
+                }
+            }
+            return { counts, times };
+        }
+
+        function renderStats(parsed) {
+            const s = computeStats(parsed);
+            const setCell = (key, id, idHint) => {
+                const el = $(id);
+                const hintEl = $(idHint);
+                if (el) {
+                    const prev = +el.textContent || 0;
+                    el.textContent = s.counts[key];
+                    if (s.counts[key] > prev && prev > 0) {
+                        el.style.transition = "none";
+                        el.style.transform = "scale(1.15)";
+                        setTimeout(() => { el.style.transition = "transform .3s"; el.style.transform = "scale(1)"; }, 20);
+                    }
+                }
+                if (hintEl) hintEl.textContent = s.times[key] ? ("посл. " + fmtAgo(s.times[key])) : "—";
+            };
+            setCell("CRITICAL", "stat-critical", "stat-critical-hint");
+            setCell("ERROR",    "stat-error",    "stat-error-hint");
+            setCell("WARNING",  "stat-warning",  "stat-warning-hint");
+            setCell("INFO",     "stat-info",     "stat-info-hint");
+            setCell("DEBUG",    "stat-debug",    "stat-debug-hint");
+
+            drawSpark(parsed);
+        }
+
+        function drawSpark(parsed) {
+            const canvas = $("spark-canvas");
+            if (!canvas) return;
+            const dpr = Math.max(1, window.devicePixelRatio || 1);
+            const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+            canvas.width = cssW * dpr;
+            canvas.height = cssH * dpr;
+            const ctx = canvas.getContext("2d");
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, cssW, cssH);
+
+            // 60 bins * 1 минута
+            const BINS = 60;
+            const now = Date.now();
+            const start = now - BINS * 60_000;
+            const info = new Array(BINS).fill(0);
+            const warn = new Array(BINS).fill(0);
+            const err  = new Array(BINS).fill(0);
+            for (const r of parsed) {
+                const t = recordTimestamp(r);
+                if (isNaN(t) || t < start || t > now) continue;
+                const bin = Math.min(BINS - 1, Math.floor((t - start) / 60_000));
+                if (r.level === "ERROR" || r.level === "CRITICAL") err[bin]++;
+                else if (r.level === "WARNING") warn[bin]++;
+                else info[bin]++;
+            }
+            const maxV = Math.max(1, ...info, ...warn, ...err);
+            const barW = cssW / BINS;
+
+            // background grid
+            ctx.strokeStyle = "rgba(255,255,255,0.04)";
+            ctx.lineWidth = 1;
+            for (let i = 0.25; i <= 1; i += 0.25) {
+                ctx.beginPath();
+                ctx.moveTo(0, cssH * i);
+                ctx.lineTo(cssW, cssH * i);
+                ctx.stroke();
+            }
+
+            // stacked bars
+            for (let i = 0; i < BINS; i++) {
+                const x = i * barW;
+                let y = cssH;
+                const draw = (val, color) => {
+                    if (!val) return;
+                    const h = (val / maxV) * (cssH - 2);
+                    y -= h;
+                    ctx.fillStyle = color;
+                    ctx.fillRect(x + 0.5, y, Math.max(1, barW - 1), h);
+                };
+                draw(info[i], "rgba(6,182,212,0.55)");
+                draw(warn[i], "rgba(245,158,11,0.75)");
+                draw(err[i],  "rgba(239,68,68,0.9)");
+            }
+
+            // "now" cursor
+            ctx.strokeStyle = "rgba(255,255,255,0.15)";
+            ctx.beginPath();
+            ctx.moveTo(cssW - 0.5, 0);
+            ctx.lineTo(cssW - 0.5, cssH);
+            ctx.stroke();
+        }
+
+        // ── Logger filter options ──
+        function updateLoggerOptions(parsed) {
+            const set = new Set();
+            for (const r of parsed) {
+                if (r.logger) set.add(r.logger);
+            }
+            const sorted = [...set].sort();
+            const current = state.loggerFilter;
+            const options = [`<option value="">Все (${sorted.length})</option>`]
+                .concat(sorted.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`))
+                .join("");
+            if ($logger.innerHTML !== options) {
+                $logger.innerHTML = options;
+            }
+            $logger.value = current || "";
+        }
+
+        function updateLoggerChip() {
+            const chips = [];
+            if (state.loggerFilter) {
+                chips.push(`<span class="filter-chip">источник: ${escapeHtml(state.loggerFilter)} <button data-clear="logger" aria-label="Сбросить">×</button></span>`);
+            }
+            if (chips.length) {
+                $chips.innerHTML = chips.join("");
+                $chips.style.display = "flex";
+                $chips.querySelectorAll("button[data-clear]").forEach(b => {
+                    b.addEventListener("click", () => {
+                        if (b.dataset.clear === "logger") {
+                            state.loggerFilter = "";
+                            $logger.value = "";
+                            updateLoggerChip();
+                            renderRows();
+                            savePrefs();
+                        }
+                    });
+                });
+            } else {
+                $chips.innerHTML = "";
+                $chips.style.display = "none";
+            }
+        }
+
+        // ── Load ──
+        async function loadLog(forceScroll) {
+            if (!state.current || state.isLoading) return;
+            state.isLoading = true;
+            const tail = $tail.value || "500";
+            const level = $level.value || "";
+            const url = `/api/logs?name=${encodeURIComponent(state.current)}&tail=${tail}${level ? "&level=" + level : ""}`;
+            try {
+                const t0 = performance.now();
+                const r = await fetch(url);
+                if (!r.ok) {
+                    const err = await r.json().catch(() => ({}));
+                    $rows.innerHTML = `<div class="logs-empty">Ошибка: ${escapeHtml(err.error || ("HTTP " + r.status))}</div>`;
+                    return;
+                }
+                const j = await r.json();
+
+                state.parsed = parseLines(j.lines || []);
+                state.lastLoadedAt = Date.now();
+
+                const newBytes = j.size - state.filesizePrev;
+                state.filesizePrev = j.size;
+
+                $meta.textContent = `${fmtSize(j.size)} · ${j.lines.length} строк` + (newBytes > 0 && state.autoTimer ? ` · +${fmtSize(newBytes)}` : "");
+
+                renderStats(state.parsed);
+                updateLoggerOptions(state.parsed);
+                renderRows(forceScroll);
+
+                $render.textContent = `Отрисовано за ${(performance.now() - t0).toFixed(0)} мс · ${new Date().toLocaleTimeString("ru-RU", { hour12: false, timeZone: 'Asia/Dubai' })}`;
+
+            } catch (e) {
+                $rows.innerHTML = `<div class="logs-empty">Ошибка загрузки: ${escapeHtml(e.message)}</div>`;
+            } finally {
+                state.isLoading = false;
+            }
+        }
+
+        // ── Render rows ──
+        function parseSearch(text) {
+            state.searchText = text;
+            state.searchRegex = null;
+            if (!text) return;
+            const m = /^\/(.+)\/([ig]*)$/.exec(text);
+            if (m) {
+                try { state.searchRegex = new RegExp(m[1], m[2] || "i"); } catch {}
+            }
+        }
+
+        function matchSearch(record) {
+            if (!state.searchText) return true;
+            const target = record.raw + (record.cont.length ? " " + record.cont.join(" ") : "");
+            if (state.searchRegex) return state.searchRegex.test(target);
+            return target.toLowerCase().includes(state.searchText.toLowerCase());
+        }
+
+        function highlightSearch(str) {
+            if (!state.searchText) return escapeHtml(str);
+            let safe = escapeHtml(str);
+            try {
+                const re = state.searchRegex
+                    ? new RegExp(state.searchRegex.source, (state.searchRegex.flags.includes("g") ? "" : "g") + state.searchRegex.flags.replace("g", ""))
+                    : new RegExp(escapeRe(state.searchText), "gi");
+                safe = safe.replace(re, m => `<mark>${m}</mark>`);
+            } catch {}
+            return safe;
+        }
+
+        // prettify JSON в message (если вся message или часть — JSON объект/массив)
+        function detectJson(msg) {
+            const trimmed = msg.trim();
+            if ((trimmed.startsWith("{") && trimmed.endsWith("}"))
+             || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+                try {
+                    const obj = JSON.parse(trimmed);
+                    return obj;
+                } catch { return null; }
+            }
+            return null;
+        }
+
+        function prettyJson(obj) {
+            const raw = JSON.stringify(obj, null, 2);
+            return escapeHtml(raw)
+                .replace(/&quot;([^&]+?)&quot;(\s*):/g, '<span class="json-key">&quot;$1&quot;</span>$2:')
+                .replace(/: &quot;([^&]*?)&quot;/g, ': <span class="json-str">&quot;$1&quot;</span>')
+                .replace(/\b(true|false|null)\b/g, '<span class="json-bool">$1</span>')
+                .replace(/: (-?\d+(?:\.\d+)?)/g, ': <span class="json-num">$1</span>');
+        }
+
+        function renderRows(forceScroll) {
+            const atBottom = $viewer.scrollHeight - $viewer.scrollTop - $viewer.clientHeight < 60;
+
+            const filtered = state.parsed.filter(r => {
+                if (state.loggerFilter && r.logger !== state.loggerFilter) return false;
+                if (!matchSearch(r)) return false;
+                return true;
+            });
+
+            if (!filtered.length) {
+                $rows.innerHTML = `<div class="logs-empty">Нет строк под фильтры. Попробуй снять уровень, источник или поиск.</div>`;
+                return;
+            }
+
+            // Только последние 2000 рендерим как DOM (защита от лага). При этом total показан в meta.
+            const MAX_DOM = 2000;
+            const slice = filtered.length > MAX_DOM ? filtered.slice(-MAX_DOM) : filtered;
+            const truncated = filtered.length > MAX_DOM;
+
+            const html = slice.map(r => {
+                const levelCls = "lvl-" + r.level.toLowerCase();
+                let timeHtml;
+                if (r.time) {
+                    timeHtml = r.date
+                        ? `<span class="date">${escapeHtml(r.date)}</span> ${escapeHtml(r.time)}`
+                        : escapeHtml(r.time);
+                } else {
+                    timeHtml = "<span style='color:var(--text-dim)'>—</span>";
+                }
+
+                const json = detectJson(r.msg);
+                let msgHtml;
+                if (json) {
+                    const brief = (r.msg.length > 120 ? r.msg.slice(0, 120) + "…" : r.msg);
+                    msgHtml = `<span>${highlightSearch(brief)}<button class="expand-btn" data-action="expand-json">JSON</button></span>`;
+                    msgHtml += `<div class="json-pretty" hidden>${prettyJson(json)}</div>`;
+                } else {
+                    msgHtml = highlightSearch(r.msg);
+                }
+                if (r.cont.length) {
+                    msgHtml += `<span class="cont">${r.cont.map(highlightSearch).join("\n")}</span>`;
+                }
+
+                return `<div class="log-row ${levelCls}" data-logger="${escapeHtml(r.logger)}" data-level="${r.level}">
+                    <div class="log-time">${timeHtml}</div>
+                    <div class="log-lvl"><span class="pill" data-action="filter-level">${r.level}</span></div>
+                    <div class="log-logger" data-action="filter-logger" title="Кликни чтобы отфильтровать">${escapeHtml(r.logger || "—")}</div>
+                    <div class="log-msg">${msgHtml}</div>
+                </div>`;
+            }).join("");
+
+            $rows.className = "log-rows" + (state.wrapLines ? " wrap" : "");
+            $rows.innerHTML = (truncated
+                ? `<div class="logs-empty" style="grid-column:1/-1;padding:8px;text-align:left;color:var(--amber);">Показаны последние ${MAX_DOM} из ${filtered.length} строк. Сузь фильтры для полного списка.</div>`
+                : "") + html;
+
+            // События (делегирование)
+            $rows.querySelectorAll('[data-action="filter-logger"]').forEach(el => {
+                el.addEventListener("click", () => {
+                    const row = el.closest(".log-row");
+                    if (!row) return;
+                    state.loggerFilter = row.dataset.logger;
+                    $logger.value = state.loggerFilter;
+                    updateLoggerChip();
+                    renderRows();
+                    savePrefs();
+                });
+            });
+            $rows.querySelectorAll('[data-action="filter-level"]').forEach(el => {
+                el.addEventListener("click", () => {
+                    const row = el.closest(".log-row");
+                    if (!row) return;
+                    $level.value = row.dataset.level;
+                    loadLog(true);
+                    savePrefs();
+                });
+            });
+            $rows.querySelectorAll('[data-action="expand-json"]').forEach(btn => {
+                btn.addEventListener("click", ev => {
+                    ev.stopPropagation();
+                    const pretty = btn.parentElement.parentElement.querySelector(".json-pretty");
+                    if (pretty) pretty.hidden = !pretty.hidden;
+                });
+            });
+
+            if (forceScroll || (atBottom && state.autoTimer)) {
+                $viewer.scrollTop = $viewer.scrollHeight;
+            }
+        }
+
+        // ── Streaming toggle ──
+        function setAuto(on) {
+            if (on) {
+                if (!state.autoTimer) state.autoTimer = setInterval(() => loadLog(false), 3000);
+                $btnAuto.classList.add("on");
+                $btnAutoLabel.textContent = "Стрим ●";
+                $liveInd.classList.add("on"); $liveInd.classList.remove("paused");
+                $liveLbl.textContent = "Live";
+            } else {
+                if (state.autoTimer) { clearInterval(state.autoTimer); state.autoTimer = null; }
+                $btnAuto.classList.remove("on");
+                $btnAutoLabel.textContent = "Стрим";
+                $liveInd.classList.remove("on"); $liveInd.classList.add("paused");
+                $liveLbl.textContent = "Пауза";
+            }
+            savePrefs();
+        }
+
+        function setWrap(on) {
+            state.wrapLines = !!on;
+            $btnWrap.classList.toggle("on", state.wrapLines);
+            $rows.classList.toggle("wrap", state.wrapLines);
+            savePrefs();
+        }
+
+        // ── Download ──
+        function downloadCurrent() {
+            if (!state.current) return;
+            const filtered = state.parsed
+                .filter(r => (!state.loggerFilter || r.logger === state.loggerFilter) && matchSearch(r))
+                .map(r => r.raw + (r.cont.length ? "\n" + r.cont.join("\n") : ""))
+                .join("\n");
+            const blob = new Blob([filtered], { type: "text/plain;charset=utf-8" });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = state.current.replace(/\.(log|jsonl)$/, "") + "_filtered.txt";
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+        }
+
+        // ── Keyboard ──
+        document.addEventListener("keydown", ev => {
+            if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT" || ev.target.tagName === "TEXTAREA") {
+                if (ev.key === "Escape") {
+                    if (ev.target === $search) { $search.value = ""; parseSearch(""); renderRows(); }
+                    ev.target.blur();
+                }
+                return;
+            }
+            if (ev.key === "/") { ev.preventDefault(); $search.focus(); $search.select(); }
+            else if (ev.key.toLowerCase() === "a") { setAuto(!state.autoTimer); }
+            else if (ev.key.toLowerCase() === "w") { setWrap(!state.wrapLines); }
+            else if (ev.key.toLowerCase() === "r") { loadLog(true); }
+            else if (ev.key === "End") { $viewer.scrollTop = $viewer.scrollHeight; }
+            else if (ev.key === "Home") { $viewer.scrollTop = 0; }
+            else if (ev.key === "Escape") {
+                state.loggerFilter = ""; $logger.value = "";
+                $search.value = ""; parseSearch("");
+                updateLoggerChip(); renderRows();
+            }
+        });
+
+        // ── Bindings ──
+        $btnRef.addEventListener("click", () => loadLog(true));
+        $btnAuto.addEventListener("click", () => setAuto(!state.autoTimer));
+        $btnWrap.addEventListener("click", () => setWrap(!state.wrapLines));
+        $btnBot.addEventListener("click", () => { $viewer.scrollTop = $viewer.scrollHeight; });
+        $btnDl.addEventListener("click", downloadCurrent);
+
+        // ── Clear current log ──
+        function getCsrfToken() {
+            const m = document.cookie.match(/(?:^|;\s*)sentinel_csrf=([^;]+)/);
+            return m ? decodeURIComponent(m[1]) : "";
+        }
+        async function clearCurrent() {
+            if (!state.current) return;
+            const confirmMsg = `Очистить лог-файл "${state.current}"?\n\nСодержимое будет безвозвратно удалено (truncate до 0 байт). Новые записи продолжат писаться.`;
+            if (!window.confirm(confirmMsg)) return;
+            $btnClr.disabled = true;
+            try {
+                const r = await fetch(`/api/logs?name=${encodeURIComponent(state.current)}`, {
+                    method: "DELETE",
+                    headers: { "X-CSRF-Token": getCsrfToken() },
+                    credentials: "same-origin",
+                });
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok) {
+                    const msg = j.error || ("HTTP " + r.status);
+                    if (typeof showToast === "function") showToast("Ошибка очистки: " + msg, "error");
+                    else alert("Ошибка очистки: " + msg);
+                    return;
+                }
+                if (typeof showToast === "function") showToast(`"${state.current}" очищен`, "success");
+                state.filesizePrev = 0;
+                state.parsed = [];
+                loadLog(true);
+                loadFilesList();
+            } catch (e) {
+                if (typeof showToast === "function") showToast("Ошибка сети: " + e.message, "error");
+                else alert("Ошибка сети: " + e.message);
+            } finally {
+                $btnClr.disabled = false;
+            }
+        }
+        $btnClr.addEventListener("click", clearCurrent);
+        $level.addEventListener("change", () => { savePrefs(); loadLog(true); });
+        $tail.addEventListener("change", () => { savePrefs(); loadLog(true); });
+        $logger.addEventListener("change", () => {
+            state.loggerFilter = $logger.value;
+            updateLoggerChip();
+            renderRows();
+            savePrefs();
+        });
+        let searchTimer = null;
+        $search.addEventListener("input", () => {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(() => { parseSearch($search.value); renderRows(false); }, 200);
+        });
+        window.addEventListener("resize", () => drawSpark(state.parsed));
+
+        // ── Init ──
+        (function init() {
+            const p = loadPrefs();
+            if (p.level) $level.value = p.level;
+            if (p.tail)  $tail.value  = p.tail;
+            if (p.wrap)  setWrap(true);
+            if (p.logger) state.loggerFilter = p.logger;
+
+            loadFilesList();
+            setInterval(loadFilesList, 15000);
+
+            // По умолчанию стрим включён (но пользовательское pref имеет приоритет)
+            if (p.auto === false) setAuto(false); else setAuto(true);
+        })();
+    })();
+    </script>
+</body>
+</html>

@@ -18,6 +18,9 @@
     <!-- ═══ Header ═══ -->
     <header class="header" role="banner">
         <div class="header-left">
+            <button class="mobile-menu-toggle" id="mobile-menu-toggle" aria-label="Открыть меню" aria-expanded="false" aria-controls="sidebar">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
             <div class="header-logo">
                 <div class="header-logo-icon">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -51,7 +54,8 @@
     </header>
 
     <!-- ═══ Sidebar ═══ -->
-    <nav class="sidebar" role="navigation" aria-label="Main navigation">
+    <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop" aria-hidden="true"></div>
+    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation">
         <a href="/" class="sidebar-link">
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
             <span>Dashboard</span>
@@ -67,6 +71,10 @@
         <a href="/news" class="sidebar-link active">
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
             <span>Новости</span>
+        </a>
+        <a href="/logs" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg>
+            <span>Логи</span>
         </a>
         <div class="sidebar-divider"></div>
         <div class="sidebar-section">Система</div>
@@ -224,6 +232,10 @@
     <!-- ═══ Toast ═══ -->
     <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
 
+    <script defer src="/static/js/lib/format.js"></script>
+    <script defer src="/static/js/lib/risk.js"></script>
+    <script defer src="/static/js/lib/time.js"></script>
+    <script defer src="/static/js/lib/market-score.js"></script>
     <script defer src="/static/js/index.js"></script>
 </body>
 </html>

@@ -95,18 +95,14 @@
     }
 
     /* ── Helpers ──────────────────────────────── */
-    function formatPnl(val) {
-        if (val >= 0) return '+$' + val.toFixed(2);
-        return '-$' + Math.abs(val).toFixed(2);
-    }
-    function formatUsd(val) { return '$' + Number(val).toFixed(2); }
-    function formatVol(v) {
-        if (v >= 1e9) return (v / 1e9).toFixed(1) + 'B';
-        if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
-        if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
-        return Number(v).toFixed(0);
-    }
-    function pnlClass(val) { return val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral'; }
+    /* Pure formatters come from static/js/lib/format.js (unit-tested).
+       Bound here as plain vars so legacy call sites keep working unchanged. */
+    var _FMT = (typeof SENTINEL !== 'undefined' && SENTINEL.format) || {};
+    var _RISK = (typeof SENTINEL !== 'undefined' && SENTINEL.risk) || {};
+    var formatPnl = _FMT.formatPnl;
+    var formatUsd = _FMT.formatUsd;
+    var formatVol = _FMT.formatVol;
+    var pnlClass = _FMT.pnlClass;
 
     function escapeHtml(str) {
         var div = document.createElement('div');
@@ -129,17 +125,13 @@
         return 'chip chip-neutral';
     }
 
-    /** Determine risk bar color from percentage */
-    function riskBarColor(pct) {
-        if (pct < 40) return 'risk-bar-fill--green';
-        if (pct < 75) return 'risk-bar-fill--amber';
-        return 'risk-bar-fill--red';
-    }
+    /* riskBarColor comes from lib/risk.js — bound here for legacy call sites */
+    var riskBarColor = _RISK.riskBarColor;
 
     function updateRiskBar(barId, pct) {
         var el = document.getElementById(barId);
         if (!el) return;
-        var clamped = Math.min(Math.max(pct, 0), 100);
+        var clamped = _RISK.clampPct ? _RISK.clampPct(pct) : Math.min(Math.max(pct, 0), 100);
         el.style.width = clamped + '%';
         el.className = 'risk-bar-fill ' + riskBarColor(clamped);
     }
@@ -1111,12 +1103,11 @@
             var rgrid = document.getElementById('risk-grid');
             if (rgrid && rgrid.dataset.loading === 'true') rgrid.dataset.loading = 'false';
 
-            /* Helper: красит значение + надпись-порог по % использования лимита */
-            function _riskClass(pctUsed) {
-                if (pctUsed >= 75) return 'risk-red';
-                if (pctUsed >= 40) return 'risk-amber';
-                return 'risk-green';
-            }
+            /* Helper: красит значение + надпись-порог по % использования лимита.
+               Delegates to lib/risk.js (unit-tested thresholds). */
+            var _riskClass = _RISK.riskTextClass || function(p) {
+                return p >= 75 ? 'risk-red' : p >= 40 ? 'risk-amber' : 'risk-green';
+            };
             function _setThreshold(id, text) {
                 var el = document.getElementById(id);
                 if (el) el.innerHTML = text;
@@ -1336,105 +1327,12 @@
 
     /* ──────────────────────────────────────────────────────────
        Market Overview: куда идёт рынок по каждому символу + почему.
-       Работает на данных indicators_per_symbol, уже пришедших по WS.
+       Scoring logic lives in static/js/lib/market-score.js (unit-tested);
+       this file just imports the browser-global binding.
        ────────────────────────────────────────────────────────── */
-    function scoreMarketDirection(ind) {
-        var score = 50;
-        var reasons = [];
-
-        // Trend (EMA9 vs EMA21)
-        if (ind.trend === 'bullish') {
-            score += 15;
-            reasons.push({ sign: 'bull', text: 'EMA9 > EMA21 — восходящий импульс' });
-        } else if (ind.trend === 'bearish') {
-            score -= 15;
-            reasons.push({ sign: 'bear', text: 'EMA9 < EMA21 — нисходящий импульс' });
-        }
-
-        // RSI
-        var rsi = Number(ind.rsi_14) || 50;
-        if (rsi > 70) {
-            score -= 12;
-            reasons.push({ sign: 'bear', text: 'RSI ' + rsi.toFixed(1) + ' — перекупленность, риск отката' });
-        } else if (rsi > 65) {
-            score -= 4;
-        } else if (rsi < 30) {
-            score += 10;
-            reasons.push({ sign: 'bull', text: 'RSI ' + rsi.toFixed(1) + ' — перепроданность, отскок вероятен' });
-        } else if (rsi < 45) {
-            score += 5;
-        }
-
-        // MACD histogram
-        var hist = Number(ind.macd_histogram) || 0;
-        if (hist > 0) {
-            score += 10;
-            reasons.push({ sign: 'bull', text: 'MACD гистограмма > 0 — импульс растёт' });
-        } else if (hist < 0) {
-            score -= 10;
-            reasons.push({ sign: 'bear', text: 'MACD гистограмма < 0 — импульс падает' });
-        }
-
-        // Price vs EMA50
-        var close = Number(ind.close) || 0;
-        var ema50 = Number(ind.ema_50) || 0;
-        if (ema50 > 0 && close > 0) {
-            if (close > ema50) {
-                score += 8;
-                reasons.push({ sign: 'bull', text: 'Цена выше EMA50 — среднесрочная структура бычья' });
-            } else {
-                score -= 8;
-                reasons.push({ sign: 'bear', text: 'Цена ниже EMA50 — структура медвежья' });
-            }
-        }
-
-        // ADX (amplifies trend)
-        var adx = Number(ind.adx) || 0;
-        if (adx >= 40) {
-            if (ind.trend === 'bullish') { score += 6; reasons.push({ sign: 'bull', text: 'ADX ' + adx.toFixed(1) + ' — очень сильный тренд' }); }
-            else if (ind.trend === 'bearish') { score -= 6; reasons.push({ sign: 'bear', text: 'ADX ' + adx.toFixed(1) + ' — очень сильный тренд' }); }
-        } else if (adx >= 25) {
-            if (ind.trend === 'bullish') score += 4;
-            else if (ind.trend === 'bearish') score -= 4;
-        } else {
-            reasons.push({ sign: 'flat', text: 'ADX ' + adx.toFixed(1) + ' — слабый тренд, возможен флэт' });
-        }
-
-        // Volume confirmation
-        var vol = Number(ind.volume_ratio) || 0;
-        if (vol >= 1.5) {
-            score += 4;
-            reasons.push({ sign: 'bull', text: 'Объём x' + vol.toFixed(2) + ' — активный интерес' });
-        } else if (vol > 0 && vol < 0.7) {
-            score -= 2;
-        }
-
-        // Bollinger position
-        var bbU = Number(ind.bb_upper) || 0;
-        var bbL = Number(ind.bb_lower) || 0;
-        if (bbU > bbL && close > 0) {
-            var bbPos = (close - bbL) / (bbU - bbL);
-            if (bbPos > 0.95) {
-                score -= 5;
-                reasons.push({ sign: 'bear', text: 'Цена у верхней BB — сопротивление рядом' });
-            } else if (bbPos < 0.05) {
-                score += 5;
-                reasons.push({ sign: 'bull', text: 'Цена у нижней BB — поддержка рядом' });
-            }
-        }
-
-        if (score < 0) score = 0;
-        if (score > 100) score = 100;
-
-        var verdict = 'flat';
-        if (score >= 60) verdict = 'up';
-        else if (score <= 40) verdict = 'down';
-
-        // Cap reasons (top 4)
-        reasons = reasons.slice(0, 4);
-
-        return { score: Math.round(score), verdict: verdict, reasons: reasons };
-    }
+    var scoreMarketDirection = (typeof SENTINEL !== 'undefined' && SENTINEL.marketScore)
+        ? SENTINEL.marketScore.scoreMarketDirection
+        : function() { return { score: 50, verdict: 'flat', reasons: [] }; };
 
     function formatSymbolLabel(sym) {
         return (sym || '').replace(/USDT$/, '').replace(/USD$/, '');
@@ -2558,28 +2456,12 @@
         }
     }
 
-    function parseOpenedAt(val) {
-        if (!val) return null;
-        // Unix ms (13 digits) or Unix seconds (10 digits) — promote seconds to ms.
-        if (/^\d{13}$/.test(val)) return new Date(Number(val));
-        if (/^\d{10}$/.test(val)) return new Date(Number(val) * 1000);
-        // ISO or datetime string
-        var d = new Date(val);
-        return isNaN(d.getTime()) ? null : d;
-    }
-
-    function formatDuration(val) {
-        var opened = parseOpenedAt(val);
-        if (!opened) return '';
-        var diff = Math.max(0, Math.floor((Date.now() - opened.getTime()) / 1000));
-        if (diff < 60) return diff + 'с';
-        if (diff < 3600) return Math.floor(diff / 60) + 'м ' + (diff % 60) + 'с';
-        var h = Math.floor(diff / 3600);
-        var m = Math.floor((diff % 3600) / 60);
-        if (h < 24) return h + 'ч ' + m + 'м';
-        var d = Math.floor(h / 24);
-        return d + 'д ' + (h % 24) + 'ч';
-    }
+    /* parseOpenedAt + formatDuration live in lib/time.js (unit-tested).
+       These bindings stay so the rest of the file can keep calling them
+       without a noisy namespace prefix. */
+    var _TIME = (typeof SENTINEL !== 'undefined' && SENTINEL.time) || {};
+    var parseOpenedAt = _TIME.parseOpenedAt;
+    var formatDuration = _TIME.formatDuration;
 
     function formatOpenTime(val) {
         var d = parseOpenedAt(val);

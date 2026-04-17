@@ -12,6 +12,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Keep dashboard pure-logic modules (unit-tested JS helpers)
+!sentinel/dashboard/static/js/lib/
+!sentinel/dashboard/static/js/lib/**
 lib64/
 parts/
 sdist/

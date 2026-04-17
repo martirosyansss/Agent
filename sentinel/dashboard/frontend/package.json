@@ -1,0 +1,15 @@
+{
+  "name": "sentinel-dashboard-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Unit-test harness for the SENTINEL dashboard's pure-logic modules (static/js/lib/*.js).",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "vitest": "^1.6.0",
+    "@vitest/coverage-v8": "^1.6.0"
+  }
+}

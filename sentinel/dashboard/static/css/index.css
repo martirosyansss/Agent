@@ -134,6 +134,67 @@
                 rgba(255,255,255,0.04) 63%) !important;
             background-size: 400% 100% !important;
         }
+        /* ── Layout utility classes ──
+           Replace the most-duplicated inline `style="…"` attributes
+           (see index.html) so CSP can eventually drop 'unsafe-inline'
+           from style-src. */
+        .u-ml-auto            { margin-left: auto; }
+        .u-mt-20              { margin-top: 20px; }
+        .u-mb-20              { margin-bottom: 20px; }
+        .u-hidden             { display: none; }
+        .u-inline-flex-middle { display: inline-flex; vertical-align: middle; }
+        .u-relative           { position: relative; }
+        .u-chart-wrap-220     { position: relative; height: 220px; }
+        .u-flex-2             { flex: 2; }
+        .u-flex-1             { flex: 1; }
+
+        .chart-no-data-overlay {
+            position: absolute; inset: 0;
+            display: flex; align-items: center; justify-content: center;
+            color: var(--text-muted);
+            font-size: 13px;
+            pointer-events: none;
+        }
+
+        .u-risk-bar-init { width: 0%; }
+
+        .panel-desc-inline {
+            font-size: 11.5px;
+            color: var(--text-dim);
+            margin-left: 8px;
+        }
+
+        .section-intro {
+            font-size: 12px;
+            color: var(--text-dim);
+            margin: -12px 0 20px;
+            line-height: 1.5;
+        }
+
+        .section-divider-icon {
+            width: 16px; height: 16px;
+            vertical-align: -2px;
+            margin-right: 4px;
+            opacity: 0.6;
+        }
+
+        .chart-indicators-label {
+            color: var(--text-dim);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-right: 2px;
+        }
+
+        .equity-peak-badge { font-size: 10px; }
+
+        .strat-log-empty-icon {
+            width: 24px; height: 24px; opacity: 0.35;
+        }
+
+        .chart-legend-line--ema9  { color: #e2a72f; }
+        .chart-legend-line--ema21 { color: #c084fc; }
+
         /* Equity chart skeleton — overlays the canvas with an animated
            sparkline-shaped gradient until the first data arrives. */
         .equity-skeleton {

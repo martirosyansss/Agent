@@ -20,6 +20,9 @@
     <!-- ═══ Header ═══ -->
     <header class="header" role="banner">
         <div class="header-left">
+            <button class="mobile-menu-toggle" id="mobile-menu-toggle" aria-label="Открыть меню" aria-expanded="false" aria-controls="sidebar">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
             <div class="header-logo">
                 <div class="header-logo-icon">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -53,7 +56,8 @@
     </header>
 
     <!-- ═══ Sidebar ═══ -->
-    <nav class="sidebar" role="navigation" aria-label="Main navigation">
+    <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop" aria-hidden="true"></div>
+    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation">
         <a href="/" class="sidebar-link">
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
             <span>Dashboard</span>
@@ -69,6 +73,10 @@
         <a href="/news" class="sidebar-link">
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
             <span>Новости</span>
+        </a>
+        <a href="/logs" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg>
+            <span>Логи</span>
         </a>
         <div class="sidebar-divider"></div>
         <div class="sidebar-section">Система</div>
@@ -146,6 +154,7 @@
                     <div class="rsi-bar-container">
                         <div class="rsi-bar" id="ind-rsi-bar" style="width: 50%; background: var(--accent);"></div>
                     </div>
+                    <svg class="sparkline" id="spark-rsi" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"></svg>
                     <span class="ind-card-sub" id="ind-rsi-zone">—</span>
                 </div>
 
@@ -160,6 +169,7 @@
                         </div>
                     </span>
                     <span class="ind-card-value neutral" id="ind-macd">—</span>
+                    <svg class="sparkline" id="spark-macd" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"></svg>
                     <span class="ind-card-sub" id="ind-macd-signal">Signal: — | Hist: —</span>
                 </div>
 
@@ -218,60 +228,110 @@
             </div>
         </div>
 
-        <!-- ══ Live Forecast Panel ══ -->
-        <div class="forecast-panel fade-in" id="forecast-panel">
-            <div class="forecast-header">
-                <h3>
-                    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                    Прогноз входа в сделку — <span id="forecast-symbol">...</span>
-                    <span class="forecast-live-dot"></span>
-                </h3>
-                <span class="forecast-direction-badge" id="forecast-direction" style="display:none"></span>
-            </div>
-            <p class="panel-desc">Показывает в реальном времени, насколько рынок готов для входа. Бот анализирует тренд, RSI, объём, новости и другие факторы. Когда вероятность высокая — бот входит. Если нет — показывает почему и чего ждёт.</p>
+        <!-- ══ Live Forecast Panel (Redesigned v2) ══ -->
+        <section class="forecast-v2 fade-in" id="forecast-panel" aria-label="Прогноз входа в сделку">
 
-            <div class="forecast-body">
-                <!-- Ring gauge -->
-                <div class="forecast-ring-wrap">
-                    <div class="forecast-ring">
-                        <svg aria-hidden="true" viewBox="0 0 140 140">
-                            <circle class="forecast-ring-bg" cx="70" cy="70" r="60"/>
-                            <circle class="forecast-ring-fill" id="forecast-ring-fill" cx="70" cy="70" r="60"
-                                stroke-dasharray="376.99" stroke-dashoffset="376.99" stroke="var(--text-dim)"/>
+            <!-- HEADER -->
+            <header class="fv2-head">
+                <div class="fv2-head-title">
+                    <div class="fv2-head-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    </div>
+                    <div>
+                        <h3 class="fv2-title">Сигнал входа в сделку</h3>
+                        <div class="fv2-subtitle">
+                            <span class="fv2-live-dot" aria-hidden="true"></span>
+                            Live · <span id="forecast-scan-time">ожидание первого скана…</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="fv2-head-meta">
+                    <span class="fv2-symbol-chip"><span class="symbol-dot btc" aria-hidden="true"></span><span id="forecast-symbol">—</span></span>
+                    <span class="fv2-regime-chip" id="forecast-regime">Режим: —</span>
+                </div>
+            </header>
+
+            <!-- HERO: Ring + Verdict -->
+            <div class="fv2-hero">
+                <!-- Ring -->
+                <div class="fv2-ring-wrap">
+                    <div class="fv2-ring">
+                        <svg viewBox="0 0 160 160" aria-hidden="true">
+                            <defs>
+                                <linearGradient id="fv2RingGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="var(--accent-light)"/>
+                                    <stop offset="100%" stop-color="var(--green-bright)"/>
+                                </linearGradient>
+                            </defs>
+                            <circle class="fv2-ring-bg" cx="80" cy="80" r="68"/>
+                            <circle class="fv2-ring-fill" id="forecast-ring-fill" cx="80" cy="80" r="68"
+                                stroke-dasharray="427.26" stroke-dashoffset="427.26"
+                                stroke="var(--text-dim)"/>
                         </svg>
-                        <div class="forecast-ring-center">
-                            <div class="forecast-ring-pct" id="forecast-pct">—</div>
-                            <div class="forecast-ring-label">вероятность</div>
+                        <div class="fv2-ring-center">
+                            <div class="fv2-ring-pct" id="forecast-pct">—</div>
+                            <div class="fv2-ring-sublabel">вероятность входа</div>
                         </div>
                     </div>
-                    <span class="forecast-status-badge wait" id="forecast-badge">Ожидание данных</span>
                 </div>
 
-                <!-- Factor cards -->
-                <div>
-                    <div class="forecast-factors" id="forecast-factors">
-                        <div class="forecast-factor">
-                            <div class="forecast-factor-icon neutral">📊</div>
-                            <div class="forecast-factor-body">
-                                <div class="forecast-factor-name">Загрузка...</div>
-                                <div class="forecast-factor-detail">Ожидание первого цикла анализа</div>
-                            </div>
-                            <div class="forecast-factor-score neutral">—</div>
+                <!-- Verdict -->
+                <div class="fv2-verdict">
+                    <div class="fv2-verdict-row">
+                        <span class="fv2-verdict-label">Направление</span>
+                        <span class="forecast-direction-badge hold" id="forecast-direction">
+                            <svg class="fv2-dir-arrow" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                            HOLD
+                        </span>
+                    </div>
+                    <div class="fv2-verdict-row">
+                        <span class="fv2-verdict-label">Состояние</span>
+                        <span class="forecast-status-badge wait" id="forecast-badge">Ожидание данных</span>
+                    </div>
+                    <!-- Decision callout -->
+                    <div class="fv2-takeaway" id="forecast-decision">
+                        <div class="fv2-takeaway-head">
+                            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                            <span>Решение бота</span>
                         </div>
+                        <div class="fv2-takeaway-body">Бот ещё не завершил первый цикл сканирования. Стратегии запускаются при закрытии 1-часовой свечи.</div>
                     </div>
-                    <div class="forecast-decision" id="forecast-decision">
-                        <div class="forecast-decision-title">Решение бота</div>
-                        Бот ещё не завершил первый цикл сканирования. Стратегии запускаются при закрытии каждой 1-часовой свечи. Ожидайте первых данных...
-                    </div>
-                    <div class="forecast-meta">
-                        <span id="forecast-scan-time">Последний скан: —</span>
-                        <span id="forecast-regime">Режим: —</span>
-                    </div>
-                    <!-- Decision Pipeline: step-by-step order logic -->
-                    <div class="decision-pipeline" id="decision-pipeline"></div>
                 </div>
             </div>
-        </div>
+
+            <!-- FACTORS -->
+            <div class="fv2-section">
+                <div class="fv2-section-head">
+                    <div class="fv2-section-title">
+                        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                        Факторы принятия решения
+                    </div>
+                    <div class="fv2-section-hint">вес × вклад · блокеры отмечены красным</div>
+                </div>
+                <div class="forecast-factors fv2-factors" id="forecast-factors">
+                    <div class="forecast-factor">
+                        <div class="forecast-factor-icon neutral" aria-hidden="true">📊</div>
+                        <div class="forecast-factor-body">
+                            <div class="forecast-factor-name">Загрузка индикаторов…</div>
+                            <div class="forecast-factor-detail">Ожидание первого цикла анализа</div>
+                        </div>
+                        <div class="forecast-factor-score neutral">—</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PIPELINE -->
+            <div class="fv2-section">
+                <div class="fv2-section-head">
+                    <div class="fv2-section-title">
+                        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                        Пошаговая логика входа
+                    </div>
+                    <div class="fv2-section-hint">нажми на шаг, чтобы раскрыть детали</div>
+                </div>
+                <div class="decision-pipeline" id="decision-pipeline"></div>
+            </div>
+        </section>
 
         <div class="section-divider" style="margin-top:24px;"><h2>Стратегии</h2></div>
 
@@ -338,6 +398,10 @@
     <!-- ═══ Toast ═══ -->
     <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
 
+    <script defer src="/static/js/lib/format.js"></script>
+    <script defer src="/static/js/lib/risk.js"></script>
+    <script defer src="/static/js/lib/time.js"></script>
+    <script defer src="/static/js/lib/market-score.js"></script>
     <script defer src="/static/js/index.js"></script>
 </body>
 </html>

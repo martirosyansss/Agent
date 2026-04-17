@@ -1,0 +1,67 @@
+name: Dashboard CI
+
+on:
+  push:
+    paths:
+      - 'sentinel/dashboard/**'
+      - '.github/workflows/dashboard-ci.yml'
+  pull_request:
+    paths:
+      - 'sentinel/dashboard/**'
+      - '.github/workflows/dashboard-ci.yml'
+  workflow_dispatch: {}
+
+jobs:
+  frontend:
+    name: Frontend unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sentinel/dashboard/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sentinel/dashboard/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run Vitest
+        run: npm test
+
+  backend-syntax:
+    name: Backend syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate app.py parses
+        run: python -c "import ast; ast.parse(open('sentinel/dashboard/app.py', encoding='utf-8').read())"
+
+  js-syntax:
+    name: Dashboard JS syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate dashboard JS parses
+        run: |
+          node -e "const fs=require('fs'); const p='sentinel/dashboard/static/js/index.js'; new Function(fs.readFileSync(p,'utf8')); console.log(p+': OK');"
+          for lib in format risk time market-score; do
+            node -e "const fs=require('fs'); const p='sentinel/dashboard/static/js/lib/${lib}.js'; new Function(fs.readFileSync(p,'utf8')); console.log(p+': OK');"
+          done
