@@ -40,6 +40,7 @@ from .formatters import (
     format_trades,
     fmt_pnl,
     fmt_price,
+    _esc,
     _now_str,
 )
 
@@ -77,6 +78,7 @@ class TelegramBot:
         self.on_stop: Optional[Callable[[], Coroutine]] = None
         self.on_resume: Optional[Callable[[], Coroutine]] = None
         self.on_kill: Optional[Callable[[], Coroutine]] = None
+        self.on_manual_close: Optional[Callable[[str], Coroutine]] = None
         self.on_mode_change: Optional[Callable[[str], Coroutine]] = None
 
     @property
@@ -120,6 +122,7 @@ class TelegramBot:
             "portfolio":    self._cmd_portfolio,
             "stop":         self._cmd_stop,
             "resume":       self._cmd_resume,
+            "close":        self._cmd_close,
             "kill":         self._cmd_kill,
             "kill_confirm": self._cmd_kill_confirm,
             "mode":         self._cmd_mode,
@@ -274,6 +277,7 @@ class TelegramBot:
             "<b>Управление</b>\n"
             "/stop — ⏸ Остановить торговлю\n"
             "/resume — ▶️ Возобновить торговлю\n"
+            "/close SYMBOL — ✕ Закрыть одну позицию вручную\n"
             "/kill — ☠️ Аварийная остановка\n\n"
             "/help — Эта справка"
         )
@@ -360,7 +364,51 @@ class TelegramBot:
         state = self._get_state()
         positions = state.get("positions", [])
         text = format_positions(positions)
-        await update.message.reply_text(text, parse_mode="HTML")
+        reply_markup = self._build_close_keyboard(positions) if positions else None
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+
+    def _build_close_keyboard(self, positions):
+        """Клавиатура со строкой на позицию: кнопка ✕ Закрыть <symbol>."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        rows = []
+        for p in positions:
+            sym = getattr(p, "symbol", None) or (p.get("symbol") if isinstance(p, dict) else None)
+            if not sym:
+                continue
+            rows.append([
+                InlineKeyboardButton(f"✕ Закрыть {sym}", callback_data=f"btn_close:{sym}"),
+            ])
+        return InlineKeyboardMarkup(rows) if rows else None
+
+    async def _cmd_close(self, update, context) -> None:
+        """Закрыть позицию по символу: /close BTCUSDT"""
+        if not self._is_authorized(update.effective_chat.id):
+            return
+        logger.info("CMD /close from %s args=%s", update.effective_chat.id, context.args)
+
+        if not context.args:
+            await update.message.reply_text(
+                "Использование: <code>/close SYMBOL</code>\n"
+                "Пример: <code>/close BTCUSDT</code>",
+                parse_mode="HTML",
+            )
+            return
+        symbol = context.args[0].upper().strip()
+        await self._prompt_close_confirm(update.message.reply_text, symbol)
+
+    async def _prompt_close_confirm(self, reply_fn, symbol: str) -> None:
+        """Показать подтверждение закрытия позиции."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Да, закрыть", callback_data=f"btn_close_confirm:{symbol}"),
+            InlineKeyboardButton("❌ Отмена",      callback_data="btn_close_cancel"),
+        ]])
+        await reply_fn(
+            f"✕ <b>Закрыть позицию {_esc(symbol)}?</b>\n"
+            f"Ордер уйдёт на исполнение немедленно по рыночной цене.",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
 
     async def _cmd_trades(self, update, context) -> None:
         if not self._is_authorized(update.effective_chat.id):
@@ -584,6 +632,43 @@ class TelegramBot:
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text("✅ Отменено. Торговля продолжается.", parse_mode="HTML")
 
+        elif data.startswith("btn_close:"):
+            symbol = data.split(":", 1)[1]
+            await self._prompt_close_confirm(query.message.reply_text, symbol)
+
+        elif data.startswith("btn_close_confirm:"):
+            symbol = data.split(":", 1)[1]
+            await query.edit_message_reply_markup(reply_markup=None)
+            if not self.on_manual_close:
+                await query.message.reply_text(
+                    "⚠️ Manual close handler не настроен", parse_mode="HTML",
+                )
+                return
+            await query.message.reply_text(
+                f"⏳ Закрываю позицию <b>{_esc(symbol)}</b>...",
+                parse_mode="HTML",
+            )
+            try:
+                result = await self.on_manual_close(symbol)
+            except Exception as exc:
+                logger.exception("manual close failed for %s", symbol)
+                await query.message.reply_text(
+                    f"❌ Ошибка закрытия {_esc(symbol)}: {_esc(str(exc))}",
+                    parse_mode="HTML",
+                )
+                return
+            if isinstance(result, dict) and not result.get("ok"):
+                await query.message.reply_text(
+                    f"⚠️ Не удалось закрыть {_esc(symbol)}: "
+                    f"{_esc(result.get('error', 'unknown error'))}",
+                    parse_mode="HTML",
+                )
+            # Успешное закрытие: подробное сообщение придёт через _on_position_closed
+
+        elif data == "btn_close_cancel":
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("✅ Отменено. Позиция не закрыта.", parse_mode="HTML")
+
     # ──────────────────────────────────────────────
     # State provider
     # ──────────────────────────────────────────────
@@ -609,6 +694,27 @@ class TelegramBot:
         self._event_bus.subscribe(EVENT_RISK_STATE_CHANGED, self._on_risk_state_changed)
         self._event_bus.subscribe(EVENT_EMERGENCY_STOP, self._on_emergency_stop)
         self._event_bus.subscribe(EVENT_POSITION_CLOSED, self._on_position_closed)
+        self._event_bus.subscribe("ml_drift_detected", self._on_ml_drift)
+
+    async def _on_ml_drift(self, payload: dict) -> None:
+        """Alert when ML precision drops significantly below training baseline."""
+        try:
+            model = payload.get("model", "?")
+            train = payload.get("train_precision", 0.0)
+            live = payload.get("live_precision", 0.0)
+            n = payload.get("n_pred_win", 0)
+            version = payload.get("version", "")
+            text = (
+                "⚠️ <b>ML drift detected</b>\n\n"
+                f"Model: <code>{model}</code>\n"
+                f"Version: <code>{version}</code>\n"
+                f"Train precision: <b>{train:.3f}</b>\n"
+                f"Live precision: <b>{live:.3f}</b> (n={n})\n\n"
+                "Consider retraining via /retrain_ml or inspecting recent trades."
+            )
+            await self.send_message(text)
+        except Exception as exc:
+            logger.warning("ML drift alert formatting failed: %s", exc)
 
     async def _on_new_signal(self, signal: Signal) -> None:
         """Обработка нового сигнала."""
@@ -663,25 +769,25 @@ class TelegramBot:
             close_label = "Сигнал на закрытие"
 
         lines = [
-            f"{pnl_icon} <b>ПОЗИЦИЯ ЗАКРЫТА — {position.symbol}</b>",
+            f"{pnl_icon} <b>ПОЗИЦИЯ ЗАКРЫТА — {_esc(position.symbol)}</b>",
             f"⏰ {_now_str()}  |  {mode}",
             "",
-            f"{close_icon} <b>Причина: {close_label}</b>",
+            f"{close_icon} <b>Причина: {_esc(close_label)}</b>",
             "",
             f"📊 <b>Результат: {result_word}</b>",
-            f"  Реализованный P&L: <b>{fmt_pnl(pnl)}</b>  ({'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%)",
+            f"  Реализованный P&amp;L: <b>{fmt_pnl(pnl)}</b>  ({'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%)",
             f"  Цена входа:   <b>{fmt_price(position.entry_price)}</b>",
             f"  Цена выхода:  <b>{fmt_price(position.current_price)}</b>",
-            f"  Сторона:      <b>{position.side}</b>",
+            f"  Сторона:      <b>{_esc(position.side)}</b>",
             f"  Количество:   <b>{position.quantity:.6f}</b>",
         ]
 
         if position.strategy_name:
-            lines += ["", f"⚙️ Стратегия: <b>{position.strategy_name}</b>"]
+            lines += ["", f"⚙️ Стратегия: <b>{_esc(position.strategy_name)}</b>"]
         if position.signal_reason:
-            lines.append(f"💬 Открыта по: <i>{position.signal_reason}</i>")
+            lines.append(f"💬 Открыта по: <i>{_esc(position.signal_reason)}</i>")
         if position.opened_at:
-            lines.append(f"⏱️ Открыта: {position.opened_at}")
+            lines.append(f"⏱️ Открыта: {_esc(position.opened_at)}")
 
         # Получаем актуальный P&L за день из state_provider
         state = self._get_state()
@@ -696,7 +802,7 @@ class TelegramBot:
             lines += [
                 "",
                 f"📅 <b>Итог за сегодня</b>",
-                f"  P&L дня:  <b>{fmt_pnl(pnl_today)}</b>  {pnl_today_icon}",
+                f"  P&amp;L дня:  <b>{fmt_pnl(pnl_today)}</b>  {pnl_today_icon}",
             ]
             if trades_today > 0:
                 wr = wins / (wins + losses_count) * 100 if (wins + losses_count) > 0 else 0

@@ -83,9 +83,11 @@ def format_signal(signal: Signal) -> str:
     icon = "📈" if is_buy else "📉"
     action = "LONG / BUY" if is_buy else "SHORT / SELL"
     direction_color = "🟢" if is_buy else "🔴"
+    side = "BUY" if is_buy else "SELL"
 
     conf_bar = _confidence_bar(signal.confidence)
     conf_pct = signal.confidence * 100
+    entry_price = signal.features.close if signal.features else 0.0
 
     lines = [
         f"{icon} <b>НОВЫЙ СИГНАЛ — {_esc(signal.symbol)}</b>",
@@ -95,6 +97,9 @@ def format_signal(signal: Signal) -> str:
         f"📊 <b>Параметры входа</b>",
     ]
 
+    if entry_price > 0:
+        lines.append(f"  Цена входа:     <b>{fmt_price(entry_price)}</b>")
+
     if signal.suggested_quantity > 0:
         lines.append(f"  Кол-во: <b>{signal.suggested_quantity:.6f}</b> {_esc(signal.symbol.replace('USDT', ''))}")
 
@@ -103,12 +108,15 @@ def format_signal(signal: Signal) -> str:
     if signal.take_profit_price > 0:
         lines.append(f"  🎯 Take-Profit: <b>{fmt_price(signal.take_profit_price)}</b>")
 
-    if signal.stop_loss_price > 0 and signal.take_profit_price > 0 and signal.suggested_quantity > 0:
-        # Примерный потенциальный P&L
-        if is_buy:
-            potential_profit = (signal.take_profit_price - signal.stop_loss_price) * signal.suggested_quantity
-            potential_loss = signal.suggested_quantity  # placeholder
-        lines.append(f"  ⚖️ R/R Ratio: <b>{_risk_reward(signal.stop_loss_price, signal.stop_loss_price, signal.take_profit_price, 'BUY' if is_buy else 'SELL')}</b>")
+    if entry_price > 0 and signal.stop_loss_price > 0 and signal.take_profit_price > 0:
+        rr = _risk_reward(entry_price, signal.stop_loss_price, signal.take_profit_price, side)
+        lines.append(f"  ⚖️ R/R Ratio: <b>{rr}</b>")
+        if signal.suggested_quantity > 0:
+            potential_profit = abs(signal.take_profit_price - entry_price) * signal.suggested_quantity
+            potential_loss = abs(entry_price - signal.stop_loss_price) * signal.suggested_quantity
+            lines.append(
+                f"  💰 Потенциал:   <b>+${potential_profit:.2f}</b> / риск <b>-${potential_loss:.2f}</b>"
+            )
 
     lines += [
         "",

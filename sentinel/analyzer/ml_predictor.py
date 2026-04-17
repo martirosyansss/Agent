@@ -33,7 +33,8 @@ Upgrade v4:
     strategy fits current regime) — removes categorical lookup bias
   - strategy_specific_wr_10: per-strategy rolling win rate (last 10 same-strategy trades)
 
-Skill score = 0.20*precision + 0.20*recall + 0.35*roc_auc + 0.25*profit_factor
+Skill score = 0.30*precision + 0.10*recall + 0.35*roc_auc + 0.25*profit_factor
+(precision weighted 3x recall — filter-mode: false positives > false negatives)
 """
 
 from __future__ import annotations
@@ -56,6 +57,55 @@ logger = logging.getLogger(__name__)
 # Temporal decay factor for sample weighting (higher = faster decay)
 # 0.003 ≈ recent 200 trades weighted ~2x more than oldest
 _TEMPORAL_DECAY: float = 0.003
+
+# Skill score weights — single source of truth.
+# Precision is weighted 3x recall because this model is a *signal filter*:
+# false positives (letting bad trades through) cost more than false negatives
+# (blocking some good trades — the strategy would still have many other chances).
+_SKILL_W_PRECISION = 0.30
+_SKILL_W_RECALL = 0.10
+_SKILL_W_ROC_AUC = 0.35
+_SKILL_W_PROFIT_FACTOR = 0.25
+
+
+def compute_skill_score(precision: float, recall: float, roc_auc: float, profit_factor_score: float) -> float:
+    """Weighted composite skill score used for model selection and gating.
+
+    All four inputs should be normalized to [0, 1]. profit_factor_score is
+    typically min(profit_factor / 3.0, 1.0).
+    """
+    return (
+        _SKILL_W_PRECISION * precision
+        + _SKILL_W_RECALL * recall
+        + _SKILL_W_ROC_AUC * roc_auc
+        + _SKILL_W_PROFIT_FACTOR * profit_factor_score
+    )
+
+
+def wilson_lower_bound(successes: int, trials: int, z: float = 1.96) -> float:
+    """95%-CI lower bound on a binomial proportion (Wilson score interval).
+
+    Used to test whether an observed success rate is *significantly above* a
+    target. The Wilson interval is well-behaved at small N and at extreme p,
+    unlike the naive normal approximation (which fails when p≈0 or p≈1).
+
+    Args:
+        successes: observed successes (e.g., true-positive predictions)
+        trials:    total trials (e.g., total predicted-positive events)
+        z:         z-score for the desired confidence (1.96 = 95%, 1.645 = 90%)
+
+    Returns:
+        Lower bound of the confidence interval in [0, 1]. Returns 0 if trials==0.
+    """
+    if trials <= 0:
+        return 0.0
+    p = successes / trials
+    z2 = z * z
+    denom = 1.0 + z2 / trials
+    center = p + z2 / (2.0 * trials)
+    half_width = z * ((p * (1.0 - p) + z2 / (4.0 * trials)) / trials) ** 0.5
+    return max(0.0, (center - half_width) / denom)
+
 
 N_FEATURES = 32  # v5: +2 cyclical temporal (sin/cos), -1 adx_normalized (redundant)
 
@@ -148,7 +198,7 @@ class MLConfig:
     min_recall: float = 0.58
     min_roc_auc: float = 0.65
     min_skill_score: float = 0.72
-    retrain_days: int = 30
+    retrain_days: int = 14
     min_trades: int = 500
     test_window_days: int = 60
     cv_splits: int = 5
@@ -198,10 +248,13 @@ class LivePerformanceTracker:
     Memory-bounded: uses collections.deque with fixed maxlen.
     """
 
-    def __init__(self, window: int = 50, drift_threshold: float = 0.12) -> None:
+    def __init__(self, window: int = 50, drift_threshold: float | None = None) -> None:
         import threading
         from collections import deque
         self._window = window
+        # When None, drift threshold is computed adaptively from sample size
+        # using the Wilson-score width (see is_drifting). A fixed threshold
+        # like 0.12 fires spuriously at small N and misses real drift at large N.
         self._drift_threshold = drift_threshold
         self._history: deque[tuple[float, int]] = deque(maxlen=window * 3)
         self._lock = threading.Lock()
@@ -238,6 +291,7 @@ class LivePerformanceTracker:
 
         return {
             "n": len(recent),
+            "n_pred_win": n_pred_win,   # denominator of precision — needed for Wilson CI
             "live_precision": live_prec,
             "live_win_rate": win_rate,
             "live_auc": live_auc,
@@ -245,11 +299,32 @@ class LivePerformanceTracker:
         }
 
     def is_drifting(self, training_precision: float) -> bool:
-        """Return True if live precision has dropped more than drift_threshold below training."""
+        """Detect concept drift using a sample-size-aware threshold.
+
+        Uses a two-proportion z-test style margin: drift is flagged only when
+        the gap between training and live precision exceeds what sampling noise
+        alone would produce at 95% confidence (z=1.96). Formula:
+
+            margin = z * sqrt(p * (1-p) / n_pred_win)
+
+        where p is training precision. At n=30, p=0.70 this gives margin≈0.164,
+        so a 12-point drop is noise; at n=200 it gives 0.064, so even small drops
+        are meaningful.
+
+        A fixed fallback is used if the caller explicitly set drift_threshold.
+        """
         m = self.live_metrics()
-        if "live_precision" not in m:
+        if "live_precision" not in m or m.get("n", 0) < 10:
             return False
-        return (training_precision - m["live_precision"]) > self._drift_threshold
+        n_pred_win = max(int(m.get("n_pred_win", 0)), 1)
+
+        if self._drift_threshold is not None:
+            margin = self._drift_threshold
+        else:
+            p = max(min(training_precision, 0.99), 0.01)
+            margin = 1.96 * np.sqrt(p * (1.0 - p) / n_pred_win)
+
+        return (training_precision - m["live_precision"]) > margin
 
     @property
     def n_recorded(self) -> int:
@@ -910,7 +985,7 @@ class MLPredictor:
                 auc_v = 0.5
 
             pf_v = self._compute_profit_factor_score(y_pred_v, pnl_val)
-            skill_v = 0.30 * prec_v + 0.10 * rec_v + 0.35 * auc_v + 0.25 * pf_v
+            skill_v = compute_skill_score(prec_v, rec_v, auc_v, pf_v)
 
             # Precision-based overfit guard: directly catches the metric that drives
             # trading PnL. Train precision >> val precision = model memorized train set.
@@ -1022,7 +1097,7 @@ class MLPredictor:
                 except ValueError:
                     auc_v = 0.5
                 pf_v = self._compute_profit_factor_score(y_pred_v, pnl_val)
-                skill_v = 0.30 * prec_v + 0.10 * rec_v + 0.35 * auc_v + 0.25 * pf_v
+                skill_v = compute_skill_score(prec_v, rec_v, auc_v, pf_v)
                 y_train_pred_c = candidate.predict(X_train_s)
                 train_prec_c   = precision_score(y_train, y_train_pred_c, zero_division=0)
                 if train_prec_c - prec_v > _adaptive_gap:
@@ -1041,18 +1116,32 @@ class MLPredictor:
                 best_model = {"rf": rf2, "lgbm": lgbm2, "xgb": xgb2}.get(best_tag)
                 rf, lgbm, xgb = rf2, lgbm2, xgb2  # update refs for calibration below
 
-        # Isotonic calibration on first half of val, threshold on second half
-        val_mid = len(X_val_s) // 2
-        if val_mid >= 10:
-            X_val_iso, X_val_thr = X_val_s[:val_mid], X_val_s[val_mid:]
-            y_val_iso, y_val_thr = y_val[:val_mid], y_val[val_mid:]
+        # Two-stage calibration: split validation into CAL (for probability
+        # calibration) and THR (for threshold tuning). Sharing one set for both
+        # causes double-dipping — the threshold gets optimized against noise in
+        # the same sample used to learn the calibration, producing sunny metrics
+        # that don't hold up live.
+        #
+        # Require 60 total samples (30 per half) to split safely. On smaller
+        # validation sets we skip isotonic/Platt calibration entirely and use
+        # raw ensemble probabilities; the threshold still gets tuned on the
+        # full set, but with no calibration to overfit.
+        MIN_SPLIT_SAMPLES = 60
+        if len(X_val_s) >= MIN_SPLIT_SAMPLES:
+            val_mid = len(X_val_s) // 2
+            X_val_cal, X_val_thr = X_val_s[:val_mid], X_val_s[val_mid:]
+            y_val_cal, y_val_thr = y_val[:val_mid], y_val[val_mid:]
             pnl_val_thr = pnl_val[val_mid:]
-            ensemble.apply_isotonic_calibration(y_val_iso, X_val_iso)
+            ensemble.apply_isotonic_calibration(y_val_cal, X_val_cal)
         else:
+            logger.warning(
+                "ML calibration split skipped: val_n=%d < %d — using raw probabilities, "
+                "threshold tuned on full validation set (acceptable noise given small N)",
+                len(X_val_s), MIN_SPLIT_SAMPLES,
+            )
             X_val_thr = X_val_s
             y_val_thr = y_val
             pnl_val_thr = pnl_val
-            ensemble.apply_isotonic_calibration(y_val, X_val_s)
 
         # Keep best single model as legacy fallback (for save_to_file compat)
         best_tag = max(candidate_metrics, key=candidate_metrics.get) if candidate_metrics else "rf"
@@ -1096,7 +1185,7 @@ class MLPredictor:
         pf_score = self._compute_profit_factor_score(y_pred_holdout, pnl_test)
         # Precision 3x recall weight: false positives (losing trades) are far more expensive
         # than missed winners. AUC remains highest (threshold-independent ranking quality).
-        final_skill = 0.30 * best_precision + 0.10 * best_recall + 0.35 * best_roc_auc + 0.25 * pf_score
+        final_skill = compute_skill_score(best_precision, best_recall, best_roc_auc, pf_score)
 
         # --- Precision recovery: when initial pass fails on precision ---
         # Noisy assets (e.g. ETH) often produce high recall / low precision.
@@ -1120,7 +1209,7 @@ class MLPredictor:
                 rec_try = recall_score(y_test, y_pred_try, zero_division=0)
                 if prec_try >= self._cfg.min_precision and rec_try >= 0.30:
                     pf_try = self._compute_profit_factor_score(y_pred_try, pnl_test)
-                    skill_try = 0.30 * prec_try + 0.10 * rec_try + 0.35 * best_roc_auc + 0.25 * pf_try
+                    skill_try = compute_skill_score(prec_try, rec_try, best_roc_auc, pf_try)
                     if skill_try >= self._cfg.min_skill_score * 0.95:
                         calibrated_thr = float(thr_candidate)
                         best_precision = prec_try
@@ -1179,7 +1268,7 @@ class MLPredictor:
                     except ValueError:
                         auc_bv = 0.5
                     pf_bv = self._compute_profit_factor_score(y_pred_bv, pnl_val)
-                    skill_bv = 0.30 * prec_bv + 0.10 * rec_bv + 0.35 * auc_bv + 0.25 * pf_bv
+                    skill_bv = compute_skill_score(prec_bv, rec_bv, auc_bv, pf_bv)
 
                     y_train_pred_b = candidate_b.predict(X_train_s)
                     train_prec_b = precision_score(y_train, y_train_pred_b, zero_division=0)
@@ -1219,7 +1308,7 @@ class MLPredictor:
                         except ValueError:
                             auc_b = 0.5
                         pf_b = self._compute_profit_factor_score(y_pred_b_holdout, pnl_test)
-                        skill_b = 0.30 * prec_b + 0.10 * rec_b + 0.35 * auc_b + 0.25 * pf_b
+                        skill_b = compute_skill_score(prec_b, rec_b, auc_b, pf_b)
 
                         logger.info(
                             "ML PRECISION RECOVERY Phase B holdout: prec=%.3f rec=%.3f auc=%.3f skill=%.3f (thr=%.3f)",
@@ -1410,10 +1499,14 @@ class MLPredictor:
             logger.warning("ML predict failed (defaulting to allow): %s", exc, exc_info=True)
             proba = 0.5
 
-        # Decision logic: config block_threshold overrides calibrated threshold
-        # _cfg.block_threshold (from .env ANALYZER_ML_BLOCK_THRESHOLD) is the primary knob;
-        # _calibrated_threshold is a fallback computed during training.
-        cal_thr = self._cfg.block_threshold if self._cfg.block_threshold > 0 else self._calibrated_threshold
+        # Decision logic: respect both the trained threshold and the env floor.
+        # _calibrated_threshold is learned per-model during training (tuned on
+        # validation PnL + precision); _cfg.block_threshold is an env-level floor.
+        # Taking max() ensures we never loosen below what training validated,
+        # while still letting the operator raise the bar via ANALYZER_ML_BLOCK_THRESHOLD.
+        cal_thr = max(self._calibrated_threshold or 0.0, self._cfg.block_threshold or 0.0)
+        if cal_thr <= 0:
+            cal_thr = 0.5
         if proba < cal_thr * 0.85:       # well below threshold → block
             decision = "block"
         elif proba < cal_thr:             # slightly below → reduce
@@ -1523,7 +1616,7 @@ class MLPredictor:
             "version": self._model_version,
             "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "saved_ts": int(time.time()),
-            "checksum_sha256": checksum[:16] + "...",
+            "checksum_sha256": checksum,
             "ensemble_members": n_members,
             "calibrated_threshold": round(self._calibrated_threshold, 4),
             "metrics": {},

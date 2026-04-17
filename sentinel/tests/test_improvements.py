@@ -290,6 +290,48 @@ class TestWalkForward:
         )
         assert "error" in result or "folds" in result
 
+    def test_apply_risk_guards_flag_surfaces_rejections(self):
+        """With apply_risk_guards=True, trend-down candles should get BUYs
+        rejected by the regime gate and counted in guards_rejected."""
+        from core.models import Direction, Signal
+        from strategy.base_strategy import BaseStrategy
+
+        class _AlwaysBuyStub(BaseStrategy):
+            NAME = "ema_crossover_rsi"  # classified as TREND_FOLLOWING
+            def generate_signal(self, features, has_open_position=False, entry_price=None):
+                if has_open_position:
+                    return None
+                return Signal(
+                    timestamp=features.timestamp, symbol=features.symbol,
+                    direction=Direction.BUY, confidence=0.9,
+                    strategy_name=self.NAME, reason="stub",
+                    suggested_quantity=0.001,
+                    stop_loss_price=features.close * 0.98,
+                    take_profit_price=features.close * 1.04,
+                    features=features,
+                )
+
+        # Downtrend 1h candles so multi-TF/regime typically reject.
+        candles_1h = []
+        for i in range(200):
+            ts = 1700000000000 + i * 3600000
+            p = 60000 - i * 20  # monotonic down
+            candles_1h.append(Candle(
+                timestamp=ts, symbol="BTCUSDT", interval="1h",
+                open=p + 5, high=p + 10, low=p - 15, close=p, volume=100,
+            ))
+        candles_4h = self._make_candles(60, "4h", base_price=50000)
+
+        cfg_on = BacktestConfig(apply_risk_guards=True, realistic_execution=False)
+        cfg_off = BacktestConfig(apply_risk_guards=False, realistic_execution=False)
+        r_on = BacktestEngine(cfg_on).run(_AlwaysBuyStub(), candles_1h, candles_4h)
+        r_off = BacktestEngine(cfg_off).run(_AlwaysBuyStub(), candles_1h, candles_4h)
+
+        # With guards on, at least some signals get rejected.
+        assert r_on.guards_rejected >= 1
+        # With guards off, nothing is rejected by the pro-layer.
+        assert r_off.guards_rejected == 0
+
 
 # ══════════════════════════════════════════════
 # REPOSITORY — strategy_performance

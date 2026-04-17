@@ -203,7 +203,7 @@ class Settings(BaseSettings):
     analyzer_ml_enabled: bool = True
     analyzer_ml_shadow_mode: bool = True
     analyzer_min_trades_ml: int = 200
-    analyzer_ml_retrain_days: int = 30
+    analyzer_ml_retrain_days: int = 14
     analyzer_ml_block_threshold: float = 0.60
     analyzer_ml_history_days: int = 180
     analyzer_ml_test_window_days: int = 60
@@ -220,6 +220,11 @@ class Settings(BaseSettings):
     # === System ===
     log_level: str = "INFO"
     dashboard_port: int = 8080
+    # Localhost by default. Change to "0.0.0.0" ONLY if dashboard_password
+    # is set AND the host is behind a trusted firewall — exposing the UI
+    # on all interfaces without auth lets anyone on the network read P&L,
+    # change settings, or halt trading.
+    dashboard_bind_ip: str = "127.0.0.1"
     dashboard_password: str = ""
     db_path: str = "data/sentinel.db"
     db_backup_interval_hours: int = 6

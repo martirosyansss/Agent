@@ -320,6 +320,26 @@ class Repository:
         return row["total_pnl"] if row else 0.0
 
     # ==================================================================
+    # SYSTEM STATE (small key/value blobs for risk-module persistence)
+    # ==================================================================
+
+    def save_system_state(self, key: str, value: str) -> None:
+        """Upsert a JSON/text blob under ``key``. Used by DrawdownBreaker
+        and similar guards whose state must survive restarts."""
+        import time as _t
+        self._db.execute(
+            "INSERT INTO system_state (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, value, int(_t.time() * 1000)),
+        )
+
+    def load_system_state(self, key: str) -> str | None:
+        row = self._db.fetchone(
+            "SELECT value FROM system_state WHERE key = ?", (key,)
+        )
+        return row["value"] if row else None
+
+    # ==================================================================
     # STRATEGY TRADES
     # ==================================================================
 
@@ -339,8 +359,14 @@ class Repository:
             "pnl_usd, pnl_pct, is_win, confidence, hour_of_day, day_of_week, "
             "rsi_at_entry, adx_at_entry, volume_ratio_at_entry, exit_reason, "
             "hold_duration_hours, max_drawdown_during_trade, max_profit_during_trade, "
-            "commission_usd, news_sentiment, fear_greed_index) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "commission_usd, news_sentiment, fear_greed_index, "
+            "ema_9_at_entry, ema_21_at_entry, bb_bandwidth_at_entry, "
+            "macd_histogram_at_entry, atr_at_entry, trend_alignment, "
+            "cci_at_entry, roc_at_entry, cmf_at_entry, bb_pct_b_at_entry, "
+            "hist_volatility_at_entry, dmi_spread_at_entry, stoch_rsi_at_entry, "
+            "price_change_5h_at_entry, momentum_at_entry, rsi_daily_at_entry) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+            "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 st.trade_id, st.signal_id, st.symbol, st.strategy_name, st.market_regime,
                 st.timestamp_open, st.timestamp_close, st.entry_price, st.exit_price, st.quantity,
@@ -350,6 +376,11 @@ class Repository:
                 st.exit_reason, st.hold_duration_hours,
                 st.max_drawdown_during_trade, st.max_profit_during_trade, st.commission_usd,
                 st.news_sentiment, st.fear_greed_index,
+                st.ema_9_at_entry, st.ema_21_at_entry, st.bb_bandwidth_at_entry,
+                st.macd_histogram_at_entry, st.atr_at_entry, st.trend_alignment,
+                st.cci_at_entry, st.roc_at_entry, st.cmf_at_entry, st.bb_pct_b_at_entry,
+                st.hist_volatility_at_entry, st.dmi_spread_at_entry, st.stoch_rsi_at_entry,
+                st.price_change_5h_at_entry, st.momentum_at_entry, st.rsi_daily_at_entry,
             ),
         )
         self._db.commit()
@@ -448,6 +479,79 @@ class Repository:
             "(timestamp, symbol, strategy_name, direction, confidence, outcome, reason, latency_ms) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (timestamp, symbol, strategy_name, direction, confidence, outcome, reason, latency_ms),
+        )
+        self._db.commit()
+        return cur.lastrowid
+
+    # ──────────────────────────────────────────────
+    # decision_audit — full structured trace per signal
+    # (one row per signal evaluation, includes feature snapshot + per-gate verdicts)
+    # ──────────────────────────────────────────────
+
+    def ensure_decision_audit_table(self) -> None:
+        """Idempotent migration. Call once at startup before first insert."""
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS decision_audit ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  ts INTEGER NOT NULL,"
+            "  signal_id TEXT,"
+            "  symbol TEXT NOT NULL,"
+            "  strategy TEXT NOT NULL,"
+            "  direction TEXT NOT NULL,"
+            "  confidence REAL,"
+            "  final_outcome TEXT NOT NULL,"
+            "  rejected_by TEXT,"
+            "  final_reason TEXT,"
+            "  short_circuit INTEGER NOT NULL,"
+            "  feature_snapshot_json TEXT,"
+            "  gates_json TEXT NOT NULL"
+            ")"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_decision_audit_ts ON decision_audit(ts)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_decision_audit_symbol_strategy "
+            "ON decision_audit(symbol, strategy)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_decision_audit_outcome "
+            "ON decision_audit(final_outcome, rejected_by)"
+        )
+        self._db.commit()
+
+    def insert_decision_audit(self, trace: dict) -> int:
+        """Persist a DecisionTrace.to_dict() result.
+
+        Args:
+            trace: output of ``DecisionTrace.to_dict()`` — JSON-friendly dict.
+        """
+        # Derive convenience columns from the trace.
+        rejected_by = ""
+        for g in trace.get("gates", []):
+            if g.get("outcome") == "rejected":
+                rejected_by = g.get("gate", "")
+                break
+        cur = self._db.execute(
+            "INSERT INTO decision_audit "
+            "(ts, signal_id, symbol, strategy, direction, confidence, "
+            " final_outcome, rejected_by, final_reason, short_circuit, "
+            " feature_snapshot_json, gates_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                int(time.time() * 1000),
+                trace.get("signal_id", ""),
+                trace.get("symbol", ""),
+                trace.get("strategy", ""),
+                trace.get("direction", ""),
+                trace.get("confidence", 0.0),
+                trace.get("final_outcome", ""),
+                rejected_by,
+                trace.get("final_reason", ""),
+                1 if trace.get("short_circuit", True) else 0,
+                json.dumps(trace.get("feature_snapshot", {}), ensure_ascii=False),
+                json.dumps(trace.get("gates", []), ensure_ascii=False),
+            ),
         )
         self._db.commit()
         return cur.lastrowid

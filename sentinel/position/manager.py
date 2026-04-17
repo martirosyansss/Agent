@@ -67,6 +67,7 @@ class PositionManager:
         # Multi-stage TP: symbol → (tp1_price, tp2_price, tp3_price)
         self._tp_levels: dict[str, tuple[float, float, float]] = {}
         self._total_realized_pnl: float = 0.0
+        self._realized_pnl_today: float = 0.0
         self._trades_today: int = 0
         self._wins_today: int = 0
         self._losses_today: int = 0
@@ -101,6 +102,14 @@ class PositionManager:
     @property
     def total_realized_pnl(self) -> float:
         return self._total_realized_pnl
+
+    @property
+    def realized_pnl_today(self) -> float:
+        """Realized PnL since last UTC midnight reset. Used by risk sentinel's
+        daily-loss gate — the previous implementation fed it ``total_realized_pnl``
+        (lifetime), which permanently blocked trading after any cumulative loss
+        exceeded the daily cap."""
+        return self._realized_pnl_today
 
     @property
     def total_exposure_usd(self) -> float:
@@ -281,6 +290,7 @@ class PositionManager:
             # Вернуть средства
             self.wallet.usdt_balance += fill_qty * fill_price - order.commission
             self._total_realized_pnl += realized_pnl
+            self._realized_pnl_today += realized_pnl
 
             # Статистика
             self._trades_today += 1
@@ -443,6 +453,7 @@ class PositionManager:
             )
             position.partial_realized_pnl += partial_pnl
             self._total_realized_pnl += partial_pnl
+            self._realized_pnl_today += partial_pnl
 
             # Return funds from partial close
             self.wallet.usdt_balance += close_qty * fill_price - order.commission
@@ -575,7 +586,7 @@ class PositionManager:
             "wins": self._wins_today,
             "losses": self._losses_today,
             "win_rate": win_rate,
-            "pnl_today": self._total_realized_pnl,
+            "pnl_today": self._realized_pnl_today,
             "balance": self.balance,
             "open_positions": self.open_positions_count,
         }
@@ -585,6 +596,7 @@ class PositionManager:
         self._trades_today = 0
         self._wins_today = 0
         self._losses_today = 0
+        self._realized_pnl_today = 0.0
 
     # ──────────────────────────────────────────────
     # State for Telegram / Dashboard

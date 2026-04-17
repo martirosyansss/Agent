@@ -69,6 +69,7 @@ class Dashboard:
         self.on_stop: Optional[Callable[[], Coroutine]] = None
         self.on_resume: Optional[Callable[[], Coroutine]] = None
         self.on_kill: Optional[Callable[[], Coroutine]] = None
+        self.on_manual_close: Optional[Callable[[str], Coroutine]] = None
         self.on_settings_update: Optional[Callable[[Any], None]] = None
         self.market_chart_provider: Optional[Callable[[str], dict]] = None
         self.trade_history_provider: Optional[Callable[[], list]] = None
@@ -211,7 +212,7 @@ class Dashboard:
 
         class AuthMiddleware(BaseHTTPMiddleware):
             """Token auth for mutating endpoints when password is configured."""
-            _PUBLIC = {"/api/health", "/", "/settings", "/trades", "/ws"}
+            _PUBLIC = {"/api/health", "/", "/settings", "/trades", "/analytics", "/news", "/ws"}
             _READ_ONLY = {"/api/status", "/api/positions", "/api/trades",
                           "/api/pnl-history", "/api/market-chart",
                           "/api/backtest-results", "/api/config",
@@ -226,9 +227,11 @@ class Dashboard:
                 # If no password configured, allow everything
                 if not dashboard_password:
                     return await call_next(request)
-                # Check token
+                # Check token. Header or cookie only — NEVER query-params,
+                # which leak into browser history, server access logs, and
+                # Referer headers sent to third parties (CDNs, font providers).
                 token = (request.headers.get("X-Auth-Token")
-                         or request.query_params.get("token")
+                         or request.cookies.get("sentinel_auth")
                          or "")
                 if not secrets.compare_digest(token, dashboard_password):
                     # Allow read-only GET without auth for dashboard panels
@@ -241,6 +244,37 @@ class Dashboard:
                 return await call_next(request)
 
         app.add_middleware(AuthMiddleware)
+
+        # Cache-Control for static assets — HTML must not be cached aggressively
+        # because we hot-swap it during releases (content hash would be cleaner
+        # but that's a bigger refactor). CSS/JS get short cache to balance
+        # freshness against repeat-visit speed.
+        class CacheHeadersMiddleware:
+            def __init__(self, app): self.app = app
+
+            async def __call__(self, scope, receive, send):
+                if scope["type"] != "http":
+                    return await self.app(scope, receive, send)
+                path = scope.get("path", "")
+                is_html = path.endswith(".html") or path == "/" or path in ("/settings", "/trades", "/analytics", "/news")
+                is_static_asset = path.startswith("/static/css/") or path.startswith("/static/js/")
+                is_static_other = path.startswith("/static/")
+
+                async def send_wrapper(message):
+                    if message.get("type") == "http.response.start":
+                        headers = list(message.get("headers", []))
+                        if is_html:
+                            headers.append((b"cache-control", b"no-cache, max-age=0"))
+                        elif is_static_asset:
+                            headers.append((b"cache-control", b"public, max-age=60"))
+                        elif is_static_other:
+                            headers.append((b"cache-control", b"public, max-age=3600"))
+                        message["headers"] = headers
+                    await send(message)
+
+                await self.app(scope, receive, send_wrapper)
+
+        app.add_middleware(CacheHeadersMiddleware)
 
         static_dir = pathlib.Path(__file__).parent / "static"
         if static_dir.exists():
@@ -532,6 +566,25 @@ class Dashboard:
                 return {"result": "killed"}
             return JSONResponse(content={"error": "kill handler not set"}, status_code=503)
 
+        @app.post("/api/positions/{symbol}/close")
+        async def control_close_position(symbol: str):
+            if not self.on_manual_close:
+                return JSONResponse(
+                    content={"error": "manual close handler not set"},
+                    status_code=503,
+                )
+            symbol = (symbol or "").upper().strip()
+            if not symbol:
+                return JSONResponse(content={"error": "symbol required"}, status_code=400)
+            try:
+                result = await self.on_manual_close(symbol)
+            except Exception as exc:
+                logger.error("manual close %s failed: %s", symbol, exc)
+                return JSONResponse(content={"error": str(exc)}, status_code=500)
+            if isinstance(result, dict) and not result.get("ok", False):
+                return JSONResponse(content=result, status_code=404)
+            return JSONResponse(content=result if isinstance(result, dict) else {"ok": True})
+
         # ── WebSocket ────────────────────────────
 
         @app.websocket("/ws")
@@ -599,6 +652,14 @@ class Dashboard:
         async def trades_page():
             return _TRADES_HTML
 
+        @app.get("/analytics", response_class=HTMLResponse)
+        async def analytics_page():
+            return _ANALYTICS_HTML
+
+        @app.get("/news", response_class=HTMLResponse)
+        async def news_page():
+            return _NEWS_HTML
+
         self._app = app
         return app
 
@@ -615,9 +676,16 @@ class Dashboard:
             return
 
         app = self._create_app()
+        bind_ip = getattr(self._settings, "dashboard_bind_ip", "127.0.0.1")
+        if bind_ip == "0.0.0.0" and not self._password:
+            logger.warning(
+                "Dashboard bound to 0.0.0.0 WITHOUT password — anyone on the "
+                "network can control the bot. Set DASHBOARD_PASSWORD or "
+                "change DASHBOARD_BIND_IP to 127.0.0.1."
+            )
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host=bind_ip,
             port=self._port,
             log_level="warning",
         )
@@ -667,3 +735,5 @@ _STATIC_DIR = _pathlib.Path(__file__).parent / "static"
 _DASHBOARD_HTML = (_STATIC_DIR / "index.html").read_text(encoding="utf-8") if (_STATIC_DIR / "index.html").exists() else "<h1>Dashboard HTML not found</h1>"
 _SETTINGS_HTML = (_STATIC_DIR / "settings.html").read_text(encoding="utf-8") if (_STATIC_DIR / "settings.html").exists() else "<h1>Settings HTML not found</h1>"
 _TRADES_HTML = (_STATIC_DIR / "trades.html").read_text(encoding="utf-8") if (_STATIC_DIR / "trades.html").exists() else "<h1>Trades HTML not found</h1>"
+_ANALYTICS_HTML = (_STATIC_DIR / "analytics.html").read_text(encoding="utf-8") if (_STATIC_DIR / "analytics.html").exists() else "<h1>Analytics HTML not found</h1>"
+_NEWS_HTML = (_STATIC_DIR / "news.html").read_text(encoding="utf-8") if (_STATIC_DIR / "news.html").exists() else "<h1>News HTML not found</h1>"

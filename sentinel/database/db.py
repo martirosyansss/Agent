@@ -204,6 +204,12 @@ CREATE TABLE IF NOT EXISTS news_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_news_cache_published
     ON news_cache(published_at);
+
+CREATE TABLE IF NOT EXISTS system_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 """
 
 
@@ -269,6 +275,24 @@ class Database:
         migrations = [
             ("strategy_trades", "news_sentiment", "REAL DEFAULT 0"),
             ("strategy_trades", "fear_greed_index", "INTEGER DEFAULT 50"),
+            # ML feature columns — needed so retrain can see real indicator values
+            # instead of zeros (fixes N-1 class training/serving skew).
+            ("strategy_trades", "ema_9_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "ema_21_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "bb_bandwidth_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "macd_histogram_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "atr_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "trend_alignment", "REAL DEFAULT 0.5"),
+            ("strategy_trades", "cci_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "roc_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "cmf_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "bb_pct_b_at_entry", "REAL DEFAULT 0.5"),
+            ("strategy_trades", "hist_volatility_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "dmi_spread_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "stoch_rsi_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "price_change_5h_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "momentum_at_entry", "REAL DEFAULT 0"),
+            ("strategy_trades", "rsi_daily_at_entry", "REAL DEFAULT 0"),
             ("positions", "position_id", "TEXT"),
             ("positions", "stop_loss_price", "REAL DEFAULT 0"),
             ("positions", "take_profit_price", "REAL DEFAULT 0"),

@@ -23,6 +23,21 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+class _PlattCalibrator:
+    """Platt scaling calibrator with an IsotonicRegression-compatible predict() API.
+
+    Wraps a sklearn LogisticRegression fitted on raw probabilities so callers
+    can stay agnostic about which calibration method was used.
+    """
+
+    def __init__(self, logistic_reg: Any) -> None:
+        self._lr = logistic_reg
+
+    def predict(self, raw_proba: np.ndarray) -> np.ndarray:
+        arr = np.asarray(raw_proba).reshape(-1, 1)
+        return self._lr.predict_proba(arr)[:, 1]
+
+
 class VotingEnsemble:
     """Soft-voting ensemble combining multiple classifiers by skill weight.
 
@@ -82,36 +97,61 @@ class VotingEnsemble:
 
         return weighted_proba / actual_weight
 
+    # Minimum validation-set size for isotonic calibration. Below this we fall
+    # back to Platt (sigmoid) scaling, which fits only two parameters and is
+    # far more stable on tiny samples. 50 samples gives ~6 bins × 8 points —
+    # enough for isotonic to produce a smooth staircase rather than 2-3 plateaus.
+    MIN_SAMPLES_ISOTONIC: int = 50
+
     def apply_isotonic_calibration(
         self,
         y_val: np.ndarray,
         X_val_s: np.ndarray,
     ) -> None:
-        """Calibrate the ensemble's probability output using Isotonic Regression.
+        """Calibrate ensemble probabilities using Isotonic (≥50 samples) or Platt (<50).
 
-        Isotonic calibration corrects systematic bias in predicted probabilities,
-        making them correspond to the empirical win rate. This is critical for
-        reliable threshold-based filtering.
+        On small validation sets, unconstrained isotonic regression collapses
+        into 3-5 step plateaus — predictions become bimodal (0.6, 0.96) and the
+        block threshold no longer separates signal from noise. Below
+        MIN_SAMPLES_ISOTONIC we use Platt scaling (logistic regression with
+        2 parameters) which produces smooth, well-behaved probabilities even
+        on tiny samples.
 
         Args:
             y_val: True binary labels on validation set
             X_val_s: Scaled validation features
         """
-        try:
-            from sklearn.isotonic import IsotonicRegression
+        n = len(y_val)
+        raw_proba = self.predict_proba(X_val_s)
 
-            raw_proba = self.predict_proba(X_val_s)
-
-            # Fit isotonic regressor mapping raw_proba → empirical frequency
-            ir = IsotonicRegression(out_of_bounds="clip")
-            ir.fit(raw_proba, y_val)
-            self._calibrator = ir
-            self._is_calibrated = True
-
-            logger.info(
-                "VotingEnsemble: Isotonic calibration applied on %d validation samples",
-                len(y_val),
+        # Guard: need both classes represented, otherwise calibration is meaningless
+        if len(np.unique(y_val)) < 2:
+            logger.warning(
+                "VotingEnsemble: calibration skipped — validation set has only one class"
             )
+            return
+
+        try:
+            if n >= self.MIN_SAMPLES_ISOTONIC:
+                from sklearn.isotonic import IsotonicRegression
+                ir = IsotonicRegression(out_of_bounds="clip")
+                ir.fit(raw_proba, y_val)
+                self._calibrator = ir
+                self._is_calibrated = True
+                logger.info(
+                    "VotingEnsemble: Isotonic calibration on %d samples", n
+                )
+            else:
+                # Platt scaling: fit sigmoid P(y=1 | s) = 1 / (1 + exp(A*s + B))
+                from sklearn.linear_model import LogisticRegression
+                lr = LogisticRegression(C=1.0, solver="lbfgs")
+                lr.fit(raw_proba.reshape(-1, 1), y_val)
+                self._calibrator = _PlattCalibrator(lr)
+                self._is_calibrated = True
+                logger.info(
+                    "VotingEnsemble: Platt scaling on %d samples (isotonic needs ≥%d)",
+                    n, self.MIN_SAMPLES_ISOTONIC,
+                )
         except Exception as exc:
             logger.warning("VotingEnsemble: calibration failed: %s — using raw proba", exc)
 

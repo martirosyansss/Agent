@@ -248,7 +248,7 @@ def run_backtest_with_features(
                 "hist_volatility": features.hist_volatility,
                 "dmi_spread": features.dmi_spread,
                 "stoch_rsi": features.stoch_rsi,
-                "price_change_5h": features.price_change_5m,
+                "price_change_5h": features.price_change_5h,
                 "momentum": features.momentum,
                 "rsi_daily": features.rsi_14_daily,
             }

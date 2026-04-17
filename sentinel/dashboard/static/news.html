@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTINEL — Новости</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <link rel="stylesheet" href="/static/css/index.css">
+</head>
+<body>
+
+    <!-- ═══ Gradient Accent Bar ═══ -->
+    <div class="accent-bar" aria-hidden="true"></div>
+
+    <!-- ═══ Header ═══ -->
+    <header class="header" role="banner">
+        <div class="header-left">
+            <div class="header-logo">
+                <div class="header-logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                </div>
+                SENTINEL
+            </div>
+            <span class="header-version" id="version-label">v1.5.0</span>
+        </div>
+        <div class="header-right">
+            <div class="header-uptime" aria-label="Uptime">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                </svg>
+                <span id="uptime-label">0m 0s</span>
+            </div>
+            <div class="header-sep"></div>
+            <span id="mode-badge" class="badge badge-paper"><span class="badge-dot"></span>PAPER</span>
+            <span id="state-badge" class="badge badge-normal"><span class="badge-dot"></span>NORMAL</span>
+            <div class="header-sep"></div>
+            <a href="/settings" class="header-nav-link" aria-label="Settings">
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </a>
+            <div class="header-sep"></div>
+            <div class="conn-indicator" aria-label="WebSocket">
+                <span class="conn-dot disconnected" id="conn-dot"></span>
+                <span id="conn-label">Offline</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- ═══ Sidebar ═══ -->
+    <nav class="sidebar" role="navigation" aria-label="Main navigation">
+        <a href="/" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            <span>Dashboard</span>
+        </a>
+        <a href="/analytics" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-6"/></svg>
+            <span>Аналитика</span>
+        </a>
+        <a href="/trades" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>История сделок</span>
+        </a>
+        <a href="/news" class="sidebar-link active">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
+            <span>Новости</span>
+        </a>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-section">Система</div>
+        <a href="/settings" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <span>Настройки</span>
+        </a>
+    </nav>
+
+    <!-- ═══ Main Content ═══ -->
+    <div class="app-layout">
+    <main class="container" role="main">
+
+        <p class="metrics-intro fade-in">AI-feed крипто-новостей с оценкой влияния на цену, Fear &amp; Greed Index и агрегированным сигналом.</p>
+
+        <!-- ── Новости и настроение рынка ── -->
+        <div class="news-panel fade-in" id="news-panel">
+            <div class="panel-title">
+                <h3>
+                    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 20H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v1"/><path d="M21 12h-8"/><path d="M21 7h-8"/><path d="M21 17h-8"/><path d="M3 10h4"/><path d="M3 14h4"/></svg>
+                    Новости и настроение рынка
+                    <span id="news-direction-badge" class="news-direction-badge neutral" style="margin-left:12px;">—</span>
+                </h3>
+            </div>
+            <p class="panel-desc">AI читает крипто-новости и оценивает как они повлияют на цену. Зелёное = рост вероятен. Красное = падение. Стрелка на шкале показывает общий настрой рынка.</p>
+
+            <!-- Шкала + статистика -->
+            <div class="news-hero">
+                <!-- Шкала страха и жадности -->
+                <div class="news-gauge-wrap">
+                    <svg aria-hidden="true" class="news-gauge-svg" viewBox="0 0 120 66">
+                        <defs>
+                            <linearGradient id="gaugeGrad" x1="0" y1="0" x2="1" y2="0">
+                                <stop offset="0%" stop-color="#ef4444"/>
+                                <stop offset="25%" stop-color="#f59e0b"/>
+                                <stop offset="50%" stop-color="#8892a8"/>
+                                <stop offset="75%" stop-color="#10b981"/>
+                                <stop offset="100%" stop-color="#4ade80"/>
+                            </linearGradient>
+                        </defs>
+                        <path d="M 10 58 A 50 50 0 0 1 110 58" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="8" stroke-linecap="round"/>
+                        <path d="M 10 58 A 50 50 0 0 1 110 58" fill="none" stroke="url(#gaugeGrad)" stroke-width="8" stroke-linecap="round" opacity="0.5"/>
+                        <line id="news-gauge-needle" x1="60" y1="58" x2="60" y2="14" stroke="#f5f7ff" stroke-width="2.5" stroke-linecap="round" transform="rotate(-90 60 58)" style="transition: transform 1s cubic-bezier(0.4,0,0.2,1)"/>
+                        <circle cx="60" cy="58" r="4" fill="#f5f7ff"/>
+                    </svg>
+                    <div class="news-gauge-value" id="news-fgi-value">—</div>
+                    <div class="news-gauge-label-text" id="news-fgi-label">Страх и жадность</div>
+                </div>
+
+                <!-- Сетка показателей 3x2 -->
+                <div class="news-stats-grid">
+                    <div class="news-stat-cell" title="Сколько новостей говорят о росте цены">
+                        <span class="ns-val" style="color:#4ade80;" id="news-bull-count">0</span>
+                        <span class="ns-label">Позитив</span>
+                    </div>
+                    <div class="news-stat-cell" title="Сколько новостей говорят о падении цены">
+                        <span class="ns-val" style="color:#f87171;" id="news-bear-count">0</span>
+                        <span class="ns-label">Негатив</span>
+                    </div>
+                    <div class="news-stat-cell" title="Новости без явного влияния на цену">
+                        <span class="ns-val" style="color:#b8c0d4;" id="news-neutral-count">0</span>
+                        <span class="ns-label">Нейтрал</span>
+                    </div>
+                    <div class="news-stat-cell" title="Средняя сила влияния новостей на цену (%)">
+                        <span class="ns-val" style="color:#22d3ee;" id="news-avg-impact">0%</span>
+                        <span class="ns-label">Сила влияния</span>
+                    </div>
+                    <div class="news-stat-cell" title="Насколько все новости говорят одно и то же (>60% = сильный сигнал)">
+                        <span class="ns-val" style="color:#c084fc;" id="news-consensus-val">—</span>
+                        <span class="ns-label">Согласие</span>
+                    </div>
+                    <div class="news-stat-cell" title="Количество срочных новостей, которые могут резко двинуть цену">
+                        <span class="ns-val" style="color:#fbbf24;" id="news-critical-count">0</span>
+                        <span class="ns-label">Срочные</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Полоска: зелёное/серое/красное = позитив/нейтрал/негатив -->
+            <div class="news-pulse-bar" id="news-pulse-bar" title="Соотношение позитивных, нейтральных и негативных новостей">
+                <div class="news-pulse-seg bull" id="news-pulse-bull" style="width:33%"></div>
+                <div class="news-pulse-seg neut" id="news-pulse-neut" style="width:34%"></div>
+                <div class="news-pulse-seg bear" id="news-pulse-bear" style="width:33%"></div>
+            </div>
+
+            <!-- Итоговый сигнал от всех новостей -->
+            <div class="news-signal-strip" id="news-signal-bar" style="display:none;">
+                <div class="nss-cell" title="Общая оценка: плюс = рынок оптимистичен, минус = пессимистичен">
+                    <span class="nss-val" id="news-signal-score">0.000</span>
+                    <span class="nss-lbl">Сигнал</span>
+                </div>
+                <div class="nss-cell" title="Сила сигнала: чем выше процент, тем сильнее влияние новостей">
+                    <span class="nss-val" id="news-signal-strength">0%</span>
+                    <span class="nss-lbl">Сила</span>
+                </div>
+                <div class="nss-cell" title="Куда смотрят новости: рост (зелёный) или падение (красный)">
+                    <span class="nss-bias-pill neutral" id="news-signal-bias">—</span>
+                    <span class="nss-lbl">Направление</span>
+                </div>
+                <div class="nss-cell" title="Главная тема новостей (макро, регуляция, технологии и т.д.)">
+                    <span class="nss-val" style="color:#22d3ee;" id="news-signal-category">—</span>
+                    <span class="nss-lbl">Тема</span>
+                </div>
+            </div>
+
+            <!-- Фильтр по категориям -->
+            <div class="news-filter-row" id="news-filter-row"></div>
+
+            <!-- Два столбца: позитив слева, негатив справа -->
+            <div class="news-two-col">
+                <!-- Позитив -->
+                <div class="news-col news-col-bull">
+                    <div class="news-col-header bull-header">
+                        <span class="nsh-icon">&#9650;</span>
+                        <span class="nsh-title">Позитив для цены</span>
+                        <span class="nsh-count" id="news-bull-hdr-count">0</span>
+                    </div>
+                    <div class="news-list" id="news-list-bull">
+                        <div class="news-empty">
+                            <div>Загрузка...</div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Негатив -->
+                <div class="news-col news-col-bear">
+                    <div class="news-col-header bear-header">
+                        <span class="nsh-icon">&#9660;</span>
+                        <span class="nsh-title">Негатив для цены</span>
+                        <span class="nsh-count" id="news-bear-hdr-count">0</span>
+                    </div>
+                    <div class="news-list" id="news-list-bear">
+                        <div class="news-empty">
+                            <div>Загрузка...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+    </div><!-- /app-layout -->
+
+    <!-- ═══ Footer ═══ -->
+    <footer class="footer" role="contentinfo">
+        <div class="footer-left">
+            <span>SENTINEL Trading System</span>
+            <span id="footer-version">v1.5.0</span>
+            <span class="footer-dot" id="footer-conn">Подключено</span>
+        </div>
+        <div>
+            <span id="footer-update">Последнее обновление: —</span>
+        </div>
+    </footer>
+
+    <!-- ═══ Toast ═══ -->
+    <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
+
+    <script defer src="/static/js/index.js"></script>
+</body>
+</html>

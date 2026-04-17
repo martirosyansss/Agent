@@ -16,6 +16,8 @@ from core.models import Candle, Direction, FeatureVector, Signal
 from features.feature_builder import FeatureBuilder
 from strategy.base_strategy import BaseStrategy
 
+from .execution_model import ExecutionConfig, FillReason, RealisticExecutionModel
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,9 +26,21 @@ class BacktestConfig:
     """Конфигурация бэктеста."""
     initial_balance: float = 500.0
     commission_pct: float = 0.1
-    slippage_pct: float = 0.05
+    slippage_pct: float = 0.05  # legacy fallback when realistic_execution=False
     safety_discount: float = 0.7
     position_size_pct: float = 20.0  # % от баланса на сделку
+    # Realistic execution: spread + market impact + gap-through-stop modelling.
+    # When True, slippage_pct is ignored in favour of ``execution_config``.
+    realistic_execution: bool = True
+    execution_config: ExecutionConfig = field(default_factory=ExecutionConfig)
+    # Apply production entry guards (multi-TF, regime, drawdown) in the
+    # backtest too. Off by default to preserve existing regression-test
+    # baselines; enable to close the backtest-vs-live optimism gap.
+    apply_risk_guards: bool = False
+    # DD thresholds mirror production defaults when apply_risk_guards=True.
+    dd_daily_pct: float = 0.05
+    dd_weekly_pct: float = 0.10
+    dd_monthly_pct: float = 0.15
 
 
 @dataclass
@@ -67,6 +81,7 @@ class BacktestResult:
     safety_discount: float
     expected_real_pnl: float
     trades: list[BacktestTrade] = field(default_factory=list)
+    guards_rejected: int = 0  # number of BUY signals blocked by pro guards
 
 
 class BacktestEngine:
@@ -75,6 +90,11 @@ class BacktestEngine:
     def __init__(self, config: Optional[BacktestConfig] = None) -> None:
         self._config = config or BacktestConfig()
         self._feature_builder = FeatureBuilder()
+        self._exec_model = (
+            RealisticExecutionModel(self._config.execution_config)
+            if self._config.realistic_execution
+            else None
+        )
 
     def run(
         self,
@@ -102,6 +122,26 @@ class BacktestEngine:
         max_drawdown = 0.0
         trades: list[BacktestTrade] = []
         daily_returns: list[float] = []
+        guards_rejected = 0
+
+        # Optional production-style guards (disabled by default for
+        # back-compat). Three guards are meaningful in a single-symbol
+        # backtest: multi-TF trend confluence, regime, and drawdown.
+        # News/liquidity/correlation are either unavailable or N/A here.
+        _mtf = _regime = _dd = None
+        _classify = None
+        if cfg.apply_risk_guards:
+            from strategy.multi_tf_gate import MultiTFGate, MultiTFGateConfig, classify_strategy
+            from risk.regime_gate import RegimeGate
+            from risk.drawdown_breaker import DrawdownBreaker, DrawdownThresholds
+            _mtf = MultiTFGate(MultiTFGateConfig(fail_closed_on_missing_data=False))
+            _regime = RegimeGate()
+            _dd = DrawdownBreaker(DrawdownThresholds(
+                daily_pct=cfg.dd_daily_pct,
+                weekly_pct=cfg.dd_weekly_pct,
+                monthly_pct=cfg.dd_monthly_pct,
+            ))
+            _classify = classify_strategy
 
         # Состояние позиции
         in_position = False
@@ -146,34 +186,76 @@ class BacktestEngine:
 
             # Проверить SL/TP для открытой позиции
             if in_position:
-                if stop_loss > 0 and candle.low <= stop_loss:
-                    # Stop-loss triggered
-                    exit_price = stop_loss * (1 - cfg.slippage_pct / 100)
+                # Gap-aware exit: stop-loss takes priority. If both SL and TP
+                # are touched in the same candle we conservatively assume the
+                # adverse one (SL) hit first — the candle's path is unknown.
+                notional = quantity * price
+                sl_fill = None
+                tp_fill = None
+                if stop_loss > 0:
+                    if self._exec_model is not None:
+                        sl_fill = self._exec_model.fill_stop_loss(
+                            stop_price=stop_loss,
+                            candle_open=candle.open,
+                            candle_low=candle.low,
+                            notional_usd=notional,
+                        )
+                    elif candle.low <= stop_loss:
+                        # Legacy flat-slippage path.
+                        from .execution_model import FillResult
+                        exit_p = stop_loss * (1 - cfg.slippage_pct / 100)
+                        sl_fill = FillResult(
+                            fill_price=exit_p,
+                            slippage_bps=cfg.slippage_pct * 100,
+                            reason=FillReason.STOP_LOSS,
+                        )
+
+                if sl_fill is not None:
+                    exit_price = sl_fill.fill_price
                     comm = quantity * exit_price * cfg.commission_pct / 100
                     pnl = (exit_price - entry_price) * quantity - comm
                     balance += pnl
+                    reason_label = "Stop-loss (gap)" if sl_fill.reason == FillReason.STOP_LOSS_GAP else "Stop-loss"
                     trades.append(BacktestTrade(
                         symbol=symbol, entry_time=entry_time, exit_time=candle.timestamp,
                         entry_price=entry_price, exit_price=exit_price,
                         quantity=quantity, pnl=pnl,
                         pnl_pct=(exit_price - entry_price) / entry_price * 100,
-                        commission=comm, reason="Stop-loss",
+                        commission=comm, reason=reason_label,
                     ))
                     daily_returns.append(pnl / balance * 100 if balance != 0 else 0)
                     in_position = False
                     continue
 
-                if take_profit > 0 and candle.high >= take_profit:
-                    exit_price = take_profit * (1 - cfg.slippage_pct / 100)
+                if take_profit > 0:
+                    if self._exec_model is not None:
+                        tp_fill = self._exec_model.fill_take_profit(
+                            tp_price=take_profit,
+                            candle_open=candle.open,
+                            candle_high=candle.high,
+                            notional_usd=notional,
+                        )
+                    elif candle.high >= take_profit:
+                        from .execution_model import FillResult
+                        exit_p = take_profit * (1 - cfg.slippage_pct / 100)
+                        tp_fill = FillResult(
+                            fill_price=exit_p,
+                            slippage_bps=cfg.slippage_pct * 100,
+                            reason=FillReason.TAKE_PROFIT,
+                        )
+
+                if tp_fill is not None:
+                    exit_price = tp_fill.fill_price
                     comm = quantity * exit_price * cfg.commission_pct / 100
                     pnl = (exit_price - entry_price) * quantity - comm
                     balance += pnl
+                    reason_label = "Take-profit (gap)" if tp_fill.reason == FillReason.TAKE_PROFIT_GAP else "Take-profit"
                     trades.append(BacktestTrade(
                         symbol=symbol, entry_time=entry_time, exit_time=candle.timestamp,
                         entry_price=entry_price, exit_price=exit_price,
                         quantity=quantity, pnl=pnl,
                         pnl_pct=(exit_price - entry_price) / entry_price * 100,
-                        commission=comm, reason="Take-profit",
+                        commission=comm, reason=reason_label,
                     ))
                     daily_returns.append(pnl / balance * 100 if balance != 0 else 0)
                     in_position = False
@@ -182,10 +264,46 @@ class BacktestEngine:
             if signal is None:
                 continue
 
+            # Risk guards on BUY (opt-in via apply_risk_guards).
+            # Drawdown sees equity ticks on every candle so its windows
+            # roll over in backtest time, not wall-clock time.
+            if cfg.apply_risk_guards and _dd is not None:
+                _dd.update(balance)
+            if (
+                cfg.apply_risk_guards
+                and signal.direction == Direction.BUY
+                and not in_position
+            ):
+                strat_name = getattr(strategy, "NAME", strategy.__class__.__name__)
+                if _regime is not None:
+                    rg = _regime.check(strat_name, features)
+                    if not rg.approved:
+                        guards_rejected += 1
+                        continue
+                if _mtf is not None and _classify is not None:
+                    mtf = _mtf.check(
+                        direction=signal.direction,
+                        features=features,
+                        strategy_type=_classify(strat_name),
+                    )
+                    if not mtf.approved:
+                        guards_rejected += 1
+                        continue
+                if _dd is not None and not _dd.allows_new_entry():
+                    guards_rejected += 1
+                    continue
+
             # BUY
             if signal.direction == Direction.BUY and not in_position:
-                entry_price = price * (1 + cfg.slippage_pct / 100)
                 position_value = balance * cfg.position_size_pct / 100
+                if self._exec_model is not None:
+                    fill = self._exec_model.fill_market_buy(
+                        reference_price=price,
+                        notional_usd=position_value,
+                    )
+                    entry_price = fill.fill_price
+                else:
+                    entry_price = price * (1 + cfg.slippage_pct / 100)
                 quantity = position_value / entry_price
                 comm = quantity * entry_price * cfg.commission_pct / 100
                 balance -= comm  # Комиссия при входе
@@ -196,7 +314,14 @@ class BacktestEngine:
 
             # SELL
             elif signal.direction == Direction.SELL and in_position:
-                exit_price = price * (1 - cfg.slippage_pct / 100)
+                if self._exec_model is not None:
+                    fill = self._exec_model.fill_market_sell(
+                        reference_price=price,
+                        notional_usd=quantity * price,
+                    )
+                    exit_price = fill.fill_price
+                else:
+                    exit_price = price * (1 - cfg.slippage_pct / 100)
                 comm = quantity * exit_price * cfg.commission_pct / 100
                 pnl = (exit_price - entry_price) * quantity - comm
                 balance += pnl
@@ -220,7 +345,14 @@ class BacktestEngine:
         # Close any open position at end of data
         if in_position and candles_1h:
             last_price = candles_1h[-1].close
-            exit_price = last_price * (1 - cfg.slippage_pct / 100)
+            if self._exec_model is not None:
+                eod_fill = self._exec_model.fill_market_sell(
+                    reference_price=last_price,
+                    notional_usd=quantity * last_price,
+                )
+                exit_price = eod_fill.fill_price
+            else:
+                exit_price = last_price * (1 - cfg.slippage_pct / 100)
             comm = quantity * exit_price * cfg.commission_pct / 100
             pnl = (exit_price - entry_price) * quantity - comm
             balance += pnl
@@ -297,6 +429,7 @@ class BacktestEngine:
             safety_discount=cfg.safety_discount,
             expected_real_pnl=expected_real,
             trades=trades,
+            guards_rejected=guards_rejected,
         )
 
     def format_report(self, result: BacktestResult) -> str:

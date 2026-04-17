@@ -34,6 +34,10 @@ class SizingInput:
     consecutive_losses: int = 0         # current loss streak
     stop_loss_pct: float = 0.0          # actual SL% for risk-based sizing
     max_risk_per_trade_pct: float = 3.0 # max % of portfolio to risk per trade
+    corr_lookup: "callable | None" = None  # optional (sym, other) -> bool;
+                                           # delegates to CorrelationGuard in
+                                           # production, falls back to static
+                                           # BTC/ETH cluster when None.
 
 
 @dataclass(slots=True)
@@ -168,25 +172,61 @@ def regime_dampener(adx: float) -> float:
     return 0.5
 
 
-# BTC/ETH correlation ~0.85 — reduce size when both are held
-_CORRELATED_PAIRS: dict[str, set[str]] = {
+# Default correlation penalty when correlated assets are already held.
+# Calibration: BTC/ETH historically run ~0.85 ρ — kelly assumes independence,
+# so two correlated positions is closer to one larger position. 0.7 sizes
+# the second one as if Σ_eff = Σ_indep × 1.4 (≈ √(2 + 2·0.85)).
+_DEFAULT_CORRELATION_PENALTY: float = 0.70
+
+# Default cluster map — mirrors hardcoded BTC/ETH legacy. Keep here so tests
+# and the legacy code path continue to size BTC/ETH down without an injected
+# guard. Production callers should inject a ``corr_lookup`` callable that
+# delegates to ``risk.correlation_guard.CorrelationGuard`` for symbol-agnostic
+# behaviour across the full asset universe.
+_DEFAULT_CORRELATED_PAIRS: dict[str, set[str]] = {
     "BTCUSDT": {"ETHUSDT"},
     "ETHUSDT": {"BTCUSDT"},
 }
-_CORRELATION_PENALTY: float = 0.70  # reduce to 70% of calculated size
 
 
-def correlation_factor(symbol: str, open_symbols: list[str] | None) -> float:
-    """Reduce position size when correlated assets are already held.
+def correlation_factor(
+    symbol: str,
+    open_symbols: list[str] | None,
+    corr_lookup: "callable | None" = None,
+    penalty: float = _DEFAULT_CORRELATION_PENALTY,
+) -> float:
+    """Size-down multiplier when correlated assets are already held.
 
-    BTC and ETH have ~0.85 correlation — holding both is not true diversification.
+    Args:
+        symbol: candidate trading symbol
+        open_symbols: list of currently-held symbols
+        corr_lookup: optional callable ``(symbol, other_symbol) -> bool``
+            that returns True when the pair counts as "correlated". When
+            None, falls back to the static BTC/ETH cluster — preserves
+            historical behaviour for callers that don't yet inject the
+            generalised CorrelationGuard.
+        penalty: scalar in (0, 1] applied when a correlation is detected
+            (0.7 = 30% size reduction).
+
+    Returns:
+        1.0 when no correlation found, ``penalty`` otherwise.
     """
     if not open_symbols:
         return 1.0
-    correlated = _CORRELATED_PAIRS.get(symbol, set())
-    for s in open_symbols:
-        if s in correlated:
-            return _CORRELATION_PENALTY
+
+    if corr_lookup is None:
+        # Static legacy fallback.
+        correlated = _DEFAULT_CORRELATED_PAIRS.get(symbol, set())
+        return penalty if any(s in correlated for s in open_symbols) else 1.0
+
+    # Injected lookup — used in production where CorrelationGuard owns
+    # the rolling-correlation matrix.
+    for other in open_symbols:
+        try:
+            if other != symbol and corr_lookup(symbol, other):
+                return penalty
+        except Exception:
+            continue
     return 1.0
 
 
@@ -232,8 +272,11 @@ def calculate_position_size(inp: SizingInput) -> SizingResult:
     # 3. Regime dampener
     rd = regime_dampener(inp.regime_adx)
 
-    # 4. Correlation factor (reduce when correlated assets already held)
-    cf = correlation_factor(inp.symbol, inp.open_symbols)
+    # 4. Correlation factor (reduce when correlated assets already held).
+    # Production path: caller injects ``corr_lookup`` that consults the
+    # generalised CorrelationGuard. Tests / legacy callers pass None and
+    # get the historical BTC/ETH static cluster behaviour.
+    cf = correlation_factor(inp.symbol, inp.open_symbols, corr_lookup=inp.corr_lookup)
 
     # 5. Loss streak dampener (reduce after consecutive losses)
     ld = loss_streak_dampener(inp.consecutive_losses)

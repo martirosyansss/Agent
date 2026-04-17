@@ -318,6 +318,19 @@ class StrategyTrade:
     rsi_daily_at_entry: float = 0.0    # Daily RSI
 
     @classmethod
+    def from_db_row(cls, row: dict) -> "StrategyTrade":
+        """Build a StrategyTrade from a SQLite row dict.
+
+        Filters out DB-only columns (id, created_at) that aren't dataclass
+        fields — avoids TypeError when the caller does `StrategyTrade(**row)`.
+        """
+        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in row.items() if k in valid_fields}
+        if "is_win" in filtered:
+            filtered["is_win"] = bool(filtered["is_win"])
+        return cls(**filtered)
+
+    @classmethod
     def from_feature_vector(
         cls,
         fv: "FeatureVector",
