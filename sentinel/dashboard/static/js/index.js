@@ -1,6 +1,52 @@
 
     'use strict';
 
+    /* ══════════════════════════════════════════════════
+       Observability: structured logging + global errors.
+       All previously-silent `catch(e){}` blocks forward to
+       _logError so failures surface during development and
+       can be wired to a client-side telemetry endpoint later.
+       ══════════════════════════════════════════════════ */
+    function _logError(scope, err, extra) {
+        var payload = {
+            ts: new Date().toISOString(),
+            scope: String(scope || 'unknown'),
+            msg: (err && err.message) || String(err || ''),
+            stack: (err && err.stack) || null,
+            extra: extra || null,
+        };
+        /* eslint-disable-next-line no-console */
+        console.error('[SENTINEL]', payload);
+    }
+    window.addEventListener('error', function(ev) {
+        _logError('window.error', ev.error || ev.message, { file: ev.filename, line: ev.lineno, col: ev.colno });
+    });
+    window.addEventListener('unhandledrejection', function(ev) {
+        _logError('unhandledrejection', ev.reason);
+    });
+
+    /* ── CSRF helper ──────────────────────────────
+       Reads the `sentinel_csrf` cookie set by the backend on HTML loads
+       and echoes it in a custom header for every mutating request.
+       Required by CsrfMiddleware in app.py.
+       ────────────────────────────────────────── */
+    function _getCsrfToken() {
+        var m = document.cookie.match(/(?:^|;\s*)sentinel_csrf=([^;]+)/);
+        return m ? decodeURIComponent(m[1]) : '';
+    }
+    function _csrfFetch(url, opts) {
+        opts = opts || {};
+        var method = (opts.method || 'GET').toUpperCase();
+        if (method !== 'GET' && method !== 'HEAD') {
+            var headers = new Headers(opts.headers || {});
+            var tok = _getCsrfToken();
+            if (tok) headers.set('X-CSRF-Token', tok);
+            opts.headers = headers;
+            opts.credentials = opts.credentials || 'same-origin';
+        }
+        return fetch(url, opts);
+    }
+
     /* ── Helpers ──────────────────────────────── */
     function formatPnl(val) {
         if (val >= 0) return '+$' + val.toFixed(2);
@@ -345,7 +391,15 @@
             responsive: true,
             maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
+            /* Skip redraws while hidden (avoids wasted CPU when tab backgrounded) */
+            animation: { duration: 250 },
             plugins: {
+                /* Chart.js 4 built-in LTTB downsampler: keeps line shape on long series */
+                decimation: {
+                    enabled: true,
+                    algorithm: 'lttb',
+                    samples: 240,
+                },
                 zoom: {
                     pan: {
                         enabled: true,
@@ -444,6 +498,9 @@
             }
         }
     }) : null;
+
+    /* Explicit exports for inline-safe access from event handlers */
+    window.pnlChart = pnlChart;
 
     /* Store OHLC data for tooltip */
     window._chartOhlcData = null;
@@ -928,7 +985,7 @@
             ddEl.textContent = dd.toFixed(1) + '%';
             ddEl.className = 'metric-value ' + (dd > 10 ? 'negative' : dd > 5 ? 'neutral' : 'positive');
             var curDD = data.current_drawdown_pct || 0;
-            document.getElementById('max-drawdown-sub').textContent = 'Current: ' + curDD.toFixed(1) + '%';
+            document.getElementById('max-drawdown-sub').textContent = 'Сейчас: ' + curDD.toFixed(1) + '%';
 
             var pf = data.profit_factor || 0;
             var pfEl = document.getElementById('profit-factor');
@@ -944,7 +1001,7 @@
 
             var peakBal = data.peak_balance || data.balance || 0;
             var peakEl = document.getElementById('equity-peak-badge');
-            if (peakEl) peakEl.textContent = 'Peak: $' + peakBal.toFixed(2);
+            if (peakEl) peakEl.textContent = 'Пик: $' + peakBal.toFixed(2);
         }
 
         /* Uptime — общий для всех страниц */
@@ -988,6 +1045,10 @@
         if (dlEl) {
             var rd = data.risk_details;
             var lim = rd.limits || {};
+
+            /* Drop skeleton shimmer on first data arrival */
+            var rgrid = document.getElementById('risk-grid');
+            if (rgrid && rgrid.dataset.loading === 'true') rgrid.dataset.loading = 'false';
 
             /* Helper: красит значение + надпись-порог по % использования лимита */
             function _riskClass(pctUsed) {
@@ -1083,7 +1144,7 @@
 
         /* Footer last update */
         var fuEl = document.getElementById('footer-update');
-        if (fuEl) fuEl.textContent = 'Last update: ' + new Date().toLocaleTimeString();
+        if (fuEl) fuEl.textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru-RU', { hour12: false, timeZone: 'Asia/Dubai' });
 
         /* Live Activity panel — dashboard-only */
         var wsEl = data.activity ? document.getElementById('act-ws-status') : null;
@@ -1093,11 +1154,11 @@
             var prices = col.last_prices || {};
 
             if (col.connected) {
-                wsEl.textContent = 'Connected';
+                wsEl.textContent = 'Онлайн';
                 wsEl.className = 'activity-value live';
                 document.getElementById('act-ws-sub').textContent = (col.symbols || []).join(', ');
             } else {
-                wsEl.textContent = 'Disconnected';
+                wsEl.textContent = 'Офлайн';
                 wsEl.className = 'activity-value';
             }
 
@@ -1143,10 +1204,10 @@
             var regimeEl = document.getElementById('act-regime');
             if (regime) {
                 regimeEl.textContent = regime.replace('_', ' ');
-                document.getElementById('act-regime-sub').textContent = 'detected';
+                document.getElementById('act-regime-sub').textContent = 'определён';
             } else {
                 regimeEl.textContent = '—';
-                document.getElementById('act-regime-sub').textContent = 'waiting for data';
+                document.getElementById('act-regime-sub').textContent = 'ждём данные';
             }
 
             // Strategies
@@ -1948,7 +2009,7 @@
             '</div>' +
             '<div class="fv2-takeaway-body">' + takeawayBody + '</div>';
 
-        if (latest && latest.ts) scanTimeEl.textContent = new Date(latest.ts).toLocaleTimeString();
+        if (latest && latest.ts) scanTimeEl.textContent = new Date(latest.ts).toLocaleTimeString('ru-RU', { hour12: false, timeZone: 'Asia/Dubai' });
         if (latest && latest.regime) regimeEl.textContent = 'Режим: ' + latest.regime.toUpperCase();
 
         // ═══════════════════════════════════════════════════
@@ -2104,7 +2165,7 @@
         for (var i = entries.length - 1; i >= 0; i--) {
             var e = entries[i];
             var evtClass = 'log-' + (e.event || 'scan');
-            var timeStr = e.ts ? new Date(e.ts).toLocaleTimeString() : '';
+            var timeStr = e.ts ? new Date(e.ts).toLocaleTimeString('ru-RU', { hour12: false, timeZone: 'Asia/Dubai' }) : '';
 
             html += '<div class="strat-log-entry ' + evtClass + '">';
             html += '  <div class="strat-log-header">';
@@ -2369,9 +2430,9 @@
         ws.onopen = function() {
             wsRetry = 0;
             document.getElementById('conn-dot').className = 'conn-dot connected';
-            document.getElementById('conn-label').textContent = 'Live';
+            document.getElementById('conn-label').textContent = 'Онлайн';
             var fc = document.getElementById('footer-conn');
-            fc.textContent = 'Connected';
+            fc.textContent = 'Подключено';
             fc.className = 'footer-dot';
             setBackendOnline(true);
         };
@@ -2381,15 +2442,15 @@
                 var msg = JSON.parse(e.data);
                 if (msg.type === 'state_update') updateUI(msg.data);
             } catch(err) {
-                console.warn('WS message parse failed:', err, e.data);
+                _logError('ws.onmessage.parse', err, { raw: String(e.data).slice(0, 200) });
             }
         };
 
         ws.onclose = function() {
             document.getElementById('conn-dot').className = 'conn-dot disconnected';
-            document.getElementById('conn-label').textContent = 'Offline';
+            document.getElementById('conn-label').textContent = 'Офлайн';
             var fc = document.getElementById('footer-conn');
-            fc.textContent = 'Disconnected';
+            fc.textContent = 'Нет соединения';
             fc.className = 'footer-dot offline';
             setBackendOnline(false);
             var delay = Math.min(1000 * Math.pow(2, wsRetry), MAX_RETRY_DELAY);
@@ -2431,6 +2492,7 @@
             updateUI(data);
             if (!_backendOnline) setBackendOnline(true);
         } catch(e) {
+            _logError('fetchStatus', e);
             if (_backendOnline) setBackendOnline(false);
         }
     }
@@ -2461,11 +2523,14 @@
     function formatOpenTime(val) {
         var d = parseOpenedAt(val);
         if (!d) return '';
-        var dd = String(d.getDate()).padStart(2, '0');
-        var mon = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'][d.getMonth()];
-        var hh = String(d.getHours()).padStart(2, '0');
-        var mm = String(d.getMinutes()).padStart(2, '0');
-        return dd + ' ' + mon + ' ' + hh + ':' + mm;
+        var parts = new Intl.DateTimeFormat('ru-RU', {
+            timeZone: 'Asia/Dubai',
+            day: '2-digit', month: '2-digit', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', hour12: false
+        }).formatToParts(d).reduce(function(a,p){ a[p.type]=p.value; return a; }, {});
+        var monIdx = parseInt(parts.month, 10) - 1;
+        var mon = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'][monIdx];
+        return parts.day + ' ' + mon + ' ' + parts.hour + ':' + parts.minute;
     }
 
     function buildPositionCard(p) {
@@ -2601,6 +2666,7 @@
             // Render cards
             container.innerHTML = data.map(buildPositionCard).join('');
         } catch(e) {
+            _logError('fetchPositions', e);
         } finally {
             _fetchingPositions = false;
         }
@@ -2641,7 +2707,7 @@
                     '<td class="td-mono ' + pnlClass(pnl) + '" style="font-weight:700;">' + (t.pnl != null ? formatPnl(pnl) : '\u2014') + '</td></tr>';
             }).join('');
         } catch(e) {
-            console.error('fetchTrades failed:', e);
+            _logError('fetchTrades', e);
         }
     }
 
@@ -2667,7 +2733,7 @@
                 await renderMarketSeries(activeInterval);
             }
         } catch(e) {
-            console.error('fetchPnlHistory failed:', e);
+            _logError('fetchPnlHistory', e);
         }
     }
 
@@ -2777,11 +2843,11 @@
     async function fetchEquityCurve() {
         try {
             var r = await fetch('/api/pnl-history');
-            if (!r.ok) { console.warn('equity fetch non-200:', r.status); return; }
+            if (!r.ok) { _logError('fetchEquityCurve', 'non-200', { status: r.status }); return; }
             var data = await r.json();
             if (data && data.length >= 2) renderEquityCurve(data);
         } catch(e) {
-            console.error('fetchEquityCurve failed:', e);
+            _logError('fetchEquityCurve', e);
         }
     }
 
@@ -3033,7 +3099,7 @@
 
             buildFilterTabs(news);
             renderNewsCards(news, _newsActiveFilter);
-        } catch(e) { /* silent */ }
+        } catch(e) { _logError('fetch', e); }
     }
 
     /* ── Control Actions ─────────────────────── */
@@ -3045,7 +3111,7 @@
         var btn = document.getElementById('btn-' + (action === 'resume' ? 'start' : action));
         if (btn) btn.disabled = true;
         try {
-            var r = await fetch('/api/control/' + action, { method: 'POST' });
+            var r = await _csrfFetch('/api/control/' + action, { method: 'POST' });
             var data = await r.json();
             if (r.ok) {
                 showToast(
@@ -3106,16 +3172,20 @@
                         </div>
                     </div>`;
             }).join('');
-        } catch(e) { /* silent */ }
+        } catch(e) { _logError('fetch', e); }
     }
 
     /* ── Init ──────────────────────────────────
        Centralised poll schedule. Interval IDs are tracked so we can
        clear them on beforeunload — without cleanup, fetches continue
        firing after navigation and leak memory on every page refresh.
+
+       `status` intentionally absent from schedule: the WebSocket pushes
+       state every ~2s. REST fetchStatus() fires only via
+       `_statusFallbackTick` while the socket is offline.
     */
     const POLL_INTERVALS_MS = {
-        status:    5000,    // header status pill
+        status_fallback: 10000, // REST fallback — only runs while WS is down
         positions: 8000,    // open positions table
         trades:    8000,    // recent trades list
         chart:    30000,    // Chart.js market series
@@ -3126,6 +3196,11 @@
     const _activeTimers = [];
     function _schedule(fn, ms) { _activeTimers.push(setInterval(fn, ms)); }
 
+    /* REST status fallback: only polls when the WebSocket is disconnected. */
+    function _statusFallbackTick() {
+        if (!_backendOnline || !ws || ws.readyState !== 1) fetchStatus();
+    }
+
     fetchStatus();
     fetchPositions();
     fetchTrades();
@@ -3133,7 +3208,7 @@
     fetchEquityCurve();
     fetchStrategyPerformance();
     fetchNews();
-    _schedule(fetchStatus,              POLL_INTERVALS_MS.status);
+    _schedule(_statusFallbackTick,      POLL_INTERVALS_MS.status_fallback);
     _schedule(fetchPositions,           POLL_INTERVALS_MS.positions);
     _schedule(fetchTrades,              POLL_INTERVALS_MS.trades);
     _schedule(() => renderMarketSeries(activeInterval), POLL_INTERVALS_MS.chart);
@@ -3145,6 +3220,35 @@
         _activeTimers.forEach(id => clearInterval(id));
         _activeTimers.length = 0;
     });
+
+    /* ══════════════════════════════════════════
+       Control buttons — event delegation
+       Replaces per-button inline onclick handlers so the markup
+       stays CSP-friendly and listeners survive HTML re-renders.
+       ══════════════════════════════════════════ */
+    (function initControlButtons() {
+        var bar = document.querySelector('.controls-bar .controls-actions');
+        if (bar) {
+            bar.addEventListener('click', function(ev) {
+                var btn = ev.target.closest('button[data-action]');
+                if (!btn || btn.disabled) return;
+                var action = btn.getAttribute('data-action');
+                if (action === 'kill') {
+                    if (typeof window.confirmKill === 'function') window.confirmKill();
+                } else if (action === 'resume' || action === 'stop') {
+                    controlAction(action);
+                }
+            });
+        }
+        var resetBtn = document.getElementById('chartResetZoomBtn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', function() {
+                if (window.pnlChart && typeof window.pnlChart.resetZoom === 'function') {
+                    window.pnlChart.resetZoom();
+                }
+            });
+        }
+    })();
 
     /* ══════════════════════════════════════════
        Mobile hamburger sidebar (<768px)
@@ -3340,7 +3444,7 @@
         });
         if (!ok) return;
         try {
-            var r = await fetch('/api/positions/' + encodeURIComponent(symbol) + '/close', { method: 'POST' });
+            var r = await _csrfFetch('/api/positions/' + encodeURIComponent(symbol) + '/close', { method: 'POST' });
             var data = {};
             try { data = await r.json(); } catch (_) { /* ignore */ }
             if (r.ok && data.ok !== false) {

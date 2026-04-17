@@ -50,7 +50,7 @@
             <div class="header-sep"></div>
             <div class="conn-indicator" aria-label="WebSocket">
                 <span class="conn-dot disconnected" id="conn-dot"></span>
-                <span id="conn-label">Offline</span>
+                <span id="conn-label">Офлайн</span>
             </div>
         </div>
     </header>
@@ -93,15 +93,15 @@
         <!-- ── Controls ── -->
         <div class="controls-bar fade-in">
             <div class="controls-actions">
-                <button class="btn btn-start" id="btn-start" onclick="controlAction('resume')" aria-label="Запустить торговлю">
+                <button class="btn btn-start" id="btn-start" data-action="resume" aria-label="Запустить торговлю">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                     Запустить
                 </button>
-                <button class="btn btn-stop" id="btn-stop" onclick="controlAction('stop')" aria-label="Приостановить торговлю">
+                <button class="btn btn-stop" id="btn-stop" data-action="stop" aria-label="Приостановить торговлю">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
                     Пауза
                 </button>
-                <button class="btn btn-kill" id="btn-kill" onclick="confirmKill()" aria-label="Аварийная остановка">
+                <button class="btn btn-kill" id="btn-kill" data-action="kill" aria-label="Аварийная остановка">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                     Авар. стоп
                 </button>
@@ -177,7 +177,7 @@
                 <span class="market-overview-hint">Куда идёт рынок по торгуемым символам и почему. Обновляется каждые 2 сек.</span>
             </div>
             <div class="market-overview-grid" id="market-overview-grid">
-                <div class="market-overview-empty">Loading market data…</div>
+                <div class="market-overview-empty">Загружаем рыночные данные…</div>
             </div>
         </section>
 
@@ -381,7 +381,7 @@
                         <button class="interval-btn" data-interval="4h" role="radio" aria-checked="false">4h</button>
                         <button class="interval-btn" data-interval="1d" role="radio" aria-checked="false">1d</button>
                     </div>
-                    <button class="chart-icon-btn" id="chartResetZoomBtn" onclick="if(window.pnlChart) window.pnlChart.resetZoom()" aria-label="Reset zoom" title="Reset zoom">
+                    <button class="chart-icon-btn" id="chartResetZoomBtn" aria-label="Reset zoom" title="Reset zoom">
                         <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                     </button>
                 </div>
@@ -401,7 +401,7 @@
             </div>
             <div class="chart-wrap" style="position:relative;">
                 <canvas id="pnlChart" aria-label="Price chart" role="img"></canvas>
-                <div id="pnlNoData" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;pointer-events:none;">Collecting data…</div>
+                <div id="pnlNoData" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;pointer-events:none;">Собираем данные…</div>
             </div>
             <div class="chart-legend-row" id="emaLegendRow" style="display:none;">
                 <span style="color:var(--text-dim);font-size:10px;text-transform:uppercase;letter-spacing:0.06em;margin-right:2px;">Indicators</span>
@@ -426,12 +426,12 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
                     Equity Curve
                 </h3>
-                <span class="badge badge-paper" id="equity-peak-badge" style="font-size:10px;">Peak: $0</span>
+                <span class="badge badge-paper" id="equity-peak-badge" style="font-size:10px;">Пик: $0</span>
             </div>
             <p class="panel-desc">Кривая роста баланса с отображением просадок. <strong>Зелёная линия</strong> = баланс. <strong>Красная зона</strong> = drawdown от пика. Чем меньше красного, тем стабильнее система.</p>
             <div class="chart-wrap" style="position:relative;height:220px;">
                 <canvas id="equityChart" aria-label="Equity curve chart" role="img"></canvas>
-                <div id="equityNoData" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;pointer-events:none;">Collecting data...</div>
+                <div id="equityNoData" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;pointer-events:none;">Собираем данные…</div>
             </div>
         </div>
 
@@ -447,7 +447,7 @@
                 <span id="risk-state-big" class="badge badge-normal"><span class="badge-dot"></span>NORMAL</span>
             </div>
             <p class="panel-desc">Показывают насколько агрессивно бот использует капитал. <strong>Зелёная полоса</strong> = безопасно, <strong>оранжевая</strong> = осторожно, <strong>красная</strong> = остановить торговлю.</p>
-            <div class="risk-grid" id="risk-grid">
+            <div class="risk-grid" id="risk-grid" data-loading="true">
                 <div class="risk-metric">
                     <div class="risk-metric-head">
                         <span class="risk-metric-label has-tooltip" tabindex="0">
@@ -585,7 +585,7 @@
 <div class="activity-grid">
                 <div class="activity-item">
                     <span class="activity-label">Binance WS</span>
-                    <span class="activity-value live" id="act-ws-status">Connecting...</span>
+                    <span class="activity-value live" id="act-ws-status">Подключение…</span>
                     <span class="activity-sub" id="act-ws-sub"></span>
                 </div>
                 <div class="activity-item">
@@ -637,7 +637,7 @@
             <span class="footer-dot" id="footer-conn">Подключено</span>
         </div>
         <div>
-            <span id="footer-update">Последнее обновление: —</span>
+            <span id="footer-update">Обновлено: —</span>
         </div>
     </footer>
 

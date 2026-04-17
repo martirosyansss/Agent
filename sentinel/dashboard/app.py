@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Optional
@@ -212,12 +213,13 @@ class Dashboard:
 
         class AuthMiddleware(BaseHTTPMiddleware):
             """Token auth for mutating endpoints when password is configured."""
-            _PUBLIC = {"/api/health", "/", "/settings", "/trades", "/analytics", "/news", "/ws"}
+            _PUBLIC = {"/api/health", "/", "/settings", "/trades", "/analytics", "/news", "/logs", "/ws"}
             _READ_ONLY = {"/api/status", "/api/positions", "/api/trades",
                           "/api/pnl-history", "/api/market-chart",
                           "/api/backtest-results", "/api/config",
                           "/api/settings/editable", "/api/strategy-performance",
-                          "/api/trades/export", "/api/trades/history", "/api/news"}
+                          "/api/trades/export", "/api/trades/history", "/api/news",
+                          "/api/logs", "/api/logs/list"}
 
             async def dispatch(self, request: Request, call_next):
                 path = request.url.path
@@ -245,6 +247,54 @@ class Dashboard:
 
         app.add_middleware(AuthMiddleware)
 
+        # ── CSRF double-submit cookie ─────────────
+        # Sets a non-HttpOnly `sentinel_csrf` cookie on HTML page loads.
+        # For any mutating request (POST/PUT/PATCH/DELETE) the client must
+        # echo the cookie value back in `X-CSRF-Token`. Blocks cross-origin
+        # POST attacks that can't read same-origin cookies.
+        class CsrfMiddleware(BaseHTTPMiddleware):
+            _HTML_PATHS = {"/", "/settings", "/trades", "/analytics", "/news", "/logs"}
+            _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+            _COOKIE = "sentinel_csrf"
+            _HEADER = "X-CSRF-Token"
+
+            async def dispatch(self, request: Request, call_next):
+                path = request.url.path
+                method = request.method.upper()
+
+                # WebSocket upgrades and static assets bypass CSRF
+                if path.startswith("/static") or path == "/ws":
+                    return await call_next(request)
+
+                # Enforce on mutating requests
+                if method in self._MUTATING:
+                    cookie_tok = request.cookies.get(self._COOKIE, "")
+                    header_tok = request.headers.get(self._HEADER, "")
+                    if (not cookie_tok or not header_tok
+                            or not secrets.compare_digest(cookie_tok, header_tok)):
+                        return JSONResponse(
+                            content={"error": "CSRF token missing or invalid"},
+                            status_code=403,
+                        )
+
+                response = await call_next(request)
+
+                # Issue/refresh CSRF cookie on HTML page loads
+                if method == "GET" and path in self._HTML_PATHS:
+                    if not request.cookies.get(self._COOKIE):
+                        response.set_cookie(
+                            key=self._COOKIE,
+                            value=secrets.token_urlsafe(32),
+                            secure=False,   # local dashboard over http
+                            httponly=False, # JS must read it for header echo
+                            samesite="strict",
+                            max_age=60 * 60 * 24,
+                            path="/",
+                        )
+                return response
+
+        app.add_middleware(CsrfMiddleware)
+
         # Cache-Control for static assets — HTML must not be cached aggressively
         # because we hot-swap it during releases (content hash would be cleaner
         # but that's a bigger refactor). CSS/JS get short cache to balance
@@ -256,7 +306,7 @@ class Dashboard:
                 if scope["type"] != "http":
                     return await self.app(scope, receive, send)
                 path = scope.get("path", "")
-                is_html = path.endswith(".html") or path == "/" or path in ("/settings", "/trades", "/analytics", "/news")
+                is_html = path.endswith(".html") or path == "/" or path in ("/settings", "/trades", "/analytics", "/news", "/logs")
                 is_static_asset = path.startswith("/static/css/") or path.startswith("/static/js/")
                 is_static_other = path.startswith("/static/")
 
@@ -275,6 +325,43 @@ class Dashboard:
                 await self.app(scope, receive, send_wrapper)
 
         app.add_middleware(CacheHeadersMiddleware)
+
+        # ── Security headers (CSP, frame, referrer) ────────────────
+        # Permissive CSP — keeps 'unsafe-inline' because the current HTML
+        # uses inline styles and Chart.js tooltip plugins inject styles.
+        # Tightening to nonces is a follow-up refactor.
+        class SecurityHeadersMiddleware:
+            def __init__(self, app): self.app = app
+
+            async def __call__(self, scope, receive, send):
+                if scope["type"] != "http":
+                    return await self.app(scope, receive, send)
+
+                async def send_wrapper(message):
+                    if message.get("type") == "http.response.start":
+                        headers = list(message.get("headers", []))
+                        csp = (
+                            "default-src 'self'; "
+                            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                            "font-src 'self' https://fonts.gstatic.com data:; "
+                            "img-src 'self' data: blob:; "
+                            "connect-src 'self' ws: wss:; "
+                            "frame-ancestors 'none'; "
+                            "base-uri 'self'; "
+                            "form-action 'self'"
+                        )
+                        headers.append((b"content-security-policy", csp.encode("ascii")))
+                        headers.append((b"x-frame-options", b"DENY"))
+                        headers.append((b"x-content-type-options", b"nosniff"))
+                        headers.append((b"referrer-policy", b"same-origin"))
+                        headers.append((b"permissions-policy", b"geolocation=(), microphone=(), camera=()"))
+                        message["headers"] = headers
+                    await send(message)
+
+                await self.app(scope, receive, send_wrapper)
+
+        app.add_middleware(SecurityHeadersMiddleware)
 
         static_dir = pathlib.Path(__file__).parent / "static"
         if static_dir.exists():
@@ -457,6 +544,108 @@ class Dashboard:
                 "signal": self.news_collector.get_news_signal(),
             })
 
+        @app.get("/api/logs/list")
+        async def logs_list():
+            """Список доступных лог-файлов с метаданными."""
+            logs_dir = pathlib.Path(__file__).parent.parent / "logs"
+            files = []
+            if logs_dir.exists():
+                for f in sorted(logs_dir.glob("*.log")) + sorted(logs_dir.glob("*.jsonl")):
+                    try:
+                        stat = f.stat()
+                        files.append({
+                            "name": f.name,
+                            "size": stat.st_size,
+                            "modified": int(stat.st_mtime * 1000),
+                        })
+                    except OSError:
+                        continue
+            return JSONResponse(content={"files": files})
+
+        @app.get("/api/logs")
+        async def logs_read(name: str = "sentinel.log", tail: int = 500, level: str = ""):
+            """Прочитать хвост лог-файла. tail — число последних строк (макс 5000)."""
+            logs_dir = (pathlib.Path(__file__).parent.parent / "logs").resolve()
+            # Защита от path traversal: разрешаем только имя файла без разделителей
+            if "/" in name or "\\" in name or ".." in name or not name:
+                return JSONResponse(content={"error": "invalid log name"}, status_code=400)
+            log_path = (logs_dir / name).resolve()
+            try:
+                log_path.relative_to(logs_dir)
+            except ValueError:
+                return JSONResponse(content={"error": "path outside logs dir"}, status_code=400)
+            if not log_path.exists() or not log_path.is_file():
+                return JSONResponse(content={"error": "log not found", "name": name}, status_code=404)
+
+            tail = max(1, min(int(tail or 500), 5000))
+
+            ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+
+            # Читаем последние N строк эффективно — с конца файла блоками
+            def read_tail_lines(path: pathlib.Path, n: int) -> list[str]:
+                try:
+                    size = path.stat().st_size
+                    if size == 0:
+                        return []
+                    with path.open("rb") as fh:
+                        block = 64 * 1024
+                        data = b""
+                        pos = size
+                        while pos > 0 and data.count(b"\n") <= n:
+                            read_size = min(block, pos)
+                            pos -= read_size
+                            fh.seek(pos)
+                            data = fh.read(read_size) + data
+                    text = data.decode("utf-8", errors="replace")
+                    lines = [ansi_re.sub("", ln) for ln in text.splitlines()]
+                    return lines[-n:]
+                except OSError as exc:
+                    logger.warning("read_tail_lines failed for %s: %s", path, exc)
+                    return []
+
+            lines = read_tail_lines(log_path, tail)
+
+            if level:
+                lvl = level.upper()
+                keep = {"DEBUG":   {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"},
+                        "INFO":    {"INFO", "WARNING", "ERROR", "CRITICAL"},
+                        "WARNING": {"WARNING", "ERROR", "CRITICAL"},
+                        "ERROR":   {"ERROR", "CRITICAL"}}.get(lvl)
+                if keep:
+                    level_re = re.compile(r"\|\s*(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\s*\|")
+                    filtered: list[str] = []
+                    keep_cont = False
+                    for ln in lines:
+                        m = level_re.search(ln)
+                        if m:
+                            lv = m.group(1).upper()
+                            if lv == "WARN":
+                                lv = "WARNING"
+                            elif lv == "FATAL":
+                                lv = "CRITICAL"
+                            keep_cont = lv in keep
+                            if keep_cont:
+                                filtered.append(ln)
+                        elif keep_cont:
+                            filtered.append(ln)
+                    lines = filtered
+
+            try:
+                stat = log_path.stat()
+                size = stat.st_size
+                mtime = int(stat.st_mtime * 1000)
+            except OSError:
+                size = 0
+                mtime = 0
+
+            return JSONResponse(content={
+                "name": name,
+                "size": size,
+                "modified": mtime,
+                "lines": lines,
+                "truncated": len(lines) >= tail,
+            })
+
         @app.get("/api/ml/status")
         async def ml_status():
             """ML model status, metrics, and mode."""
@@ -589,9 +778,12 @@ class Dashboard:
 
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
-            # Auth check for WebSocket (token via query param)
+            # Auth check: prefer cookie (auto-sent on WS upgrade, doesn't leak to logs),
+            # fall back to query param for legacy clients.
             if self._password:
-                token = websocket.query_params.get("token", "")
+                token = (websocket.cookies.get("sentinel_auth")
+                         or websocket.query_params.get("token", "")
+                         or "")
                 if not secrets.compare_digest(token, self._password):
                     await websocket.close(code=4001, reason="Unauthorized")
                     return
@@ -629,6 +821,8 @@ class Dashboard:
                             "readiness": state.get("readiness", {}),
                             "strategy_log": state.get("strategy_log", []),
                             "ml_status": state.get("ml_status", {}),
+                            "standing_ml_per_symbol": state.get("standing_ml_per_symbol", {}),
+                            "last_cycle_ts_per_symbol": state.get("last_cycle_ts_per_symbol", {}),
                         },
                     })
                     await asyncio.sleep(2)
@@ -659,6 +853,10 @@ class Dashboard:
         @app.get("/news", response_class=HTMLResponse)
         async def news_page():
             return _NEWS_HTML
+
+        @app.get("/logs", response_class=HTMLResponse)
+        async def logs_page():
+            return _LOGS_HTML
 
         self._app = app
         return app
@@ -737,3 +935,4 @@ _SETTINGS_HTML = (_STATIC_DIR / "settings.html").read_text(encoding="utf-8") if 
 _TRADES_HTML = (_STATIC_DIR / "trades.html").read_text(encoding="utf-8") if (_STATIC_DIR / "trades.html").exists() else "<h1>Trades HTML not found</h1>"
 _ANALYTICS_HTML = (_STATIC_DIR / "analytics.html").read_text(encoding="utf-8") if (_STATIC_DIR / "analytics.html").exists() else "<h1>Analytics HTML not found</h1>"
 _NEWS_HTML = (_STATIC_DIR / "news.html").read_text(encoding="utf-8") if (_STATIC_DIR / "news.html").exists() else "<h1>News HTML not found</h1>"
+_LOGS_HTML = (_STATIC_DIR / "logs.html").read_text(encoding="utf-8") if (_STATIC_DIR / "logs.html").exists() else "<h1>Logs HTML not found</h1>"
