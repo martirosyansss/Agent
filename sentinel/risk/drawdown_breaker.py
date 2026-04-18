@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
+from monitoring.event_log import EventType, get_event_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -180,6 +182,19 @@ class DrawdownBreaker:
                     "dd_pct": state.drawdown_pct * 100,
                 })
                 logger.critical("DD-BREAKER TRIPPED: %s", reason)
+                try:
+                    get_event_log().emit(
+                        EventType.GUARD_TRIPPED,
+                        guard="drawdown_breaker",
+                        window=state.name,
+                        period=period_id,
+                        peak_equity=round(state.peak_equity, 2),
+                        current_equity=round(current_equity, 2),
+                        dd_pct=round(state.drawdown_pct * 100, 2),
+                        threshold_pct=round(threshold * 100, 2),
+                    )
+                except Exception:
+                    pass
                 if trip_reason is None:
                     trip_reason = reason
 

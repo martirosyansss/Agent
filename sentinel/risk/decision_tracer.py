@@ -176,6 +176,22 @@ class GateTimer:
                 latency_us=elapsed_us,
             )
             self._trace.add(verdict)
+            # Observability policy: a gate that raised is a silently-broken
+            # component (pipeline fails open). Emit a structured event so
+            # the dashboard can spot chronic gate errors — loguru alone
+            # would bury them under normal pipeline output.
+            try:
+                from monitoring.event_log import emit_component_error
+                emit_component_error(
+                    component=f"risk_gate.{self._gate_id}",
+                    reason=f"{exc_type.__name__}: {exc_val}",
+                    exc=exc_val,
+                    severity="error",
+                    symbol=getattr(self._trace, "symbol", "") or "",
+                    strategy=getattr(self._trace, "strategy", "") or "",
+                )
+            except Exception:
+                pass  # never let telemetry crash the pipeline
             return True  # swallow — gate errors must not crash the pipeline
         if self._verdict is None:
             # Caller forgot to .record(); default to APPROVED.

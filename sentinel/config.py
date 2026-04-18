@@ -85,6 +85,9 @@ EDITABLE_SETTINGS_FIELDS: tuple[str, ...] = (
     "max_ram_mb",
     "analyzer_stats_enabled",
     "analyzer_ml_shadow_mode",
+    "cb_consecutive_losses",
+    "cb_strategy_cooldown_sec",
+    "cb_strategy_cooldown_overrides",
 )
 
 
@@ -99,6 +102,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     telegram_pin: str = ""
+    # Periodic summary of risk-rejected signals. 0 disables the summary task.
+    telegram_rejection_summary_hours: float = 6.0
 
     # === Trading ===
     trading_mode: str = "paper"
@@ -116,6 +121,13 @@ class Settings(BaseSettings):
     # === Circuit Breakers ===
     cb_price_anomaly_pct: float = 5.0
     cb_consecutive_losses: int = 3
+    # Default per-strategy isolation cooldown after CB-2 trips. Trades fire
+    # roughly hourly, so 30min only skips 1 setup; 4h ≈ 4 windows, enough
+    # for short-term regime to shift. Matches news-security cooldown logic.
+    cb_strategy_cooldown_sec: int = 14400
+    # Per-strategy overrides: JSON dict like {"grid_trading": 21600}.
+    # Strategies absent from this map fall back to cb_strategy_cooldown_sec.
+    cb_strategy_cooldown_overrides: dict[str, int] = {}
     cb_spread_anomaly_pct: float = 0.5
     cb_volume_anomaly_mult: float = 10.0
     cb_api_error_count: int = 5
@@ -211,6 +223,14 @@ class Settings(BaseSettings):
     analyzer_ml_min_precision: float = 0.65
     analyzer_ml_min_recall: float = 0.58
     analyzer_ml_min_roc_auc: float = 0.65
+    # Phase 1–5 ML robustness diagnostics — populate /ml-robustness cards.
+    # walk_forward / bootstrap_ci are on by default (cheap, informative);
+    # stacking requires walk_forward, regime_routing needs ≥100 trades per
+    # regime bucket, so both are opt-in via .env.
+    analyzer_ml_use_walk_forward: bool = True
+    analyzer_ml_use_bootstrap_ci: bool = True
+    analyzer_ml_use_stacking: bool = False
+    analyzer_ml_use_regime_routing: bool = False
 
     # === Paper Trading ===
     paper_initial_balance: float = 500.0
@@ -283,7 +303,7 @@ def get_editable_settings_payload(settings: Any) -> dict[str, Any]:
 def _serialize_env_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, list):
+    if isinstance(value, (list, dict)):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return str(value)
 

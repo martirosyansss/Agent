@@ -287,6 +287,25 @@ def format_error(message: str) -> str:
     )
 
 
+def format_rejection_summary(
+    total: int,
+    top: list[tuple[str, int]],
+    window_hours: float,
+) -> str:
+    """Periodic summary of risk-rejected signals — throttled, grouped by reason."""
+    lines = [
+        f"🧾 <b>Отклонённые сигналы за {window_hours:.1f}ч</b>",
+        f"⏰ {_now_str()}",
+        "",
+        f"Всего отказов: <b>{total}</b>",
+        "",
+        "Топ причин:",
+    ]
+    for reason, count in top:
+        lines.append(f"  • <b>{count}×</b> {_esc(reason)}")
+    return "\n".join(lines)
+
+
 def format_daily_report(
     pnl: float,
     win_rate: float,
@@ -347,6 +366,33 @@ def format_daily_report(
 # ──────────────────────────────────────────────
 
 
+def format_ml_calibration_line(ml_metrics: dict | None) -> str | None:
+    """One-line ML calibration summary for status messages, or None if absent.
+
+    Renders Brier, ECE, calibration method, and the proba-distribution centre
+    so operators can spot at a glance whether the deployed filter is healthy.
+    Highlights overfit calibration (📉 when ECE>0.10) and "always high"
+    plateaus (⚠ when p10>0.70).
+    """
+    if not ml_metrics:
+        return None
+    method = ml_metrics.get("calibration_method", "none")
+    ece = float(ml_metrics.get("ece", 0.0))
+    brier = float(ml_metrics.get("brier_score", 0.0))
+    p10 = float(ml_metrics.get("proba_p10", 0.0))
+    p90 = float(ml_metrics.get("proba_p90", 1.0))
+    mean_p = float(ml_metrics.get("mean_proba", 0.5))
+    flag = ""
+    if p10 > 0.70:
+        flag = " ⚠ inflated"
+    elif ece > 0.10:
+        flag = " 📉 miscalibrated"
+    return (
+        f"🤖 <b>ML calibration:</b> ECE={ece:.3f} Brier={brier:.3f} "
+        f"[{method}]  proba mean={mean_p:.2f} p10={p10:.2f} p90={p90:.2f}{flag}"
+    )
+
+
 def format_status(
     mode: str,
     risk_state: str,
@@ -359,6 +405,7 @@ def format_status(
     win_rate_today: float = 0.0,
     wins_today: int = 0,
     losses_today: int = 0,
+    ml_metrics: dict | None = None,
 ) -> str:
     """Ответ на /status — подробный статус системы."""
     state_icon = {
@@ -394,6 +441,10 @@ def format_status(
 
     if balance > 0:
         lines.append(f"  Баланс: <b>${balance:,.2f}</b>")
+
+    ml_line = format_ml_calibration_line(ml_metrics)
+    if ml_line:
+        lines += ["", ml_line]
 
     return "\n".join(lines)
 

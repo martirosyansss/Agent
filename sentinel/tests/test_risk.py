@@ -311,14 +311,14 @@ class TestCircuitBreakers:
         assert cbs.is_trading_allowed() is True
 
     def test_cb2_consecutive_losses(self, cbs):
-        cbs.record_trade_result(False)
-        cbs.record_trade_result(False)
+        # Default threshold is 3: first two losses do not trip global CB-2.
         cbs.record_trade_result(False)
         cbs.record_trade_result(False)
         assert cbs.is_trading_allowed() is True
         result = cbs.record_trade_result(False)
         assert result is not None
         assert "consecutive" in result
+        assert cbs.is_trading_allowed() is False
 
     def test_cb2_win_resets(self, cbs):
         cbs.record_trade_result(False)
@@ -326,6 +326,70 @@ class TestCircuitBreakers:
         cbs.record_trade_result(True)
         result = cbs.record_trade_result(False)
         assert result is None  # Reset by win
+
+    def test_cb2_threshold_configurable(self):
+        cbs = CircuitBreakers(consecutive_loss_threshold=2)
+        cbs.record_trade_result(False)
+        assert cbs.is_trading_allowed() is True
+        result = cbs.record_trade_result(False)
+        assert result is not None
+        assert "2 consecutive" in result
+
+    def test_cb2_threshold_validation(self):
+        with pytest.raises(ValueError):
+            CircuitBreakers(consecutive_loss_threshold=0)
+
+    def test_cb2_per_strategy_isolation(self, cbs):
+        # Three losses on one strategy isolate ONLY that strategy, leaving
+        # global trading allowed for other strategies.
+        for _ in range(3):
+            cbs.record_trade_result(False, strategy_name="grid_trading")
+        assert cbs.is_trading_allowed() is True  # global CB-2 not tripped
+        assert cbs.get_strategy_block_remaining_sec("grid_trading") > 0
+        assert cbs.get_strategy_block_remaining_sec("bollinger_breakout") == 0
+
+    def test_cb2_strategy_block_clears_after_reset(self, cbs):
+        for _ in range(3):
+            cbs.record_trade_result(False, strategy_name="grid_trading")
+        assert cbs.get_strategy_block_remaining_sec("grid_trading") > 0
+        cbs.reset_daily()
+        assert cbs.get_strategy_block_remaining_sec("grid_trading") == 0
+
+    def test_cb2_per_strategy_cooldown_overrides(self):
+        cbs = CircuitBreakers(
+            consecutive_loss_threshold=3,
+            strategy_cooldown_sec=14400,
+            strategy_cooldown_overrides={"grid_trading": 21600, "bollinger_breakout": 7200},
+        )
+        for _ in range(3):
+            cbs.record_trade_result(False, strategy_name="grid_trading")
+        for _ in range(3):
+            cbs.record_trade_result(False, strategy_name="bollinger_breakout")
+        for _ in range(3):
+            cbs.record_trade_result(False, strategy_name="dca_bot")  # uses default
+
+        snap = cbs.get_blocked_strategies()
+        assert snap["grid_trading"]["total_sec"] == 21600
+        assert snap["bollinger_breakout"]["total_sec"] == 7200
+        assert snap["dca_bot"]["total_sec"] == 14400
+        # remaining_sec is just-set, so within tolerance of total
+        assert abs(snap["grid_trading"]["remaining_sec"] - 21600) <= 2
+
+    def test_cb2_strategy_cooldown_validation(self):
+        with pytest.raises(ValueError):
+            CircuitBreakers(strategy_cooldown_sec=-1)
+
+    def test_get_blocked_strategies_empty_initially(self, cbs):
+        assert cbs.get_blocked_strategies() == {}
+
+    def test_get_blocked_strategies_excludes_expired(self, cbs):
+        for _ in range(3):
+            cbs.record_trade_result(False, strategy_name="grid_trading")
+        # Force expiration by rewinding the blocked_until timestamp
+        cbs._blocked_strategies["grid_trading"] = 0.0
+        assert cbs.get_blocked_strategies() == {}
+        # And the helper still reports 0 for the expired strategy
+        assert cbs.get_strategy_block_remaining_sec("grid_trading") == 0
 
     def test_cb3_spread(self, cbs):
         result = cbs.check_spread(0.7)

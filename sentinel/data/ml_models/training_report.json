@@ -1,7 +1,7 @@
 [
   {
     "symbol": "UNIFIED",
-    "trained_at": "2026-04-18T08:10:54.058525+00:00",
+    "trained_at": "2026-04-18T18:19:03.737616+00:00",
     "total_trades": 841,
     "symbols": [
       "BTCUSDT",
@@ -17,13 +17,13 @@
       "mean_reversion",
       "macd_divergence"
     ],
-    "model_version": "ensemble_v1776499854_3m",
+    "model_version": "ensemble_v1776536341_4m",
     "metrics": {
-      "precision": 0.7931034482758621,
-      "recall": 0.6764705882352942,
-      "roc_auc": 0.8807716635041113,
-      "accuracy": 0.8661417322834646,
-      "skill_score": 0.863848175532727
+      "precision": 0.8,
+      "recall": 0.5882352941176471,
+      "roc_auc": 0.8693864642631246,
+      "accuracy": 0.8503937007874016,
+      "skill_score": 0.8531087919038582
     },
     "model_ready": true
   }

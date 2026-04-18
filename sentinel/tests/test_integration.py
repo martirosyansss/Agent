@@ -176,8 +176,8 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_circuit_breaker_blocks_after_losses(self, circuit_breakers):
-        """Test that 5 consecutive losses trip CB-2."""
-        for _ in range(4):
+        """Test that N consecutive losses trip CB-2 (default threshold=3)."""
+        for _ in range(2):
             result = circuit_breakers.record_trade_result(False)
             assert result is None  # Not yet tripped
         result = circuit_breakers.record_trade_result(False)
@@ -189,8 +189,8 @@ class TestFullPipeline:
         """Test that wins reset the consecutive loss counter."""
         circuit_breakers.record_trade_result(False)
         circuit_breakers.record_trade_result(False)
-        circuit_breakers.record_trade_result(False)
         circuit_breakers.record_trade_result(True)
+        circuit_breakers.record_trade_result(False)
         circuit_breakers.record_trade_result(False)
         assert circuit_breakers.is_trading_allowed()
 

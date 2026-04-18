@@ -37,6 +37,8 @@ from typing import Optional
 import aiohttp
 import feedparser
 
+from monitoring.event_log import emit_component_error, traced_component
+
 logger = logging.getLogger(__name__)
 
 
@@ -320,14 +322,18 @@ Respond ONLY with a JSON array. No markdown, no text outside JSON."""
             self._session = None
 
     async def _loop(self) -> None:
-        """Основной цикл сбора."""
+        """Основной цикл сбора.
+
+        ``_fetch_all`` is decorated with ``@traced_component(reraise=False)``
+        so any uncaught exception inside the fetch cycle emits a
+        ``component_error`` event and returns None — we no longer need a
+        try/except here.
+        """
         while self._running:
-            try:
-                await self._fetch_all()
-            except Exception as e:
-                logger.error("News fetch error: %s", e)
+            await self._fetch_all()
             await asyncio.sleep(self._update_interval)
 
+    @traced_component("news_collector.fetch_all", severity="error", reraise=False)
     async def _fetch_all(self) -> None:
         """Получить все данные параллельно."""
         tasks = [
@@ -549,8 +555,14 @@ Respond ONLY with a JSON array. No markdown, no text outside JSON."""
             )
             if data is not None:
                 return self._apply_llm_results(data, items)
-            # Groq не сработал — пробуем OpenRouter
-            logger.info("Groq failed, trying OpenRouter fallback")
+            # Groq не сработал — лог только если есть куда падать.
+            if self._openrouter_available:
+                logger.info("Groq failed, trying OpenRouter fallback")
+            else:
+                logger.warning(
+                    "Groq failed and no OpenRouter key configured — "
+                    "set OPENROUTER_API_KEY in .env to enable fallback"
+                )
         elif groq_rate_limited:
             logger.debug("Groq daily limit active, skipping until %.0f", self._groq_disabled_until)
 

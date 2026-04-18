@@ -537,6 +537,10 @@ def main():
         use_lightgbm=True,
         use_xgboost=True,
         max_overfit_gap=0.10,       # relaxed from 0.08: builders now have L1/L2 + AUC-based guard
+        use_walk_forward=getattr(settings, 'analyzer_ml_use_walk_forward', True),
+        use_bootstrap_ci=getattr(settings, 'analyzer_ml_use_bootstrap_ci', True),
+        use_stacking=getattr(settings, 'analyzer_ml_use_stacking', False),
+        use_regime_routing=getattr(settings, 'analyzer_ml_use_regime_routing', False),
     )
 
     # ── Train per-symbol models ──
@@ -553,11 +557,21 @@ def main():
             continue
 
         predictor = MLPredictor(config=ml_config)
-        metrics = predictor.train(sym_trades)
+        if ml_config.use_regime_routing:
+            predictor.train_with_regime_routing(sym_trades)
+            metrics = predictor.metrics
+        else:
+            metrics = predictor.train(sym_trades)
 
         if metrics is None:
             logger.error("{}: ML training returned None", symbol)
             continue
+
+        if predictor.is_ready and (ml_config.use_walk_forward or ml_config.use_stacking):
+            try:
+                predictor.train_walk_forward(sym_trades)
+            except Exception as wf_err:
+                logger.warning("{}: walk-forward step failed (model still usable): {}", symbol, wf_err)
 
         logger.info("{} Training Results:", symbol)
         logger.info("  Precision:   {:.3f}", metrics.precision)
@@ -630,7 +644,17 @@ def main():
     logger.info("Training unified fallback model on all {} trades...", len(all_trades))
     all_trades.sort(key=lambda t: t.timestamp_open)
     predictor = MLPredictor(config=ml_config)
-    metrics = predictor.train(all_trades)
+    if ml_config.use_regime_routing:
+        predictor.train_with_regime_routing(all_trades)
+        metrics = predictor.metrics
+    else:
+        metrics = predictor.train(all_trades)
+
+    if metrics is not None and predictor.is_ready and (ml_config.use_walk_forward or ml_config.use_stacking):
+        try:
+            predictor.train_walk_forward(all_trades)
+        except Exception as wf_err:
+            logger.warning("UNIFIED: walk-forward step failed (model still usable): {}", wf_err)
 
     if metrics is not None:
         model_path = model_dir / "ml_predictor.pkl"

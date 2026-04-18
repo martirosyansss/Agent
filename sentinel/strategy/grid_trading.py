@@ -44,7 +44,7 @@ class GridConfig:
     trailing_activate_pct: float = 1.2   # activate trailing at +1.2%
     trailing_stop_pct: float = 0.4       # tight trail for grid scalping
     max_hold_hours: int = 48             # prevent stuck positions
-    min_confidence: float = 0.70
+    min_confidence: float = 0.80
     min_volume_ratio: float = 0.8
     max_spread_pct: float = 0.15         # skip entry when spread > 0.15%
     rebuild_vol_change_pct: float = 50.0 # rebuild grid when BB width changes >50%

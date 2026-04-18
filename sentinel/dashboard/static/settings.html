@@ -32,6 +32,14 @@
             --text-secondary: #94a3b8;
             --text-muted: #475569;
             --text-inverse: #030712;
+            /* --text-dim is the colour used by the cross-page sidebar links
+               (Dashboard / Analytics / ML Robustness / Trades / News / Logs).
+               Prior markup referenced var(--text-dim) inline without a
+               fallback, so browsers inherited from the parent (white-ish)
+               which was the actually-rendered look. Defining it explicitly
+               here pins that intent so the new .settings-sidebar-link class
+               doesn't silently darken those links. */
+            --text-dim: #c7ccda;
 
             --accent: #7c3aed;
             --accent-light: #a78bfa;
@@ -148,6 +156,33 @@
         .sidebar__brand {
             padding: 20px 20px 16px;
             border-bottom: 1px solid var(--border-subtle);
+        }
+
+        /* Cross-page sidebar links (to Dashboard / Analytics / ML Robustness /
+           Trades / News / Logs). Extracted from inline styles so every link
+           is defined once — future hover / active state changes apply to
+           the whole group instead of needing 7 duplicated style attributes.
+           The inline markup also embedded onmouseover / onmouseout handlers
+           purely to do the colour swap; the CSS :hover rule below replaces
+           both with zero JS. */
+        .settings-sidebar-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            color: var(--text-dim, var(--text-secondary));
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.2s, color 0.2s;
+        }
+        .settings-sidebar-link:hover {
+            background: var(--bg-hover);
+            color: #f5f7ff;
+        }
+        .settings-sidebar-link svg {
+            flex-shrink: 0;
         }
 
         .brand {
@@ -946,23 +981,27 @@
         </div>
 
         <div style="display:flex;flex-direction:column;gap:4px;padding:0 12px 12px;border-bottom:1px solid var(--border-subtle);margin-bottom:12px;">
-            <a href="/" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;color:var(--text-dim);text-decoration:none;font-size:13px;font-weight:500;transition:all 0.2s;" onmouseover="this.style.background='var(--bg-hover)';this.style.color='#f5f7ff'" onmouseout="this.style.background='';this.style.color='var(--text-dim)'">
+            <a href="/" class="settings-sidebar-link">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
                 Dashboard
             </a>
-            <a href="/analytics" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;color:var(--text-dim);text-decoration:none;font-size:13px;font-weight:500;transition:all 0.2s;" onmouseover="this.style.background='var(--bg-hover)';this.style.color='#f5f7ff'" onmouseout="this.style.background='';this.style.color='var(--text-dim)'">
+            <a href="/analytics" class="settings-sidebar-link">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-6"/></svg>
                 Аналитика
             </a>
-            <a href="/trades" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;color:var(--text-dim);text-decoration:none;font-size:13px;font-weight:500;transition:all 0.2s;" onmouseover="this.style.background='var(--bg-hover)';this.style.color='#f5f7ff'" onmouseout="this.style.background='';this.style.color='var(--text-dim)'">
+            <a href="/ml-robustness" class="settings-sidebar-link">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"/><path d="M12 2v20"/><path d="M4.93 4.93l14.14 14.14"/><path d="M19.07 4.93 4.93 19.07"/></svg>
+                ML Robustness
+            </a>
+            <a href="/trades" class="settings-sidebar-link">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
                 История сделок
             </a>
-            <a href="/news" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;color:var(--text-dim);text-decoration:none;font-size:13px;font-weight:500;transition:all 0.2s;" onmouseover="this.style.background='var(--bg-hover)';this.style.color='#f5f7ff'" onmouseout="this.style.background='';this.style.color='var(--text-dim)'">
+            <a href="/news" class="settings-sidebar-link">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
                 Новости
             </a>
-            <a href="/logs" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;color:var(--text-dim);text-decoration:none;font-size:13px;font-weight:500;transition:all 0.2s;" onmouseover="this.style.background='var(--bg-hover)';this.style.color='#f5f7ff'" onmouseout="this.style.background='';this.style.color='var(--text-dim)'">
+            <a href="/logs" class="settings-sidebar-link">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg>
                 Логи
             </a>

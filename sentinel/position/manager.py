@@ -28,6 +28,7 @@ from core.models import (
     PositionStatus,
     Signal,
 )
+from monitoring.event_log import emit_component_error
 
 logger = logging.getLogger(__name__)
 
@@ -187,9 +188,21 @@ class PositionManager:
 
             if fill_price <= 0:
                 logger.error("Invalid fill_price for %s: %s — rejecting open", order.symbol, fill_price)
+                emit_component_error(
+                    "position_manager.open",
+                    f"invalid fill_price={fill_price}",
+                    severity="error",
+                    symbol=order.symbol,
+                )
                 return None
             if fill_qty <= 0:
                 logger.error("Invalid fill_qty for %s: %s — rejecting open", order.symbol, fill_qty)
+                emit_component_error(
+                    "position_manager.open",
+                    f"invalid fill_qty={fill_qty}",
+                    severity="error",
+                    symbol=order.symbol,
+                )
                 return None
 
             cost = fill_qty * fill_price + order.commission
@@ -207,6 +220,13 @@ class PositionManager:
             self.wallet.usdt_balance -= cost
             if self.wallet.usdt_balance < 0:
                 logger.error("Balance went negative after open: $%.4f — reverting", self.wallet.usdt_balance)
+                emit_component_error(
+                    "position_manager.open",
+                    f"balance went negative on open ({self.wallet.usdt_balance:.4f}) — reverted",
+                    severity="critical",
+                    symbol=order.symbol,
+                    cost=cost,
+                )
                 self.wallet.usdt_balance += cost
                 return None
 
@@ -270,6 +290,12 @@ class PositionManager:
 
             if fill_price <= 0:
                 logger.error("Invalid fill_price on close for %s: %s", order.symbol, fill_price)
+                emit_component_error(
+                    "position_manager.close",
+                    f"invalid fill_price={fill_price}",
+                    severity="error",
+                    symbol=order.symbol,
+                )
                 return None
 
             # Расчёт PnL: close-side commission + pro-rata open-side commission.

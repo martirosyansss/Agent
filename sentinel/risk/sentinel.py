@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from core.models import Direction, RiskCheckResult, RiskState, Signal
+from monitoring.event_log import EventType, emit_rejection, get_event_log
 from .decision_tracer import (
     DecisionTrace,
     GateOutcome,
@@ -183,20 +184,33 @@ class RiskSentinel:
         # Hard-block BUY when any of the 8 CBs is tripped. Independent of the
         # other guards: reacts to fast anomalies (price jumps, spread blowouts,
         # API error storms) detected by feeds from collector/executor.
+        # Also enforces CB-2 per-strategy isolation (N consecutive losses).
         with GateTimer(trace, "circuit_breakers") as t:
             if is_sell:
                 t.skipped("SELL bypasses entry gates")
             elif self._circuit_breakers is None:
                 t.skipped("not configured")
             else:
-                if self._circuit_breakers.is_trading_allowed():
-                    t.record(True, "no CB active")
-                else:
+                if not self._circuit_breakers.is_trading_allowed():
                     active = self._circuit_breakers.get_active_breakers()
                     reason = f"Circuit breaker(s) active: {','.join(active)}"
                     t.record(False, reason, payload={"active": active})
                     if _maybe_short_circuit(RiskCheckResult(False, reason)):
                         return self._finalise(trace, rejected_first)
+                else:
+                    strat_block = self._circuit_breakers.get_strategy_block_remaining_sec(
+                        signal.strategy_name
+                    )
+                    if strat_block > 0:
+                        reason = (
+                            f"Strategy '{signal.strategy_name}' isolated by CB-2 "
+                            f"(consecutive losses), {strat_block // 60}m remaining"
+                        )
+                        t.record(False, reason, payload={"strategy_block_remaining_sec": strat_block})
+                        if _maybe_short_circuit(RiskCheckResult(False, reason)):
+                            return self._finalise(trace, rejected_first)
+                    else:
+                        t.record(True, "no CB active")
 
         # ── [-7] Stale-data gate ──
         # Block BUY when WS market-data freshness is degraded. SELL always passes.
@@ -354,13 +368,56 @@ class RiskSentinel:
         trace: DecisionTrace,
         rejected: Optional[RiskCheckResult],
     ) -> tuple[RiskCheckResult, DecisionTrace]:
+        # Observability policy: every rejection must emit a canonical
+        # ``signal_rejected`` event — this is what dashboards group by to
+        # answer "which gate blocks most signals". The full audit blob is
+        # still emitted as ``signal_decision`` by main.py; this is a
+        # focused slice of the same information.
         if rejected is not None:
             trace.final_outcome = GateOutcome.REJECTED
             trace.final_reason = rejected.reason
+            first_reject = trace.first_rejection()
+            self._emit_canonical_decision(trace, approved=False, first_reject=first_reject)
             return rejected, trace
         trace.final_outcome = GateOutcome.APPROVED
         trace.final_reason = "All gates passed"
+        self._emit_canonical_decision(trace, approved=True, first_reject=None)
         return RiskCheckResult(approved=True, reason=trace.final_reason), trace
+
+    def _emit_canonical_decision(
+        self,
+        trace: DecisionTrace,
+        *,
+        approved: bool,
+        first_reject,
+    ) -> None:
+        """Emit the canonical per-decision event. Isolated so a logging fault
+        can never break the risk pipeline — any exception is swallowed here.
+        """
+        try:
+            if approved:
+                get_event_log().emit(
+                    EventType.SIGNAL_APPROVED,
+                    signal_id=trace.signal_id,
+                    symbol=trace.symbol,
+                    strategy=trace.strategy,
+                    direction=trace.direction,
+                    confidence=round(trace.confidence, 4),
+                )
+                return
+            gate_name = first_reject.gate if first_reject is not None else "unknown"
+            reason = first_reject.reason if first_reject is not None else trace.final_reason
+            emit_rejection(
+                gate=gate_name,
+                reason=reason,
+                symbol=trace.symbol,
+                direction=trace.direction,
+                strategy=trace.strategy,
+                confidence=round(trace.confidence, 4),
+                signal_id=trace.signal_id,
+            )
+        except Exception as exc:
+            logger.debug("Canonical decision emit failed: %s", exc)
 
     @property
     def state(self) -> RiskState:
@@ -727,3 +784,49 @@ class RiskSentinel:
         self._daily_commission = 0.0
         self._sm.reset()
         logger.info("Risk Sentinel daily reset")
+
+    # ──────────────────────────────────────────────
+    # Persistence (round-trip across restarts)
+    # ──────────────────────────────────────────────
+
+    def export_state(self) -> dict:
+        """Snapshot of mutable runtime counters for restart persistence."""
+        from datetime import datetime, timezone
+        return {
+            "trades_timestamps": list(self._trades_timestamps),
+            "last_trade_ts": self._last_trade_ts,
+            "daily_trades": self._daily_trades,
+            "daily_commission": self._daily_commission,
+            "utc_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        }
+
+    def restore_state(self, blob: dict) -> None:
+        """Restore counters previously produced by ``export_state``.
+
+        If the UTC date in the blob differs from today, daily counters are
+        dropped (a restart across the UTC rollover would otherwise resurrect
+        yesterday's limits). The rolling trade-timestamp window self-cleans
+        to the trailing 24h regardless of date.
+        """
+        from datetime import datetime, timezone
+        try:
+            now = time.time()
+            cutoff = now - 86400
+            ts_list = [float(t) for t in blob.get("trades_timestamps", []) if float(t) > cutoff]
+            self._trades_timestamps = ts_list
+            self._last_trade_ts = float(blob.get("last_trade_ts", 0.0) or 0.0)
+
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            saved_date = str(blob.get("utc_date", ""))
+            if saved_date == today:
+                self._daily_trades = int(blob.get("daily_trades", 0) or 0)
+                self._daily_commission = float(blob.get("daily_commission", 0.0) or 0.0)
+            else:
+                self._daily_trades = 0
+                self._daily_commission = 0.0
+            logger.info(
+                "RiskSentinel restored: daily_trades=%d daily_commission=$%.2f cooldown=%ds",
+                self._daily_trades, self._daily_commission, self.cooldown_remaining_sec,
+            )
+        except Exception as exc:
+            logger.warning("RiskSentinel restore skipped (malformed blob): %s", exc)

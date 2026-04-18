@@ -136,6 +136,40 @@
         el.className = 'risk-bar-fill ' + riskBarColor(clamped);
     }
 
+    function _formatCooldownEta(sec) {
+        sec = Math.max(0, Math.floor(sec || 0));
+        if (sec < 60) return sec + 'с';
+        var h = Math.floor(sec / 3600);
+        var m = Math.floor((sec % 3600) / 60);
+        return h > 0 ? (h + 'ч ' + m + 'м') : (m + 'м');
+    }
+
+    function renderBlockedStrategies(blocked) {
+        var panel = document.getElementById('blocked-strategies-panel');
+        var list = document.getElementById('blocked-strategies-list');
+        if (!panel || !list) return;
+        var names = Object.keys(blocked || {});
+        if (names.length === 0) {
+            panel.hidden = true;
+            list.innerHTML = '';
+            return;
+        }
+        panel.hidden = false;
+        list.innerHTML = names.map(function(name) {
+            var info = blocked[name] || {};
+            var rem = info.remaining_sec || 0;
+            var total = info.total_sec || 1;
+            var pct = Math.min(100, Math.max(0, (1 - rem / total) * 100));
+            return '<div class="kv-row" data-strategy="' + escapeHtml(name) + '">' +
+                '<span class="kv-key">' + escapeHtml(name) + '</span>' +
+                '<span class="kv-value" style="color:var(--amber)">⏸ ' + _formatCooldownEta(rem) + '</span>' +
+                '<div class="risk-bar-track" style="margin-top:6px;width:100%">' +
+                    '<div class="risk-bar-fill risk-bar-fill--amber" style="width:' + pct.toFixed(1) + '%"></div>' +
+                '</div>' +
+                '</div>';
+        }).join('');
+    }
+
     /* ── Render functions ────────────────────── */
     function renderKeyValueList(containerId, items) {
         var container = document.getElementById(containerId);
@@ -179,7 +213,7 @@
     }
 
     var chartSeriesMode = 'pnl';
-    var activeInterval = '1m';
+    var activeInterval = '1h';
     var chartType = 'candle';     /* 'line' or 'candle' */
     var activeSymbol = 'BTCUSDT'; /* selected trading pair */
     var _indicatorsPerSymbol = {}; /* cached per-symbol indicators from WS */
@@ -312,6 +346,96 @@
         }
     };
 
+    /* ── Open-positions overlay state (entry / SL / TP lines + BUY/SELL marker).
+           Populated by fetchPositions(); read by positionOverlayPlugin below.
+           Filtered by activeSymbol so we only annotate the visible pair. */
+    var _openPositions = [];
+
+    /* ── User-zoom tracking: if the user has interacted with the Chart.js
+           zoom plugin (wheel / pinch / pan), we skip the hard Y-scale reset
+           and don't snap back on the next poll refresh. Cleared on reset. */
+    var _userHasZoomed = false;
+
+    /* ── Positions overlay plugin ── */
+    var positionOverlayPlugin = {
+        id: 'positionOverlay',
+        afterDatasetsDraw: function(chart) {
+            if (chartSeriesMode !== 'market') return;
+            if (!_openPositions || !_openPositions.length) return;
+            var ohlc = window._chartOhlcData;
+            if (!ohlc || !ohlc.length) return;
+
+            var positions = _openPositions.filter(function(p) { return p.symbol === activeSymbol; });
+            if (!positions.length) return;
+
+            var yScale = chart.scales.y;
+            var chartArea = chart.chartArea;
+            var ctx2 = chart.ctx;
+            var lastBarMeta = chart.getDatasetMeta(0).data;
+            var lastX = lastBarMeta.length ? lastBarMeta[lastBarMeta.length - 1].x : chartArea.right;
+
+            ctx2.save();
+
+            positions.forEach(function(pos) {
+                var isBuy = pos.side === 'BUY' || pos.side === 'LONG';
+                var entry = pos.entry_price || 0;
+                var sl = pos.stop_loss_price || 0;
+                var tp = pos.take_profit_price || 0;
+
+                function drawHLine(price, color, label, dashed) {
+                    if (!price) return;
+                    var y = yScale.getPixelForValue(price);
+                    if (y < chartArea.top - 4 || y > chartArea.bottom + 4) return;
+                    ctx2.setLineDash(dashed ? [5, 4] : []);
+                    ctx2.lineWidth = 1.2;
+                    ctx2.strokeStyle = color;
+                    ctx2.beginPath();
+                    ctx2.moveTo(chartArea.left, y);
+                    ctx2.lineTo(chartArea.right, y);
+                    ctx2.stroke();
+                    /* Label chip on left edge */
+                    ctx2.setLineDash([]);
+                    ctx2.font = '600 9px JetBrains Mono, monospace';
+                    var txt = label + ' ' + formatUsd(price);
+                    var padX = 5;
+                    var w = ctx2.measureText(txt).width + padX * 2;
+                    var h = 14;
+                    ctx2.fillStyle = color;
+                    ctx2.fillRect(chartArea.left + 2, y - h / 2, w, h);
+                    ctx2.fillStyle = '#ffffff';
+                    ctx2.textBaseline = 'middle';
+                    ctx2.fillText(txt, chartArea.left + 2 + padX, y);
+                }
+
+                /* SL / TP horizontal dashed lines */
+                drawHLine(sl, 'rgba(239, 68, 68, 0.85)',  'SL', true);
+                drawHLine(tp, 'rgba(34, 197, 94, 0.85)',  'TP', true);
+                /* Entry — solid blue line */
+                drawHLine(entry, 'rgba(99, 102, 241, 0.9)', isBuy ? 'BUY' : 'SELL', false);
+
+                /* Triangle marker at last candle for entry side */
+                if (entry) {
+                    var ey = yScale.getPixelForValue(entry);
+                    if (ey >= chartArea.top && ey <= chartArea.bottom) {
+                        var tipX = lastX + 10;
+                        var baseX = tipX + 10;
+                        ctx2.fillStyle = isBuy ? '#22c55e' : '#ef4444';
+                        ctx2.beginPath();
+                        /* Right-pointing triangle anchored on last candle;
+                           color conveys side (green=BUY / red=SELL). */
+                        ctx2.moveTo(tipX, ey);
+                        ctx2.lineTo(baseX, ey - 5);
+                        ctx2.lineTo(baseX, ey + 5);
+                        ctx2.closePath();
+                        ctx2.fill();
+                    }
+                }
+            });
+
+            ctx2.restore();
+        }
+    };
+
     /* ── Candlestick wicks plugin ── */
     var candleWickPlugin = {
         id: 'candleWick',
@@ -425,7 +549,7 @@
                 spanGaps: true,
             }]
         },
-        plugins: [crosshairPlugin, candleWickPlugin, lastPriceLinePlugin],
+        plugins: [crosshairPlugin, candleWickPlugin, lastPriceLinePlugin, positionOverlayPlugin],
         options: {
             responsive: true,
             maintainAspectRatio: false,
@@ -443,11 +567,13 @@
                     pan: {
                         enabled: true,
                         mode: 'x',
+                        onPanStart: function() { _userHasZoomed = true; },
                     },
                     zoom: {
                         wheel: { enabled: true },
                         pinch: { enabled: true },
                         mode: 'x',
+                        onZoomStart: function() { _userHasZoomed = true; },
                     }
                 },
                 legend: { display: false },
@@ -633,6 +759,8 @@
         window._chartOhlcData = null;
 
         var ds0 = pnlChart.data.datasets[0];
+        var _prevDs0Type = ds0.type || 'line';
+        var _typeChanged = _prevDs0Type !== 'line';
         /* Reset to line mode for PnL */
         ds0.type = 'line';
         ds0.label = 'PnL ($)';
@@ -672,7 +800,13 @@
                 ? 'PnL flat at ' + formatPnl(values[0] || 0) + ' · showing market data'
                 : 'Live portfolio snapshots';
         }
-        pnlChart.update('none');
+        if (_typeChanged) {
+            var _meta0 = pnlChart.getDatasetMeta(0);
+            if (_meta0) _meta0.controller = undefined;
+            pnlChart.update();
+        } else {
+            pnlChart.update('none');
+        }
         return isFlat;
     }
 
@@ -705,6 +839,9 @@
         });
 
         var ds0 = pnlChart.data.datasets[0];
+        var prevDs0Type = ds0.type || 'line';
+        var nextDs0Type = (chartType === 'candle') ? 'bar' : 'line';
+        var typeChanged = prevDs0Type !== nextDs0Type;
 
         if (chartType === 'candle') {
             /* Candlestick mode: floating bars from open to close */
@@ -734,14 +871,18 @@
             ds0.pointBorderColor = 'transparent';
             ds0.order = 1;
 
-            /* Y scale must cover full high-low range */
-            var allHighs = candles.map(function(c) { return c.h; });
-            var allLows = candles.map(function(c) { return c.l; });
-            var yMin = Math.min.apply(null, allLows);
-            var yMax = Math.max.apply(null, allHighs);
-            var yPad = (yMax - yMin) * 0.08 || 1;
-            pnlChart.options.scales.y.min = yMin - yPad;
-            pnlChart.options.scales.y.max = yMax + yPad;
+            /* Y scale must cover full high-low range — but honor user zoom.
+               When the user has interacted with zoom/pan, we leave the
+               scale alone so the view doesn't snap back on each refresh. */
+            if (!_userHasZoomed) {
+                var allHighs = candles.map(function(c) { return c.h; });
+                var allLows = candles.map(function(c) { return c.l; });
+                var yMin = Math.min.apply(null, allLows);
+                var yMax = Math.max.apply(null, allHighs);
+                var yPad = (yMax - yMin) * 0.08 || 1;
+                pnlChart.options.scales.y.min = yMin - yPad;
+                pnlChart.options.scales.y.max = yMax + yPad;
+            }
         } else {
             /* Line mode */
             ds0.type = 'line';
@@ -763,9 +904,11 @@
             ds0.categoryPercentage = undefined;
             ds0.maxBarThickness = undefined;
             ds0.order = 0;
-            /* Auto Y scale for line mode */
-            delete pnlChart.options.scales.y.min;
-            delete pnlChart.options.scales.y.max;
+            /* Auto Y scale for line mode (unless user has zoomed) */
+            if (!_userHasZoomed) {
+                delete pnlChart.options.scales.y.min;
+                delete pnlChart.options.scales.y.max;
+            }
         }
 
         pnlChart.data.labels = labels;
@@ -793,8 +936,8 @@
             ds3.hidden = !hasEMA21;
         }
 
-        /* Include EMA range in Y scale for candle mode */
-        if (chartType === 'candle' && (hasEMA9 || hasEMA21)) {
+        /* Include EMA range in Y scale for candle mode (skip if user zoomed) */
+        if (chartType === 'candle' && !_userHasZoomed && (hasEMA9 || hasEMA21)) {
             var emaAll = ema9Data.concat(ema21Data).filter(function(v) { return v !== null; });
             if (emaAll.length) {
                 var emaMin = Math.min.apply(null, emaAll);
@@ -824,7 +967,16 @@
             chartNoteEl.textContent = typeLabel + ' \u00B7 ' + candles.length + ' bars \u00B7 ' + escapeHtml(market.source || 'live');
         }
 
-        pnlChart.update('none');
+        /* If ds0.type changed (line <-> bar), meta.controller is stale — force
+           a full rebuild. chart.update('none') skips controller rebuild, which
+           is why candles sometimes render as lines after a mode switch. */
+        if (typeChanged) {
+            var meta0 = pnlChart.getDatasetMeta(0);
+            if (meta0) meta0.controller = undefined;
+            pnlChart.update();
+        } else {
+            pnlChart.update('none');
+        }
     }
 
     /* ── Interval Buttons ───────────────────── */
@@ -846,6 +998,8 @@
             btn.setAttribute('aria-checked', 'true');
             activeInterval = interval;
             _forceMarketChart = true;
+            _userHasZoomed = false;
+            if (pnlChart && typeof pnlChart.resetZoom === 'function') pnlChart.resetZoom('none');
 
             /* Fetch new data */
             renderMarketSeries(interval);
@@ -870,6 +1024,8 @@
             btn.setAttribute('aria-checked', 'true');
             activeSymbol = sym;
             _forceMarketChart = true;
+            _userHasZoomed = false;
+            if (pnlChart && typeof pnlChart.resetZoom === 'function') pnlChart.resetZoom('none');
 
             /* Re-fetch chart for new symbol */
             renderMarketSeries(activeInterval);
@@ -990,6 +1146,8 @@
             btn.setAttribute('aria-checked', 'true');
             chartType = type;
             _forceMarketChart = true;
+            _userHasZoomed = false;
+            if (pnlChart && typeof pnlChart.resetZoom === 'function') pnlChart.resetZoom('none');
 
             /* Re-render with new type */
             renderMarketSeries(activeInterval);
@@ -1192,6 +1350,9 @@
                 commission > 0
                     ? 'Доля от оборота: <b>' + commRatio.toFixed(1) + '%</b>'
                     : 'Комиссий ещё не было');
+
+            /* Blocked strategies (CB-2 per-strategy isolation) */
+            renderBlockedStrategies(rd.blocked_strategies || {});
         }
 
         /* Footer last update */
@@ -1323,6 +1484,53 @@
 
         /* ── Market Overview (top widget) ── */
         updateMarketOverview(_indicatorsPerSymbol, data.trading_symbols || [], data.strategy_log || [], data.ml_status || {}, data.standing_ml_per_symbol || {}, data.last_cycle_ts_per_symbol || {});
+
+        /* ── Live-update last candle from WS price feed ── */
+        try {
+            var livePrices = (data.activity && data.activity.collector && data.activity.collector.last_prices) || {};
+            var livePrice = livePrices[activeSymbol];
+            if (livePrice) _liveUpdateLastCandle(Number(livePrice));
+        } catch(e) {
+            _logError('liveUpdateLastCandle', e);
+        }
+    }
+
+    /* ── Live-update last candle with fresh WS price (flicks between polls).
+       Updates close and extends high/low if breached. X-axis labels stay
+       the same (labeled by /api/market-chart), so this is visual-only until
+       the next 30s poll rebuilds data with a new bar boundary. */
+    function _liveUpdateLastCandle(price) {
+        if (!pnlChart || chartSeriesMode !== 'market') return;
+        var ohlc = window._chartOhlcData;
+        if (!ohlc || !ohlc.length) return;
+        var last = ohlc[ohlc.length - 1];
+        if (!last) return;
+
+        last.c = price;
+        if (price > last.h) last.h = price;
+        if (price < last.l) last.l = price;
+
+        var ds0 = pnlChart.data.datasets[0];
+        var idx = ds0.data.length - 1;
+        if (idx < 0) return;
+        if (chartType === 'candle') {
+            /* Update the floating [open, close] bar for last candle */
+            ds0.data[idx] = [last.o, last.c];
+            var up = last.c >= last.o;
+            if (Array.isArray(ds0.backgroundColor)) {
+                ds0.backgroundColor[idx] = up ? 'rgba(34, 197, 94, 0.85)' : 'rgba(239, 68, 68, 0.85)';
+            }
+            if (Array.isArray(ds0.borderColor)) {
+                ds0.borderColor[idx] = up ? '#22c55e' : '#ef4444';
+            }
+        } else {
+            ds0.data[idx] = last.c;
+        }
+
+        /* Price hero + last-price label reflect live value immediately */
+        updatePriceHero(ohlc);
+
+        pnlChart.update('none');
     }
 
     /* ──────────────────────────────────────────────────────────
@@ -2564,6 +2772,9 @@
         try {
             var r = await fetch('/api/positions');
             var allPositions = await r.json();
+            /* Cache full list (unfiltered) for chart overlay plugin */
+            _openPositions = Array.isArray(allPositions) ? allPositions : [];
+            if (window.pnlChart) { try { window.pnlChart.update('none'); } catch(_e) {} }
             /* Apply symbol filter */
             var data = _posTradeFilter ? allPositions.filter(function(p) { return p.symbol === _posTradeFilter; }) : allPositions;
             var container = document.getElementById('positions-container');
@@ -3190,6 +3401,7 @@
             resetBtn.addEventListener('click', function() {
                 if (window.pnlChart && typeof window.pnlChart.resetZoom === 'function') {
                     window.pnlChart.resetZoom();
+                    _userHasZoomed = false;
                 }
             });
         }

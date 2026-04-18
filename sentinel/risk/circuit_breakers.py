@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from monitoring.event_log import EventType, get_event_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +38,17 @@ class CircuitBreakerState:
             "CB TRIPPED: %s (count: %d, cooldown: %ds, permanent: %s)",
             self.name, self.trip_count_today, self.cooldown_sec, self.permanent_stop,
         )
+        try:
+            get_event_log().emit(
+                EventType.GUARD_TRIPPED,
+                guard="circuit_breaker",
+                name=self.name,
+                trip_count_today=self.trip_count_today,
+                cooldown_sec=self.cooldown_sec,
+                permanent_stop=self.permanent_stop,
+            )
+        except Exception:
+            pass  # telemetry must never break the breaker
 
     def check_cooldown(self) -> bool:
         """Вернуть True если CB всё ещё активен."""
@@ -60,7 +73,23 @@ class CircuitBreakerState:
 class CircuitBreakers:
     """Менеджер 8 Circuit Breakers."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        consecutive_loss_threshold: int = 3,
+        strategy_cooldown_sec: int = 14400,
+        strategy_cooldown_overrides: Optional[dict[str, int]] = None,
+    ) -> None:
+        if consecutive_loss_threshold < 1:
+            raise ValueError(
+                f"consecutive_loss_threshold must be >= 1, got {consecutive_loss_threshold}"
+            )
+        if strategy_cooldown_sec < 0:
+            raise ValueError(
+                f"strategy_cooldown_sec must be >= 0, got {strategy_cooldown_sec}"
+            )
+        self._loss_threshold = consecutive_loss_threshold
+        self._default_strategy_cooldown_sec = strategy_cooldown_sec
+        self._strategy_cooldown_overrides = dict(strategy_cooldown_overrides or {})
         self._breakers: dict[str, CircuitBreakerState] = {
             "CB-1": CircuitBreakerState(name="CB-1: Price Anomaly", cooldown_sec=300),
             "CB-2": CircuitBreakerState(name="CB-2: Consecutive Loss", cooldown_sec=1800),
@@ -123,7 +152,7 @@ class CircuitBreakers:
     # ──────────────────────────────────────────────
 
     def record_trade_result(self, is_win: bool, strategy_name: str = "") -> Optional[str]:
-        """CB-2: 5 убыточных сделок подряд для одной стратегии."""
+        """CB-2: N убыточных сделок подряд для одной стратегии (N — _loss_threshold)."""
         if is_win:
             if strategy_name:
                 self._consecutive_losses[strategy_name] = 0
@@ -134,19 +163,52 @@ class CircuitBreakers:
         key = strategy_name or "__global__"
         self._consecutive_losses[key] = self._consecutive_losses.get(key, 0) + 1
         count = self._consecutive_losses[key]
-        
-        if count >= 5:
+
+        if count >= self._loss_threshold:
             self._consecutive_losses[key] = 0
             if strategy_name:
                 # Per-strategy trip: block for cooldown but DON'T trip global CB-2 unless global
-                cooldown = self._breakers["CB-2"].cooldown_sec
+                cooldown = self._strategy_cooldown_overrides.get(
+                    strategy_name, self._default_strategy_cooldown_sec,
+                )
                 self._blocked_strategies[strategy_name] = time.time() + cooldown
-                logger.warning("Strategy BLOCKED: %s for %ds due to 5 consecutive losses", strategy_name, cooldown)
-                return f"5 consecutive losses ({strategy_name}) — strategy isolated"
+                logger.warning(
+                    "Strategy BLOCKED: %s for %ds due to %d consecutive losses",
+                    strategy_name, cooldown, self._loss_threshold,
+                )
+                return f"{self._loss_threshold} consecutive losses ({strategy_name}) — strategy isolated"
             else:
                 self._breakers["CB-2"].trip()
-                return "5 consecutive losses (global)"
+                return f"{self._loss_threshold} consecutive losses (global)"
         return None
+
+    def get_strategy_block_remaining_sec(self, strategy_name: str) -> int:
+        """Сколько секунд до конца блока стратегии. 0 = не заблокирована."""
+        blocked_until = self._blocked_strategies.get(strategy_name, 0.0)
+        remaining = blocked_until - time.time()
+        return max(0, int(remaining))
+
+    def get_blocked_strategies(self) -> dict[str, dict[str, int]]:
+        """Снимок текущих per-strategy блокировок: {name: {remaining_sec, total_sec}}.
+
+        Стратегии с истёкшим блоком автоматически удаляются из снимка
+        (но остаются в _blocked_strategies до reset_daily — get_strategy_block_remaining_sec
+        корректно возвращает 0 для них).
+        """
+        now = time.time()
+        snapshot: dict[str, dict[str, int]] = {}
+        for name, blocked_until in self._blocked_strategies.items():
+            remaining = blocked_until - now
+            if remaining <= 0:
+                continue
+            total = self._strategy_cooldown_overrides.get(
+                name, self._default_strategy_cooldown_sec,
+            )
+            snapshot[name] = {
+                "remaining_sec": int(remaining),
+                "total_sec": int(total),
+            }
+        return snapshot
 
     # ──────────────────────────────────────────────
     # CB-3: Spread Anomaly

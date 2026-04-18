@@ -21,6 +21,7 @@ from typing import Optional
 from core.constants import EVENT_ORDER_FILLED
 from core.events import EventBus
 from core.models import Direction, Order, OrderStatus, OrderType, Signal
+from monitoring.event_log import emit_component_error
 
 from .base_executor import BaseExecutor
 
@@ -133,6 +134,15 @@ class LiveExecutor(BaseExecutor):
                     "Manual intervention required. Order: %s",
                     signal.direction.value, signal.symbol, orphan,
                 )
+            emit_component_error(
+                "live_executor.execute_order",
+                f"execution failed for {signal.symbol}: {e}",
+                exc=e,
+                severity="critical" if orphan else "error",
+                symbol=signal.symbol,
+                direction=signal.direction.value,
+                orphan_detected=bool(orphan),
+            )
             return None
 
     async def _check_recent_order(self, symbol: str, direction: Direction) -> Optional[dict]:
@@ -300,3 +310,12 @@ class LiveExecutor(BaseExecutor):
             logger.warning("Emergency sell executed: %s qty=%.6f", symbol, quantity)
         except Exception as e:
             logger.critical("EMERGENCY SELL FAILED: %s - %s", symbol, e)
+            emit_component_error(
+                "live_executor.emergency_sell",
+                f"emergency sell failed for {symbol}: {e}",
+                exc=e,
+                severity="critical",
+                symbol=symbol,
+                quantity=quantity,
+                signal_id=signal_id,
+            )

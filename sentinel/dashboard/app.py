@@ -285,13 +285,16 @@ class Dashboard:
               • Read-only GETs in _READ_ONLY still work without auth for embed use
             """
             _ALWAYS_PUBLIC = {"/api/health", "/api/login", "/api/logout", "/login", "/ws"}
-            _HTML_PAGES = {"/", "/settings", "/trades", "/analytics", "/news", "/logs"}
+            _HTML_PAGES = {"/", "/settings", "/trades", "/analytics", "/news", "/logs", "/ml-robustness"}
             _READ_ONLY = {"/api/status", "/api/positions", "/api/trades",
                           "/api/pnl-history", "/api/market-chart",
                           "/api/backtest-results", "/api/config",
                           "/api/settings/editable", "/api/strategy-performance",
                           "/api/trades/export", "/api/trades/history", "/api/news",
-                          "/api/logs", "/api/logs/list"}
+                          "/api/logs", "/api/logs/list",
+                          "/api/ml/status", "/api/ml/walk-forward",
+                          "/api/ml/regime-performance", "/api/ml/bootstrap-ci",
+                          "/api/ml/member-correlation"}
 
             async def dispatch(self, request: Request, call_next):
                 from starlette.responses import RedirectResponse
@@ -329,7 +332,7 @@ class Dashboard:
         # echo the cookie value back in `X-CSRF-Token`. Blocks cross-origin
         # POST attacks that can't read same-origin cookies.
         class CsrfMiddleware(BaseHTTPMiddleware):
-            _HTML_PATHS = {"/", "/settings", "/trades", "/analytics", "/news", "/logs"}
+            _HTML_PATHS = {"/", "/settings", "/trades", "/analytics", "/news", "/logs", "/ml-robustness"}
             _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
             _COOKIE = "sentinel_csrf"
             _HEADER = "X-CSRF-Token"
@@ -831,7 +834,7 @@ class Dashboard:
                 # Truncate in-place (loguru append handle продолжит писать с позиции 0+).
                 with log_path.open("r+b") as fh:
                     fh.truncate(0)
-                logger.warning("Log file cleared via dashboard: {}", name)
+                logger.warning("Log file cleared via dashboard: %s", name)
                 return JSONResponse(content={"status": "ok", "name": name, "size": 0})
             except PermissionError as exc:
                 return JSONResponse(
@@ -852,11 +855,13 @@ class Dashboard:
             if predictor is None:
                 return JSONResponse(content={"enabled": False, "reason": "not initialized"})
             m = predictor.metrics
+            # M-5: read through public properties instead of private attrs
+            # so the dashboard stays decoupled from MLPredictor internals.
             return JSONResponse(content={
                 "enabled": True,
                 "ready": predictor.is_ready,
                 "mode": predictor.rollout_mode,
-                "version": predictor._model_version or "none",
+                "version": predictor.model_version or "none",
                 "needs_retrain": predictor.needs_retrain(),
                 "metrics": {
                     "precision": round(m.precision, 4) if m else None,
@@ -866,9 +871,9 @@ class Dashboard:
                     "train_samples": m.train_samples if m else 0,
                     "test_samples": m.test_samples if m else 0,
                 } if m else None,
-                "threshold": predictor._cfg.block_threshold,
-                "block_threshold": predictor._cfg.block_threshold,
-                "reduce_threshold": getattr(predictor._cfg, "reduce_threshold", 0.65),
+                "threshold": predictor.block_threshold,
+                "block_threshold": predictor.block_threshold,
+                "reduce_threshold": predictor.reduce_threshold,
             })
 
         @app.post("/api/ml/retrain")
@@ -880,6 +885,98 @@ class Dashboard:
                 return JSONResponse(content={"status": "error", "message": "retrain function not wired"}, status_code=503)
             asyncio.create_task(retrain_fn())
             return JSONResponse(content={"status": "started", "message": "ML retraining triggered in background"})
+
+        # ──────────────────────────────────────────────────────
+        # Phase-7: ML Robustness — WF / regime / bootstrap / correlations
+        # Each route mirrors the /api/ml/status pattern above (lookup through
+        # state_provider, tolerate missing predictor, serialize metrics).
+        # Routes are intentionally read-only so the unauthenticated embed
+        # case works — see AuthMiddleware._READ_ONLY for the mechanism.
+        # ──────────────────────────────────────────────────────
+
+        @app.get("/api/ml/walk-forward")
+        async def ml_walk_forward():
+            """Walk-forward stability report (per-fold AUC/precision + summary)."""
+            ml = self._state_provider() if self._state_provider else {}
+            predictor = ml.get("ml_predictor") if ml else None
+            if predictor is None:
+                return JSONResponse(content={"enabled": False, "reason": "not initialized"})
+            report = getattr(predictor, "walk_forward_report", None)
+            if report is None:
+                return JSONResponse(content={"enabled": True, "available": False,
+                                             "reason": "walk-forward not yet run"})
+            folds = [{
+                "fold_idx": r.fold_idx,
+                "train_range": [r.train_start, r.train_end],
+                "test_range": [r.test_start, r.test_end],
+                "precision": round(r.precision, 4),
+                "recall": round(r.recall, 4),
+                "roc_auc": round(r.roc_auc, 4),
+                "skill_score": round(r.skill_score, 4),
+                "train_precision": round(r.train_precision, 4),
+                "n_train": r.n_train,
+                "n_test": r.n_test,
+                "calibrated_threshold": round(r.calibrated_threshold, 4),
+            } for r in report.fold_results]
+            return JSONResponse(content={
+                "enabled": True,
+                "available": True,
+                "summary": report.summary(),
+                "folds": folds,
+            })
+
+        @app.get("/api/ml/regime-performance")
+        async def ml_regime_performance():
+            """Per-regime specialist statistics from RegimeRouter."""
+            ml = self._state_provider() if self._state_provider else {}
+            predictor = ml.get("ml_predictor") if ml else None
+            if predictor is None:
+                return JSONResponse(content={"enabled": False, "reason": "not initialized"})
+            router = getattr(predictor, "regime_router", None)
+            if router is None or not router.is_ready:
+                return JSONResponse(content={"enabled": True, "available": False,
+                                             "reason": "regime routing not active"})
+            return JSONResponse(content={
+                "enabled": True,
+                "available": True,
+                "regimes": router.get_regime_stats(),
+                "trained_regimes": router.trained_regimes,
+            })
+
+        @app.get("/api/ml/bootstrap-ci")
+        async def ml_bootstrap_ci():
+            """Bootstrap confidence intervals for precision/recall/AUC."""
+            ml = self._state_provider() if self._state_provider else {}
+            predictor = ml.get("ml_predictor") if ml else None
+            if predictor is None:
+                return JSONResponse(content={"enabled": False, "reason": "not initialized"})
+            ci = getattr(predictor, "bootstrap_ci", {}) or {}
+            if not ci:
+                return JSONResponse(content={"enabled": True, "available": False,
+                                             "reason": "bootstrap_ci flag off or model not trained"})
+            return JSONResponse(content={
+                "enabled": True,
+                "available": True,
+                "intervals": ci,
+            })
+
+        @app.get("/api/ml/member-correlation")
+        async def ml_member_correlation():
+            """Pairwise error correlation between ensemble members."""
+            ml = self._state_provider() if self._state_provider else {}
+            predictor = ml.get("ml_predictor") if ml else None
+            if predictor is None:
+                return JSONResponse(content={"enabled": False, "reason": "not initialized"})
+            corr = getattr(predictor, "member_error_correlation", {}) or {}
+            if not corr:
+                return JSONResponse(content={"enabled": True, "available": False,
+                                             "reason": "model not trained or single member"})
+            return JSONResponse(content={
+                "enabled": True,
+                "available": True,
+                "correlations": {k: round(v, 4) for k, v in corr.items()},
+                "warn_threshold": 0.85,
+            })
 
         @app.get("/api/config")
         async def config_snapshot():
@@ -1107,6 +1204,10 @@ class Dashboard:
         async def logs_page():
             return _LOGS_HTML
 
+        @app.get("/ml-robustness", response_class=HTMLResponse)
+        async def ml_robustness_page():
+            return _ML_ROBUSTNESS_HTML
+
         self._app = app
         return app
 
@@ -1186,3 +1287,4 @@ _ANALYTICS_HTML = (_STATIC_DIR / "analytics.html").read_text(encoding="utf-8") i
 _NEWS_HTML = (_STATIC_DIR / "news.html").read_text(encoding="utf-8") if (_STATIC_DIR / "news.html").exists() else "<h1>News HTML not found</h1>"
 _LOGS_HTML = (_STATIC_DIR / "logs.html").read_text(encoding="utf-8") if (_STATIC_DIR / "logs.html").exists() else "<h1>Logs HTML not found</h1>"
 _LOGIN_HTML = (_STATIC_DIR / "login.html").read_text(encoding="utf-8") if (_STATIC_DIR / "login.html").exists() else "<h1>Login HTML not found</h1>"
+_ML_ROBUSTNESS_HTML = (_STATIC_DIR / "ml-robustness.html").read_text(encoding="utf-8") if (_STATIC_DIR / "ml-robustness.html").exists() else "<h1>ML Robustness HTML not found</h1>"

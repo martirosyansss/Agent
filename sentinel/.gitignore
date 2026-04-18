@@ -22,9 +22,18 @@ data/sentinel.db-shm
 data/backups/
 data/state.json
 data/heartbeat
+# Ad-hoc DB backups left by migrations / one-off recovery scripts.
+# N-4 audit fix: files like sentinel.db.bak_before_ml_fix (+ -wal / -shm)
+# aren't caught by the *.db rule in the root .gitignore because their
+# extension is .bak_*, not .db. Pattern matches all .bak variants.
+data/*.bak*
 
 # === Logs ===
 logs/*.log
+logs/*.jsonl
+
+# === ML model backups ===
+data/ml_models/backup_*/
 
 # === PID ===
 sentinel.pid

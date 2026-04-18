@@ -74,3 +74,25 @@ class RiskStateMachine:
         """Ручной сброс в NORMAL (начало нового дня)."""
         self._state = RiskState.NORMAL
         logger.info("Risk state manually reset to NORMAL")
+
+    def export_state(self) -> dict:
+        """Snapshot for restart persistence."""
+        return {
+            "state": self._state.value,
+            "last_change_ts": self._last_change_ts,
+        }
+
+    def restore_state(self, blob: dict) -> None:
+        """Restore from a prior ``export_state`` blob.
+
+        Drops silently on malformed input — safer to start fresh in NORMAL
+        than to crash startup on a corrupted blob.
+        """
+        try:
+            raw = str(blob.get("state", RiskState.NORMAL.value)).upper()
+            self._state = RiskState(raw) if raw in {s.value for s in RiskState} else RiskState.NORMAL
+            self._last_change_ts = int(blob.get("last_change_ts", 0) or 0)
+            logger.info("RiskStateMachine restored: state=%s", self._state.value)
+        except Exception as exc:
+            logger.warning("RiskStateMachine restore skipped: %s", exc)
+            self._state = RiskState.NORMAL

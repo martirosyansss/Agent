@@ -37,6 +37,9 @@ class DCAConfig:
     trailing_activate_pct: float = 5.0
     trailing_stop_pct: float = 2.5
     min_confidence: float = 0.70
+    # Должен совпадать с RiskSentinel.min_order_usd. Меньшие ордера
+    # гарантированно отклоняются — нет смысла генерировать сигнал.
+    min_order_usd: float = 10.0
 
     # Dip multipliers: (price_drop_pct, amount_multiplier)
     dip_thresholds: list[tuple[float, float]] = None
@@ -188,6 +191,10 @@ class DCABot(BaseStrategy):
         multiplier *= news_mult
 
         amount = cfg.base_amount_usd * multiplier
+        # Pre-check: не создаём сигнал, который заведомо упрётся в min_order_usd
+        # на стороне RiskSentinel (см. risk/sentinel.py:637).
+        if amount < cfg.min_order_usd:
+            return None
         qty = amount / features.close if features.close > 0 else 0
 
         # Update cooldown AFTER all validation passed

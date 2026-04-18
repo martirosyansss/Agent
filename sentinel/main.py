@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import signal
 import sys
@@ -19,6 +20,47 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from loguru import logger
+
+
+# Маппинг std-logging logger.name -> loguru extra[module],
+# чтобы фильтры trades.log / risk.log заполнялись (см. setup_logging).
+_STDLOG_MODULE_MAP = (
+    ("sentinel.risk", "risk"),
+    ("risk.", "risk"),
+    ("sentinel.guards", "risk"),
+    ("sentinel.execution", "executor"),
+    ("execution.", "executor"),
+    ("sentinel.position", "position"),
+    ("position.", "position"),
+    ("sentinel.dashboard", "dashboard"),
+    ("dashboard.", "dashboard"),
+)
+
+
+class _InterceptHandler(logging.Handler):
+    """Перенаправляет stdlib logging → loguru с авто-биндом extra[module]."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = logger.level(record.levelname).name
+        except (ValueError, AttributeError):
+            level = record.levelno
+
+        frame, depth = sys._getframe(6), 6
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        module = "stdlib"
+        name = record.name or ""
+        for prefix, mod in _STDLOG_MODULE_MAP:
+            if name.startswith(prefix) or f".{prefix}" in name:
+                module = mod
+                break
+
+        logger.opt(depth=depth, exception=record.exc_info).bind(module=module).log(
+            level, record.getMessage()
+        )
 
 # Корень проекта — директория, где лежит main.py
 BASE_DIR = Path(__file__).resolve().parent
@@ -114,6 +156,17 @@ def setup_logging(settings: Settings) -> None:
     )
 
     logger.configure(extra={"module": "main"})
+
+    # Мост std logging -> loguru. Без него модули risk/, execution/, position/
+    # (использующие logging.getLogger) не попадают ни в risk.log, ни в trades.log.
+    logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
+    for noisy in (
+        "urllib3", "asyncio", "websockets",
+        "httpx", "httpcore", "httpx._client",  # Telegram-bot polling спам
+        "telegram", "telegram.ext", "telegram.ext.Updater",
+        "apscheduler",
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     # Structured JSONL event log: machine-parseable record for post-mortem
     # analytics. Every signal decision, guard trip, regime change, etc. is
@@ -650,6 +703,22 @@ async def run() -> None:
             state_machine=risk_state_machine,
         )
 
+        # Restore RiskSentinel counters and RiskStateMachine state across restarts.
+        # Without this, a mid-day restart forgets daily_trades/daily_commission
+        # and always starts in NORMAL even if the prior run hit SAFE/STOP — the
+        # bot would happily re-enter trades against a real risk ceiling.
+        if repo is not None:
+            try:
+                import json as _json
+                _rs_blob = repo.load_system_state("risk_sentinel")
+                if _rs_blob:
+                    risk_sentinel.restore_state(_json.loads(_rs_blob))
+                _rsm_blob = repo.load_system_state("risk_state_machine")
+                if _rsm_blob:
+                    risk_state_machine.restore_state(_json.loads(_rsm_blob))
+            except Exception as _risk_restore_err:
+                log.debug("Risk state restore skipped: {}", _risk_restore_err)
+
         # ──────────────────────────────────────────────
         # Pro risk guards: drawdown breaker, correlation, asset-class caps.
         # All three are best-effort: if construction fails we keep trading
@@ -716,7 +785,11 @@ async def run() -> None:
             # 8 Circuit Breakers: fast-anomaly guardrails. Until now instantiated
             # only in tests — real trading had no price/spread/latency/API
             # protection. Feeds come from collector and executor.
-            circuit_breakers = CircuitBreakers()
+            circuit_breakers = CircuitBreakers(
+                consecutive_loss_threshold=settings.cb_consecutive_losses,
+                strategy_cooldown_sec=settings.cb_strategy_cooldown_sec,
+                strategy_cooldown_overrides=settings.cb_strategy_cooldown_overrides,
+            )
 
             risk_sentinel.attach_drawdown_breaker(dd_breaker)
             risk_sentinel.attach_correlation_guard(corr_guard)
@@ -1097,6 +1170,17 @@ async def run() -> None:
         from monitoring.alerts import AlertMonitor
         _position_sizer = True  # flag — functions imported
         _alert_monitor = AlertMonitor()
+        # Restore prior alerts + streak counters across restarts — otherwise
+        # the Alerts tab on the dashboard starts empty on every boot, and a
+        # loss-streak warning can fire again after a short restart.
+        if repo is not None:
+            try:
+                import json as _json
+                _am_blob = repo.load_system_state("alert_monitor")
+                if _am_blob:
+                    _alert_monitor.restore_state(_json.loads(_am_blob))
+            except Exception as _am_restore_err:
+                log.debug("AlertMonitor restore skipped: {}", _am_restore_err)
         log.info("[Module] Position sizer + Dynamic SL/TP + Alert monitor initialized")
     except Exception as e:
         log.warning("[Module] Advanced risk modules failed: {}", e)
@@ -1120,9 +1204,25 @@ async def run() -> None:
             min_trades=settings.analyzer_min_trades_ml,
             retrain_days=settings.analyzer_ml_retrain_days,
             test_window_days=settings.analyzer_ml_test_window_days,
+            use_walk_forward=settings.analyzer_ml_use_walk_forward,
+            use_bootstrap_ci=settings.analyzer_ml_use_bootstrap_ci,
+            use_stacking=settings.analyzer_ml_use_stacking,
+            use_regime_routing=settings.analyzer_ml_use_regime_routing,
         )
         _rollout = "shadow" if settings.analyzer_ml_shadow_mode else ("block" if settings.analyzer_ml_enabled else "off")
         _ml_models_dir = Path(__file__).parent / "data" / "ml_models"
+
+        # Round-8 §4.4: rollout_mode reconciliation rule.
+        # - Pre-load: seed from env (_rollout)
+        # - load_from_file() restores the persisted mode (schema ≥ 5) and
+        #   thereby may override the seed.
+        # - Post-load: if env says "off" (operator disabled ML), force off
+        #   regardless of pickled value — env is always-authoritative for
+        #   the kill switch. Otherwise keep whatever was loaded, so an
+        #   auto-promoted ``block`` survives a restart.
+        def _reconcile_rollout(predictor) -> None:
+            if _rollout == "off":
+                predictor.rollout_mode = "off"
 
         # Load per-symbol models
         for _sym in (settings.trading_symbols or []):
@@ -1131,8 +1231,10 @@ async def run() -> None:
                 _sym_predictor = MLPredictor(config=_ml_cfg)
                 _sym_predictor.rollout_mode = _rollout
                 if _sym_predictor.load_from_file(_sym_path):
+                    _reconcile_rollout(_sym_predictor)
                     _ml_predictors[_sym] = _sym_predictor
-                    log.info("[Module] ML model for {} loaded (version={})", _sym, _sym_predictor._model_version)
+                    log.info("[Module] ML model for {} loaded (version={}, mode={})",
+                             _sym, _sym_predictor._model_version, _sym_predictor.rollout_mode)
                 else:
                     log.warning("[Module] ML model load failed for {}", _sym)
 
@@ -1140,14 +1242,41 @@ async def run() -> None:
         _ml_predictor = MLPredictor(config=_ml_cfg)
         _ml_predictor.rollout_mode = _rollout
         _ml_model_path = _ml_models_dir / "ml_predictor.pkl"
+        _ml_unified_load_ok = False
         if _ml_model_path.exists():
-            loaded = _ml_predictor.load_from_file(_ml_model_path)
-            if loaded:
-                log.info("[Module] ML unified model loaded (version={})", _ml_predictor._model_version)
+            _ml_unified_load_ok = _ml_predictor.load_from_file(_ml_model_path)
+            _reconcile_rollout(_ml_predictor)
+            if _ml_unified_load_ok:
+                log.info("[Module] ML unified model loaded (version={}, mode={})",
+                         _ml_predictor._model_version, _ml_predictor.rollout_mode)
             else:
                 log.warning("[Module] ML unified model load failed")
         else:
             log.warning("[Module] No saved ML model found at {}", _ml_model_path)
+
+        # Round-8 §2.1: surface a loud failure when rollout_mode=block expects
+        # ML protection but nothing actually loaded. Silent fail-open here
+        # means the bot trades without the filter operators thought they'd
+        # installed — at the exact configuration that said "don't trade
+        # without ML". We emit to the event bus so Telegram / alert pipelines
+        # notice. Shadow / off modes tolerate no-model startup (first boot).
+        _expected_ml_active = settings.analyzer_ml_enabled and not settings.analyzer_ml_shadow_mode
+        _have_any_model = bool(_ml_predictors) or _ml_unified_load_ok
+        if _expected_ml_active and not _have_any_model:
+            log.error(
+                "[Module] ML rollout_mode=block but NO model loaded — bot will "
+                "FAIL-OPEN (trades without ML filter). Either populate "
+                "data/ml_models/ or set analyzer_ml_shadow_mode=true.",
+            )
+            try:
+                await bus.emit("ml_load_failure", {
+                    "rollout_mode": _rollout,
+                    "reason": "no_model_loaded",
+                    "per_symbol_loaded": list(_ml_predictors.keys()),
+                    "unified_loaded": _ml_unified_load_ok,
+                })
+            except Exception as _bus_err:
+                log.warning("[Module] ml_load_failure bus emit failed: {}", _bus_err)
 
         log.info("[Module] ML Predictors: {} per-symbol + unified fallback (mode={})",
                  len(_ml_predictors), _ml_predictor.rollout_mode)
@@ -1200,6 +1329,72 @@ async def run() -> None:
             # newly trained one is materially worse.
             SKILL_REGRESSION_TOLERANCE = 0.05
 
+            # Helper that runs the configured training pipeline for one
+            # symbol (or the unified fallback, same code path). Respects the
+            # MLConfig feature flags introduced in phases 1-5:
+            #   - use_regime_routing → train_with_regime_routing (calls
+            #     .train() internally, then builds per-regime specialists)
+            #   - use_walk_forward / use_stacking → train_walk_forward (runs
+            #     WF validation, optionally fits stacking head on OOF)
+            #   - neither flag → plain .train()
+            # Called inside asyncio.to_thread so the trading loop stays
+            # responsive while sklearn/lightgbm/xgboost release the GIL.
+            def _run_configured_training(predictor, trades):
+                cfg = predictor._cfg
+                if getattr(cfg, "use_regime_routing", False):
+                    predictor.train_with_regime_routing(trades)
+                    m = predictor.metrics
+                else:
+                    m = predictor.train(trades)
+                if (
+                    m is not None
+                    and predictor.is_ready
+                    and (getattr(cfg, "use_walk_forward", False)
+                         or getattr(cfg, "use_stacking", False))
+                ):
+                    try:
+                        predictor.train_walk_forward(trades)
+                    except Exception as wf_err:
+                        log.warning("ML walk-forward step failed (model still usable): {}", wf_err)
+                return m
+
+            # Round-8 §4.2: emit bus alert on walk-forward instability so
+            # operators catch regime-shift / overfitting early. Triggers
+            # only when std_auc > 0.10 across folds; debounced 6h per
+            # predictor via _last_wf_instability_alert_ts so persistent
+            # instability doesn't spam Telegram.
+            async def _maybe_emit_wf_instability(predictor, label: str) -> None:
+                # walk_forward_report is a defined @property on MLPredictor —
+                # direct attribute access is fine. std_auc / mean_auc are
+                # dataclass fields on WFReport, also non-defensive reads.
+                report = predictor.walk_forward_report
+                if report is None:
+                    return
+                std_auc = report.std_auc
+                mean_auc = report.mean_auc
+                if std_auc <= 0.10:
+                    return
+                last_alert = getattr(predictor, "_last_wf_instability_alert_ts", 0)
+                if (time.time() - last_alert) < 6 * 3600:
+                    return
+                predictor._last_wf_instability_alert_ts = time.time()
+                try:
+                    await bus.emit("ml_wf_instability", {
+                        "model": label,
+                        "std_auc": round(std_auc, 4),
+                        "mean_auc": round(mean_auc, 4),
+                        "min_auc": round(report.min_auc, 4),
+                        "n_folds": report.n_folds_completed,
+                        "version": predictor.model_version,
+                    })
+                    log.warning(
+                        "ML WF INSTABILITY: {} — mean_auc={:.3f} std_auc={:.3f} "
+                        "(threshold 0.10) — consider retraining more often",
+                        label, mean_auc, std_auc,
+                    )
+                except Exception as _err:
+                    log.warning("ml_wf_instability bus emit failed: {}", _err)
+
             for sym, sym_trades in trades_by_sym.items():
                 if len(sym_trades) < 50:
                     log.info("ML auto-retrain: {} — too few trades ({}), skip", sym, len(sym_trades))
@@ -1211,9 +1406,20 @@ async def run() -> None:
                     else 0.0
                 )
                 sym_predictor = _MLP(config=_ml_predictor._cfg)
-                sym_predictor.rollout_mode = _ml_predictor.rollout_mode
+                # Round-9 C1: inherit rollout_mode from the EXISTING per-symbol
+                # predictor when one exists — not from the unified model. The
+                # auto-promote path at ``_on_order_filled`` can move an
+                # individual symbol from shadow → block when its own live
+                # metrics pass the bar, independent of the unified predictor.
+                # Seeding from unified would demote that symbol back to
+                # shadow on the next retrain, silently erasing the promotion.
+                sym_predictor.rollout_mode = (
+                    old_predictor.rollout_mode
+                    if old_predictor is not None
+                    else _ml_predictor.rollout_mode
+                )
                 log.info("ML auto-retrain: training {} on {} trades...", sym, len(sym_trades))
-                metrics = await asyncio.to_thread(sym_predictor.train, sym_trades)
+                metrics = await asyncio.to_thread(_run_configured_training, sym_predictor, sym_trades)
                 if metrics is None or not sym_predictor.is_ready:
                     log.warning("ML auto-retrain: {} — training failed or below threshold", sym)
                     continue
@@ -1232,6 +1438,7 @@ async def run() -> None:
                         "ML auto-retrain: ✅ {} saved (skill={:.3f}, was {:.3f})",
                         sym, metrics.skill_score, old_skill,
                     )
+                    await _maybe_emit_wf_instability(sym_predictor, sym)
                     any_saved = True
 
             # Train unified fallback — same pattern (new instance, swap)
@@ -1248,7 +1455,7 @@ async def run() -> None:
                 log.info("ML auto-retrain: training unified on {} trades...", len(all_trades))
                 new_unified = _MLP(config=_ml_predictor._cfg)
                 new_unified.rollout_mode = _ml_predictor.rollout_mode
-                metrics = await asyncio.to_thread(new_unified.train, all_trades)
+                metrics = await asyncio.to_thread(_run_configured_training, new_unified, all_trades)
                 if metrics is not None and new_unified.is_ready:
                     if old_unified_skill > 0 and metrics.skill_score < old_unified_skill - SKILL_REGRESSION_TOLERANCE:
                         log.warning(
@@ -1264,19 +1471,41 @@ async def run() -> None:
                                 # but replace its trained fields. Live tracker is
                                 # reset — past predictions were from the old model
                                 # and would poison drift detection for the new one.
-                                _ml_predictor._ensemble = new_unified._ensemble
-                                _ml_predictor._scaler = new_unified._scaler
-                                _ml_predictor._feature_selector = new_unified._feature_selector
-                                _ml_predictor._calibrated_threshold = new_unified._calibrated_threshold
-                                _ml_predictor._model = new_unified._model
-                                _ml_predictor._model_version = new_unified._model_version
-                                _ml_predictor._metrics = new_unified._metrics
-                                _ml_predictor._last_train_ts = new_unified._last_train_ts
-                                _ml_predictor._live_tracker = new_unified._live_tracker
+                                # Phase-1/2/4/5 artifacts (round-8 §2.4): copy them
+                                # too so a retrain that rolls FROM stacking-on TO
+                                # stacking-off clears the stale WF/regime/bootstrap
+                                # state on the live predictor.
+                                #
+                                # Round-8 §1.1 defense: use __dict__.update() rather
+                                # than 13 separate `=` assignments. In CPython the
+                                # update is a single C call holding the GIL, so a
+                                # hypothetical future caller that invokes predict()
+                                # from a worker thread can never observe a half-
+                                # swapped predictor (some fields new, some old).
+                                # Today predict only runs on the event-loop thread
+                                # and this is strictly defense-in-depth.
+                                _ml_predictor.__dict__.update({
+                                    "_ensemble": new_unified._ensemble,
+                                    "_scaler": new_unified._scaler,
+                                    "_feature_selector": new_unified._feature_selector,
+                                    "_calibrated_threshold": new_unified._calibrated_threshold,
+                                    "_model": new_unified._model,
+                                    "_model_version": new_unified._model_version,
+                                    "_metrics": new_unified._metrics,
+                                    "_last_train_ts": new_unified._last_train_ts,
+                                    "_live_tracker": new_unified._live_tracker,
+                                    "_wf_report": new_unified._wf_report,
+                                    "_regime_router": new_unified._regime_router,
+                                    "_bootstrap_ci": dict(new_unified._bootstrap_ci),
+                                    "_member_error_correlation": dict(
+                                        new_unified._member_error_correlation
+                                    ),
+                                })
                             log.info(
                                 "ML auto-retrain: ✅ unified saved (skill={:.3f}, was {:.3f})",
                                 metrics.skill_score, old_unified_skill,
                             )
+                            await _maybe_emit_wf_instability(_ml_predictor, "unified")
                             any_saved = True
 
             return any_saved
@@ -1287,6 +1516,20 @@ async def run() -> None:
     # ── Strategy Decision Log (ring buffer) ──
     from collections import deque
     _strategy_log: deque[dict] = deque(maxlen=50)
+
+    # Restore strategy log across restarts — the dashboard "Strategy Log"
+    # panel is otherwise empty on every boot until the next evaluation tick.
+    if repo is not None:
+        try:
+            import json as _json
+            _sl_blob = repo.load_system_state("strategy_log")
+            if _sl_blob:
+                for entry in _json.loads(_sl_blob) or []:
+                    if isinstance(entry, dict):
+                        _strategy_log.append(entry)
+                log.info("Strategy log restored: {} entries", len(_strategy_log))
+        except Exception as _sl_restore_err:
+            log.debug("Strategy log restore skipped: {}", _sl_restore_err)
 
     # news_collector будет инициализирован позже (вместе с Dashboard)
     news_collector = None
@@ -2503,6 +2746,9 @@ async def run() -> None:
                     "hourly_trades_ok": int(risk_metrics.get("trades_last_hour", 0)) < (risk_sentinel._limits.max_trades_per_hour if risk_sentinel else 2),
                     "cooldown_ok": int(risk_metrics.get("cooldown_remaining_sec", 0)) <= 0,
                 },
+                "blocked_strategies": (
+                    circuit_breakers.get_blocked_strategies() if circuit_breakers is not None else {}
+                ),
             },
             "ml_status": {
                 "enabled": settings.analyzer_ml_enabled if hasattr(settings, 'analyzer_ml_enabled') else False,
@@ -2609,6 +2855,23 @@ async def run() -> None:
             risk_sentinel._limits.max_loss_per_trade_pct = new_settings.stop_loss_pct
             risk_sentinel._limits.max_daily_commission_pct = new_settings.cb_commission_alert_pct
             log.info("Risk limits updated at runtime: max_open_positions={}", new_settings.max_open_positions)
+        if circuit_breakers:
+            try:
+                if new_settings.cb_consecutive_losses >= 1:
+                    circuit_breakers._loss_threshold = new_settings.cb_consecutive_losses
+                if new_settings.cb_strategy_cooldown_sec >= 0:
+                    circuit_breakers._default_strategy_cooldown_sec = new_settings.cb_strategy_cooldown_sec
+                circuit_breakers._strategy_cooldown_overrides = dict(
+                    new_settings.cb_strategy_cooldown_overrides or {}
+                )
+                log.info(
+                    "CB-2 updated at runtime: threshold={}, cooldown={}s, overrides={}",
+                    new_settings.cb_consecutive_losses,
+                    new_settings.cb_strategy_cooldown_sec,
+                    new_settings.cb_strategy_cooldown_overrides,
+                )
+            except Exception as _cb_upd_err:
+                log.warning("CB-2 runtime update failed: {}", _cb_upd_err)
         if position_manager:
             position_manager._max_open_positions = new_settings.max_open_positions
             log.info("PositionManager max_open_positions updated to {}", new_settings.max_open_positions)
@@ -2736,6 +2999,40 @@ async def run() -> None:
                         except Exception as _dd_save_err:
                             log.debug("DD breaker save failed: {}", _dd_save_err)
 
+            # Persist risk counters / state-machine / alerts / strategy log so
+            # a mid-day restart preserves daily trade caps, cooldowns, the
+            # risk-state (NORMAL/REDUCED/SAFE/STOP), the dashboard Strategy Log
+            # panel, and recent alerts. Best-effort — a failing save should
+            # never take down the snapshot loop.
+            if repo is not None:
+                try:
+                    import json as _json
+                    if risk_sentinel is not None:
+                        await asyncio.to_thread(
+                            repo.save_system_state,
+                            "risk_sentinel",
+                            _json.dumps(risk_sentinel.export_state()),
+                        )
+                    if risk_state_machine is not None:
+                        await asyncio.to_thread(
+                            repo.save_system_state,
+                            "risk_state_machine",
+                            _json.dumps(risk_state_machine.export_state()),
+                        )
+                    if _alert_monitor is not None:
+                        await asyncio.to_thread(
+                            repo.save_system_state,
+                            "alert_monitor",
+                            _json.dumps(_alert_monitor.export_state()),
+                        )
+                    await asyncio.to_thread(
+                        repo.save_system_state,
+                        "strategy_log",
+                        _json.dumps(list(_strategy_log)),
+                    )
+                except Exception as _state_save_err:
+                    log.debug("Runtime state save failed: {}", _state_save_err)
+
     equity_task = asyncio.create_task(_equity_snapshot_loop())
 
     # Periodic position price sync to DB (every 60s)
@@ -2783,6 +3080,35 @@ async def run() -> None:
     # Heartbeat writer (шаг 19)
     heartbeat_task = asyncio.create_task(heartbeat_writer(settings))
 
+    # Throttled Telegram summary of risk-rejected signals.
+    # Without this, rejections only appear in logs/events.jsonl — operators
+    # miss that signals are being produced but filtered. Per-rejection DMs
+    # would spam (dca_bot can fire hourly); a windowed top-N digest surfaces
+    # the pattern without the noise.
+    async def _rejection_summary_loop():
+        interval_hours = settings.telegram_rejection_summary_hours
+        if interval_hours <= 0 or not telegram_bot or not _alert_monitor:
+            return
+        interval_sec = interval_hours * 3600
+        while True:
+            await asyncio.sleep(interval_sec)
+            try:
+                summary = _alert_monitor.drain_rejection_summary(top_n=5)
+                if not summary:
+                    continue
+                from telegram_bot.formatters import format_rejection_summary
+                elapsed_hours = (summary["window_end"] - summary["window_start"]) / 3600
+                text = format_rejection_summary(
+                    total=summary["total"],
+                    top=summary["top"],
+                    window_hours=elapsed_hours,
+                )
+                await telegram_bot.send_message(text)
+            except Exception as _rej_sum_err:
+                log.warning("Rejection summary task failed: {}", _rej_sum_err)
+
+    rejection_summary_task = asyncio.create_task(_rejection_summary_loop())
+
     # Monitor background tasks for unexpected failures
     _background_tasks: list[tuple[str, asyncio.Task]] = [
         ("equity_snapshot", equity_task),
@@ -2790,6 +3116,7 @@ async def run() -> None:
         ("ml_retrain", ml_retrain_task),
         ("pos_db_sync", pos_sync_task),
         ("daily_reset", daily_reset_task),
+        ("rejection_summary", rejection_summary_task),
     ]
     if collector_task:
         _background_tasks.append(("collector", collector_task))
@@ -2821,7 +3148,8 @@ async def run() -> None:
     ml_retrain_task.cancel()
     pos_sync_task.cancel()
     daily_reset_task.cancel()
-    await asyncio.gather(watchdog_task, heartbeat_task, equity_task, ml_retrain_task, pos_sync_task, daily_reset_task, return_exceptions=True)
+    rejection_summary_task.cancel()
+    await asyncio.gather(watchdog_task, heartbeat_task, equity_task, ml_retrain_task, pos_sync_task, daily_reset_task, rejection_summary_task, return_exceptions=True)
     if collector:
         await collector.stop()
     if collector_task:
@@ -2868,6 +3196,24 @@ async def run() -> None:
                     log.info("Shutdown sync: {} @ {:.2f} uPnL={:.4f}", _pos.symbol, _pos.current_price, _pos.unrealized_pnl)
                 except Exception as _e:
                     log.warning("Shutdown position sync failed for {}: {}", _pos.symbol, _e)
+    # Final persistence of in-memory runtime state (risk counters, alerts,
+    # strategy log, dd_breaker). Without this, a clean shutdown between
+    # snapshot cycles loses up to 30s of the newest state on next boot.
+    if repo is not None:
+        try:
+            import json as _json
+            if risk_sentinel is not None:
+                repo.save_system_state("risk_sentinel", _json.dumps(risk_sentinel.export_state()))
+            if risk_state_machine is not None:
+                repo.save_system_state("risk_state_machine", _json.dumps(risk_state_machine.export_state()))
+            if _alert_monitor is not None:
+                repo.save_system_state("alert_monitor", _json.dumps(_alert_monitor.export_state()))
+            repo.save_system_state("strategy_log", _json.dumps(list(_strategy_log)))
+            if dd_breaker is not None:
+                repo.save_system_state("dd_breaker", _json.dumps(dd_breaker.export_state()))
+            log.info("Shutdown: runtime state persisted")
+        except Exception as _final_save_err:
+            log.warning("Shutdown runtime state save failed: {}", _final_save_err)
     db.close()
     save_state({"stopped_at": int(time.time()), "mode": settings.trading_mode})
     release_pid_lock()

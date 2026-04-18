@@ -69,6 +69,10 @@
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-6"/></svg>
             <span>Аналитика</span>
         </a>
+        <a href="/ml-robustness" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"/><path d="M12 2v20"/><path d="M4.93 4.93l14.14 14.14"/><path d="M19.07 4.93 4.93 19.07"/></svg>
+            <span>ML Robustness</span>
+        </a>
         <a href="/trades" class="sidebar-link">
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
             <span>История сделок</span>
@@ -377,10 +381,10 @@
                         </button>
                     </div>
                     <div class="interval-bar" id="intervalBar" role="radiogroup" aria-label="Chart interval">
-                        <button class="interval-btn active" data-interval="1m" role="radio" aria-checked="true">1m</button>
+                        <button class="interval-btn" data-interval="1m" role="radio" aria-checked="false">1m</button>
                         <button class="interval-btn" data-interval="5m" role="radio" aria-checked="false">5m</button>
                         <button class="interval-btn" data-interval="15m" role="radio" aria-checked="false">15m</button>
-                        <button class="interval-btn" data-interval="1h" role="radio" aria-checked="false">1h</button>
+                        <button class="interval-btn active" data-interval="1h" role="radio" aria-checked="true">1h</button>
                         <button class="interval-btn" data-interval="4h" role="radio" aria-checked="false">4h</button>
                         <button class="interval-btn" data-interval="1d" role="radio" aria-checked="false">1d</button>
                     </div>
@@ -570,6 +574,17 @@
                     <div>Нет активных алертов — система работает штатно</div>
                 </div>
             </div>
+        </div>
+<!-- ── Blocked Strategies (CB-2 isolation) ── -->
+        <div class="strategy-log-panel fade-in" id="blocked-strategies-panel" hidden>
+            <div class="panel-title">
+                <h3>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+                    Заблокированные стратегии
+                </h3>
+            </div>
+            <p class="panel-desc">Стратегии, временно изолированные после серии убыточных сделок (CB-2). Возобновятся автоматически по истечении cooldown.</p>
+            <div class="alerts-list" id="blocked-strategies-list"></div>
         </div>
             </div>
         </div>

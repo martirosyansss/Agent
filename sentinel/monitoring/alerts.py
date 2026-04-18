@@ -14,8 +14,9 @@ Emits alert events for Telegram notifications.
 from __future__ import annotations
 
 import logging
+import re
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,9 @@ class AlertMonitor:
         self._rejection_count: int = 0
         self._loss_streak: int = 0
         self._last_data_ts: float = 0.0
+
+        self._rejection_reasons: Counter[str] = Counter()
+        self._rejection_window_start: float = time.time()
 
         # Callbacks
         self._on_alert = None
@@ -94,8 +98,20 @@ class AlertMonitor:
             return alert
         return None
 
+    @staticmethod
+    def _normalize_reason(reason: str) -> str:
+        """Collapse numeric values so similar rejections group together.
+
+        "Order too small: $7.00 < $10.0" and "Order too small: $6.50 < $10.0"
+        both become "Order too small: $#.## < $#.#", yielding one row in the
+        summary instead of one row per distinct amount.
+        """
+        normalized = re.sub(r"-?\d+(?:\.\d+)?", "#", str(reason))
+        return normalized.strip()[:120] or "(no reason)"
+
     def record_signal_rejection(self, reason: str) -> Alert | None:
         """Record a signal rejection. Alert if too many consecutive."""
+        self._rejection_reasons[self._normalize_reason(reason)] += 1
         self._rejection_count += 1
         if self._rejection_count >= self._rejection_threshold:
             alert = Alert(
@@ -112,6 +128,27 @@ class AlertMonitor:
     def record_signal_accepted(self) -> None:
         """Reset rejection counter on successful signal."""
         self._rejection_count = 0
+
+    def drain_rejection_summary(self, top_n: int = 5) -> dict | None:
+        """Return aggregated rejections since last drain, then clear.
+
+        Returns ``None`` if no rejections accumulated — caller should skip
+        sending an empty Telegram message in that case.
+        """
+        if not self._rejection_reasons:
+            self._rejection_window_start = time.time()
+            return None
+        total = sum(self._rejection_reasons.values())
+        top = self._rejection_reasons.most_common(top_n)
+        window_start = self._rejection_window_start
+        self._rejection_reasons.clear()
+        self._rejection_window_start = time.time()
+        return {
+            "total": total,
+            "top": top,
+            "window_start": window_start,
+            "window_end": self._rejection_window_start,
+        }
 
     def check_data_staleness(self, last_data_ts: float) -> Alert | None:
         """Check if market data is stale."""
@@ -168,3 +205,54 @@ class AlertMonitor:
             "loss_streak": self._loss_streak,
             "last_price": self._last_price,
         }
+
+    # ──────────────────────────────────────────────
+    # Persistence (round-trip across restarts)
+    # ──────────────────────────────────────────────
+
+    def export_state(self) -> dict:
+        """Snapshot for restart persistence."""
+        return {
+            "alerts": [
+                {
+                    "timestamp": a.timestamp,
+                    "severity": a.severity,
+                    "category": a.category,
+                    "message": a.message,
+                }
+                for a in self._alerts
+            ],
+            "rejection_count": self._rejection_count,
+            "loss_streak": self._loss_streak,
+            "last_price": self._last_price,
+            "rejection_reasons": dict(self._rejection_reasons),
+            "rejection_window_start": self._rejection_window_start,
+        }
+
+    def restore_state(self, blob: dict) -> None:
+        """Restore from a prior ``export_state`` blob.
+
+        Drops silently on malformed input — the monitor just starts fresh.
+        """
+        try:
+            self._alerts.clear()
+            for raw in blob.get("alerts", []) or []:
+                self._alerts.append(Alert(
+                    timestamp=int(raw.get("timestamp", 0)),
+                    severity=str(raw.get("severity", "info")),
+                    category=str(raw.get("category", "")),
+                    message=str(raw.get("message", "")),
+                ))
+            self._rejection_count = int(blob.get("rejection_count", 0) or 0)
+            self._loss_streak = int(blob.get("loss_streak", 0) or 0)
+            self._last_price = float(blob.get("last_price", 0.0) or 0.0)
+            self._rejection_reasons = Counter(blob.get("rejection_reasons", {}) or {})
+            self._rejection_window_start = float(
+                blob.get("rejection_window_start", time.time()) or time.time()
+            )
+            logger.info(
+                "AlertMonitor restored: %d alerts, rejection_count=%d, loss_streak=%d",
+                len(self._alerts), self._rejection_count, self._loss_streak,
+            )
+        except Exception as exc:
+            logger.warning("AlertMonitor restore skipped: %s", exc)

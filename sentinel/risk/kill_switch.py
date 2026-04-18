@@ -15,6 +15,7 @@ from typing import Callable, Coroutine, Optional
 
 from core.constants import EVENT_EMERGENCY_STOP
 from core.events import EventBus
+from monitoring.event_log import EventType, emit_component_error, get_event_log
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,14 @@ class KillSwitch:
         self._activated = True
         self._errors = []
         logger.critical("KILL SWITCH ACTIVATED: %s", reason)
+        try:
+            get_event_log().emit(
+                EventType.GUARD_TRIPPED,
+                guard="kill_switch",
+                reason=reason,
+            )
+        except Exception:
+            pass
 
         # 1. Отменить все ордера
         if self.on_cancel_all_orders:
@@ -76,6 +85,13 @@ class KillSwitch:
                     logger.error("Failed to close positions (attempt %d/%d): %s", attempt, _CLOSE_POSITIONS_RETRIES, exc)
             if not close_ok:
                 logger.critical("KILL SWITCH: ALL %d CLOSE ATTEMPTS FAILED — positions may still be open!", _CLOSE_POSITIONS_RETRIES)
+                emit_component_error(
+                    "kill_switch.close_positions",
+                    f"all {_CLOSE_POSITIONS_RETRIES} close attempts failed — positions may still be open",
+                    severity="critical",
+                    retries=_CLOSE_POSITIONS_RETRIES,
+                    errors=list(self._errors),
+                )
 
         # 3. Остановить торговлю (always attempt even if prior steps failed)
         if self.on_stop_trading:
@@ -90,6 +106,12 @@ class KillSwitch:
 
         if self._errors:
             logger.critical("Kill switch completed WITH ERRORS: %s", self._errors)
+            emit_component_error(
+                "kill_switch.activate",
+                f"kill switch finished with {len(self._errors)} error(s)",
+                severity="critical",
+                errors=list(self._errors),
+            )
         else:
             logger.info("Kill switch completed successfully")
 

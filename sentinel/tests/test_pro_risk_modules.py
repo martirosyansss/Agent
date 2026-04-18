@@ -1404,3 +1404,45 @@ class TestEvaluateWithTrace:
         assert rt["symbol"] == "BTCUSDT"
         assert "gates" in rt
         assert "feature_snapshot" in rt
+
+    def test_cb_strategy_block_rejects_signal(self):
+        """CB-2 per-strategy block must reject signals via the CB gate."""
+        from risk.circuit_breakers import CircuitBreakers
+        rs = self._sentinel()
+        cbs = CircuitBreakers(consecutive_loss_threshold=3)
+        rs.attach_circuit_breakers(cbs)
+        # Trip per-strategy block for grid_trading
+        for _ in range(3):
+            cbs.record_trade_result(False, strategy_name="grid_trading")
+
+        sig_blocked = self._signal()
+        sig_blocked.strategy_name = "grid_trading"
+        result, trace = rs.evaluate_with_trace(
+            signal=sig_blocked, daily_pnl=0.0, open_positions_count=0,
+            total_exposure_pct=0.0, balance=10000.0,
+            current_market_price=60000.0,
+        )
+        assert not result.approved
+        assert "grid_trading" in result.reason
+        assert "CB-2" in result.reason
+        cb_gate = next(g for g in trace.gates if g.gate == "circuit_breakers")
+        assert cb_gate.outcome == GateOutcome.REJECTED
+        assert cb_gate.payload.get("strategy_block_remaining_sec", 0) > 0
+
+    def test_cb_strategy_block_does_not_affect_other_strategies(self):
+        """A block on one strategy must not reject signals from others."""
+        from risk.circuit_breakers import CircuitBreakers
+        rs = self._sentinel()
+        rs.attach_circuit_breakers(CircuitBreakers(consecutive_loss_threshold=3))
+        cbs = rs._circuit_breakers
+        for _ in range(3):
+            cbs.record_trade_result(False, strategy_name="grid_trading")
+
+        sig_other = self._signal()
+        sig_other.strategy_name = "ema_crossover_rsi"
+        result, _ = rs.evaluate_with_trace(
+            signal=sig_other, daily_pnl=0.0, open_positions_count=0,
+            total_exposure_pct=0.0, balance=10000.0,
+            current_market_price=60000.0,
+        )
+        assert result.approved

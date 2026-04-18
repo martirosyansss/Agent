@@ -155,6 +155,61 @@ class TestStatusFormatter:
         assert "+$3.27" in text
         assert "+$18.42" in text
 
+    def test_status_omits_ml_block_when_metrics_absent(self):
+        """Backwards compat: existing call sites that don't pass ml_metrics
+        get the same output as before (no orphan ML section)."""
+        text = format_status(
+            mode="paper", risk_state="NORMAL", uptime="1ч",
+            pnl_today=0.0, pnl_total=0.0, open_positions=0, trades_today=0,
+        )
+        assert "ML calibration" not in text
+
+    def test_status_includes_ml_calibration_when_metrics_present(self):
+        text = format_status(
+            mode="paper", risk_state="NORMAL", uptime="1ч",
+            pnl_today=0.0, pnl_total=0.0, open_positions=0, trades_today=0,
+            ml_metrics={
+                "calibration_method": "platt",
+                "ece": 0.07, "brier_score": 0.16,
+                "mean_proba": 0.45, "proba_p10": 0.22, "proba_p90": 0.71,
+            },
+        )
+        assert "ML calibration" in text
+        assert "[platt]" in text
+        assert "ECE=0.070" in text
+
+
+class TestMLCalibrationLine:
+    """Dedicated tests for format_ml_calibration_line — the helper that the
+    /status formatter delegates to."""
+
+    def _line(self, **overrides):
+        from telegram_bot.formatters import format_ml_calibration_line
+        base = {
+            "calibration_method": "platt",
+            "ece": 0.05, "brier_score": 0.15,
+            "mean_proba": 0.40, "proba_p10": 0.20, "proba_p90": 0.65,
+        }
+        base.update(overrides)
+        return format_ml_calibration_line(base)
+
+    def test_returns_none_when_metrics_missing(self):
+        from telegram_bot.formatters import format_ml_calibration_line
+        assert format_ml_calibration_line(None) is None
+        assert format_ml_calibration_line({}) is None
+
+    def test_inflated_flag_fires_when_p10_high(self):
+        line = self._line(proba_p10=0.85)
+        assert "inflated" in line
+
+    def test_miscalibrated_flag_fires_when_ece_high(self):
+        line = self._line(ece=0.18)
+        assert "miscalibrated" in line
+
+    def test_no_flag_when_healthy(self):
+        line = self._line(ece=0.05, proba_p10=0.20)
+        assert "inflated" not in line and "miscalibrated" not in line
+
 
 class TestPnlFormatter:
     def test_pnl_report(self):
@@ -469,16 +524,28 @@ class TestDashboardAPI:
         assert len(data["system_profile"]) >= 4
         assert any(strategy["name"] == "Grid Trading" for strategy in data["strategies"])
 
+    def _csrf_post(self, client, path: str):
+        """POST with CSRF double-submit cookie/header echo.
+
+        The dashboard's CsrfMiddleware requires mutating requests to send
+        back the `sentinel_csrf` cookie value in `X-CSRF-Token`. A raw POST
+        without that returns 403 before the route handler runs, which
+        masks the "no handler set → 503" contract we're actually testing.
+        """
+        client.get("/")  # seed sentinel_csrf cookie
+        token = client.cookies.get("sentinel_csrf", "")
+        return client.post(path, headers={"X-CSRF-Token": token})
+
     def test_control_stop_no_handler(self, client):
-        r = client.post("/api/control/stop")
+        r = self._csrf_post(client, "/api/control/stop")
         assert r.status_code == 503
 
     def test_control_resume_no_handler(self, client):
-        r = client.post("/api/control/resume")
+        r = self._csrf_post(client, "/api/control/resume")
         assert r.status_code == 503
 
     def test_control_kill_no_handler(self, client):
-        r = client.post("/api/control/kill")
+        r = self._csrf_post(client, "/api/control/kill")
         assert r.status_code == 503
 
     def test_dashboard_html(self, client):
@@ -501,19 +568,23 @@ class TestDashboardAPI:
         assert "viewBox" in html
 
     def test_dashboard_html_cursor_pointer(self, client):
-        """UI/UX: cursor-pointer on clickable elements."""
-        html = client.get("/").text
-        assert "cursor: pointer" in html or "cursor:pointer" in html
+        """UI/UX: cursor-pointer on clickable elements.
+
+        Dashboard CSS lives in /static/css/index.css — the HTML shell only
+        <link>s it, so we must fetch the stylesheet to verify the rule.
+        """
+        css = client.get("/static/css/index.css").text
+        assert "cursor: pointer" in css or "cursor:pointer" in css
 
     def test_dashboard_html_focus_visible(self, client):
         """UI/UX: focus-visible for keyboard navigation."""
-        html = client.get("/").text
-        assert "focus-visible" in html
+        css = client.get("/static/css/index.css").text
+        assert "focus-visible" in css
 
     def test_dashboard_html_reduced_motion(self, client):
         """UI/UX: prefers-reduced-motion support."""
-        html = client.get("/").text
-        assert "prefers-reduced-motion" in html
+        css = client.get("/static/css/index.css").text
+        assert "prefers-reduced-motion" in css
 
     def test_dashboard_html_aria_labels(self, client):
         """UI/UX: aria labels for accessibility."""
@@ -527,14 +598,19 @@ class TestDashboardAPI:
 
     def test_dashboard_html_responsive(self, client):
         """UI/UX: responsive breakpoints."""
-        html = client.get("/").text
-        assert "max-width: 768px" in html or "max-width:768px" in html
+        css = client.get("/static/css/index.css").text
+        assert "max-width: 768px" in css or "max-width:768px" in css
 
     def test_dashboard_html_websocket(self, client):
-        """Dashboard uses WebSocket for real-time updates."""
-        html = client.get("/").text
-        assert "WebSocket" in html
-        assert "/ws" in html
+        """Dashboard uses WebSocket for real-time updates.
+
+        The dashboard's live-update plumbing moved from inline script to
+        /static/js/index.js, so both the ``WebSocket`` constructor call
+        and the ``/ws`` endpoint URL now live there.
+        """
+        js = client.get("/static/js/index.js").text
+        assert "WebSocket" in js
+        assert "/ws" in js
 
     def test_dashboard_html_risk_panel(self, client):
         """Dashboard shows risk overview panel."""
@@ -550,23 +626,33 @@ class TestDashboardAPI:
         assert 'id="balance"' in html
 
     def test_dashboard_html_positions_context_columns(self, client):
-        """Dashboard positions table shows strategy and protective levels."""
-        html = client.get("/").text
-        assert "Strategy" in html
-        assert "SL / TP" in html
+        """Dashboard positions panel renders strategy and protective levels.
+
+        The positions layout was refactored from a static HTML table to
+        JS-rendered cards (``pos-strategy`` + Stop Loss / Take Profit data
+        cells), so the strategy/SL/TP surface now lives in index.js.
+        """
+        js = client.get("/static/js/index.js").text
+        assert "pos-strategy" in js
+        assert "Stop Loss" in js and "SL / TP" in js
 
     def test_dashboard_html_trades_strategy_column(self, client):
-        """Dashboard recent trades table shows strategy column."""
-        html = client.get("/").text
-        assert "Recent Trades" in html
-        assert "Strategy" in html
+        """Trades history page exposes strategy as a filter and renders it
+        per-trade. Recent-trades logic also renders strategy_name in
+        index.js — both surfaces count as passing."""
+        trades_html = client.get("/trades").text
+        index_js = client.get("/static/js/index.js").text
+        assert "История сделок" in trades_html
+        # /trades exposes a Стратегия filter; index.js renders strategy_name
+        # into the recent-trades row on the overview page.
+        assert "Стратегия" in trades_html or "strategy_name" in index_js
 
     def test_dashboard_html_trades_signal_column(self, client):
-        """Dashboard recent trades table shows compact signal context column."""
-        html = client.get("/").text
-        assert "Signal" in html
-        assert "signal_reason" in html
-        assert "table-cell-meta" in html
+        """Recent trades row surfaces the signal reason in a compact
+        ``table-cell-meta`` span — logic lives in index.js."""
+        js = client.get("/static/js/index.js").text
+        assert "signal_reason" in js
+        assert "table-cell-meta" in js
 
     def test_dashboard_html_uptime(self, client):
         """Dashboard shows uptime indicator."""

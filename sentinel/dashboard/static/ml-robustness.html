@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTINEL — ML Robustness</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <link rel="stylesheet" href="/static/css/index.css">
+    <style>
+      .mlr-grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(480px, 1fr)); }
+      .mlr-card { padding: 1.25rem; border-radius: 12px; background: var(--panel-bg, #141922); border: 1px solid var(--panel-border, #222a38); }
+      .mlr-card h3 { margin: 0 0 0.75rem; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.02em; }
+      .mlr-kv { display: flex; justify-content: space-between; padding: 0.25rem 0; font-size: 0.85rem; }
+      .mlr-kv span:last-child { font-family: "JetBrains Mono", monospace; color: var(--accent, #6ea8fe); }
+      .mlr-empty { padding: 2rem 1rem; text-align: center; color: var(--muted, #7a8599); font-size: 0.85rem; }
+      .mlr-badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em; }
+      .mlr-badge.ok { background: rgba(52, 211, 153, 0.15); color: #34d399; }
+      .mlr-badge.warn { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+      .mlr-badge.bad { background: rgba(248, 113, 113, 0.15); color: #f87171; }
+      .mlr-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+      .mlr-table th, .mlr-table td { padding: 0.35rem 0.5rem; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.05); }
+      .mlr-table th:first-child, .mlr-table td:first-child { text-align: left; }
+      .mlr-table th { color: var(--muted, #7a8599); font-weight: 500; font-size: 0.75rem; }
+      .mlr-bar-container { margin: 0.6rem 0; }
+      .mlr-bar-label { display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.2rem; }
+      .mlr-bar-track { position: relative; height: 10px; background: rgba(255,255,255,0.06); border-radius: 6px; overflow: hidden; }
+      .mlr-bar-fill { position: absolute; top: 0; bottom: 0; background: linear-gradient(90deg, #6ea8fe, #34d399); border-radius: 6px; }
+      .mlr-bar-ci { position: absolute; top: 2px; bottom: 2px; background: rgba(110, 168, 254, 0.28); border-radius: 4px; }
+      .mlr-heatmap { display: grid; gap: 3px; font-size: 0.75rem; }
+      .mlr-heatmap-cell { padding: 0.55rem 0.45rem; border-radius: 4px; text-align: center; font-family: "JetBrains Mono", monospace; }
+    </style>
+</head>
+<body>
+    <div class="accent-bar" aria-hidden="true"></div>
+
+    <header class="header" role="banner">
+        <div class="header-left">
+            <button class="mobile-menu-toggle" id="mobile-menu-toggle" aria-label="Открыть меню" aria-expanded="false" aria-controls="sidebar">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+            <div class="header-logo">
+                <div class="header-logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                </div>
+                SENTINEL
+            </div>
+            <span class="header-version">ML Robustness</span>
+        </div>
+        <div class="header-right">
+            <button id="refresh-btn" class="header-nav-link" title="Обновить" aria-label="Refresh">
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+        </div>
+    </header>
+
+    <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop" aria-hidden="true"></div>
+    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation">
+        <a href="/" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            <span>Dashboard</span>
+        </a>
+        <a href="/analytics" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-6"/></svg>
+            <span>Аналитика</span>
+        </a>
+        <a href="/ml-robustness" class="sidebar-link active">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"/><path d="M12 2v20"/><path d="M4.93 4.93l14.14 14.14"/><path d="M19.07 4.93 4.93 19.07"/></svg>
+            <span>ML Robustness</span>
+        </a>
+        <a href="/trades" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>История сделок</span>
+        </a>
+        <a href="/logs" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+            <span>Логи</span>
+        </a>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-section">Система</div>
+        <a href="/settings" class="sidebar-link">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>
+            <span>Настройки</span>
+        </a>
+    </nav>
+
+    <div class="app-layout">
+    <main class="container" role="main">
+        <p class="metrics-intro fade-in">
+            Диагностика устойчивости ML-модели: walk-forward стабильность, производительность по рыночным режимам,
+            bootstrap доверительные интервалы и корреляция ошибок между членами ансамбля.
+        </p>
+
+        <div class="mlr-grid">
+            <!-- Walk-Forward -->
+            <section class="mlr-card fade-in" id="card-wf">
+                <h3>
+                    Walk-Forward стабильность
+                    <span id="wf-badge" class="mlr-badge warn" style="float:right;font-size:0.65rem;">—</span>
+                </h3>
+                <div id="wf-body" class="mlr-empty">Загрузка…</div>
+                <canvas id="wf-chart" style="display:none; max-height: 220px;"></canvas>
+            </section>
+
+            <!-- Regime performance -->
+            <section class="mlr-card fade-in" id="card-regimes">
+                <h3>
+                    Производительность по режимам
+                    <span id="regimes-badge" class="mlr-badge warn" style="float:right;font-size:0.65rem;">—</span>
+                </h3>
+                <div id="regimes-body" class="mlr-empty">Загрузка…</div>
+            </section>
+
+            <!-- Bootstrap CI -->
+            <section class="mlr-card fade-in" id="card-boot">
+                <h3>
+                    Bootstrap доверительные интервалы
+                    <span id="boot-badge" class="mlr-badge warn" style="float:right;font-size:0.65rem;">—</span>
+                </h3>
+                <div id="boot-body" class="mlr-empty">Загрузка…</div>
+            </section>
+
+            <!-- Member correlation -->
+            <section class="mlr-card fade-in" id="card-corr">
+                <h3>
+                    Корреляция ошибок ансамбля
+                    <span id="corr-badge" class="mlr-badge warn" style="float:right;font-size:0.65rem;">—</span>
+                </h3>
+                <div id="corr-body" class="mlr-empty">Загрузка…</div>
+            </section>
+        </div>
+    </main>
+    </div>
+
+<script>
+(function () {
+  "use strict";
+
+  // CSRF-safe fetch — mirrors the helper in analytics.html. All ML
+  // robustness endpoints are read-only GETs so we don't actually need
+  // the token, but using the same helper keeps the pattern consistent
+  // and handles 401 → redirect to /login if the session expired.
+  async function mlFetch(path) {
+    const res = await fetch(path, {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { "Accept": "application/json" },
+    });
+    if (res.status === 401) { window.location.href = "/login"; return null; }
+    if (!res.ok) throw new Error(path + " → " + res.status);
+    return await res.json();
+  }
+
+  function setBadge(el, label, cls) {
+    el.textContent = label;
+    el.className = "mlr-badge " + cls;
+  }
+
+  function fmt(x, digits = 3) {
+    if (x === null || x === undefined || Number.isNaN(x)) return "—";
+    return Number(x).toFixed(digits);
+  }
+
+  // ─── Walk-Forward ──────────────────────────────
+  async function loadWF() {
+    const body = document.getElementById("wf-body");
+    const badge = document.getElementById("wf-badge");
+    const canvas = document.getElementById("wf-chart");
+    try {
+      const data = await mlFetch("/api/ml/walk-forward");
+      if (!data || !data.available) {
+        body.textContent = data && data.reason ? data.reason : "Недоступно";
+        setBadge(badge, "Н/Д", "warn");
+        return;
+      }
+      const s = data.summary;
+      setBadge(badge, s.mode.toUpperCase(), s.std_auc > 0.08 ? "warn" : "ok");
+      body.classList.remove("mlr-empty");
+      body.innerHTML = "";
+      [
+        ["Folds", s.n_folds_completed],
+        ["Mean AUC", fmt(s.mean_auc)],
+        ["Std AUC", fmt(s.std_auc)],
+        ["Min AUC", fmt(s.min_auc)],
+        ["Mean precision", fmt(s.mean_precision)],
+        ["Degradation OOS/IS", fmt(s.degradation)],
+      ].forEach(([k, v]) => {
+        const row = document.createElement("div");
+        row.className = "mlr-kv";
+        row.innerHTML = `<span>${k}</span><span>${v}</span>`;
+        body.appendChild(row);
+      });
+
+      // Per-fold chart
+      canvas.style.display = "block";
+      const labels = data.folds.map((f) => `Fold ${f.fold_idx + 1}`);
+      new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            { label: "AUC", data: data.folds.map((f) => f.roc_auc), borderColor: "#6ea8fe", tension: 0.25 },
+            { label: "Precision", data: data.folds.map((f) => f.precision), borderColor: "#34d399", tension: 0.25 },
+          ],
+        },
+        options: {
+          scales: { y: { suggestedMin: 0.4, suggestedMax: 1.0 } },
+          plugins: { legend: { labels: { color: "#9aa4b7" } } },
+        },
+      });
+    } catch (exc) {
+      body.textContent = "Ошибка загрузки: " + exc.message;
+      setBadge(badge, "ERR", "bad");
+    }
+  }
+
+  // ─── Regime performance ────────────────────────
+  async function loadRegimes() {
+    const body = document.getElementById("regimes-body");
+    const badge = document.getElementById("regimes-badge");
+    try {
+      const data = await mlFetch("/api/ml/regime-performance");
+      if (!data || !data.available) {
+        body.textContent = data && data.reason ? data.reason : "Недоступно";
+        setBadge(badge, "OFF", "warn");
+        return;
+      }
+      const rows = Object.values(data.regimes || {});
+      setBadge(badge, `${data.trained_regimes.length} спец.`, rows.length ? "ok" : "warn");
+      body.classList.remove("mlr-empty");
+      body.innerHTML = "";
+      const table = document.createElement("table");
+      table.className = "mlr-table";
+      table.innerHTML = `
+        <thead><tr>
+          <th>Режим</th><th>N</th><th>Обучен</th>
+          <th>Precision</th><th>AUC</th><th>Skill</th>
+        </tr></thead>
+        <tbody></tbody>`;
+      const tbody = table.querySelector("tbody");
+      rows.forEach((r) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${r.regime}</td>
+          <td>${r.n_trades}</td>
+          <td>${r.trained ? "✓" : "—"}</td>
+          <td>${fmt(r.mean_precision)}</td>
+          <td>${fmt(r.mean_auc)}</td>
+          <td>${fmt(r.skill_score)}</td>`;
+        tr.title = r.fallback_reason || "";
+        tbody.appendChild(tr);
+      });
+      body.appendChild(table);
+    } catch (exc) {
+      body.textContent = "Ошибка загрузки: " + exc.message;
+      setBadge(badge, "ERR", "bad");
+    }
+  }
+
+  // ─── Bootstrap CI ──────────────────────────────
+  async function loadBootstrap() {
+    const body = document.getElementById("boot-body");
+    const badge = document.getElementById("boot-badge");
+    try {
+      const data = await mlFetch("/api/ml/bootstrap-ci");
+      if (!data || !data.available) {
+        body.textContent = data && data.reason ? data.reason : "Недоступно";
+        setBadge(badge, "OFF", "warn");
+        return;
+      }
+      body.classList.remove("mlr-empty");
+      body.innerHTML = "";
+      const pa = data.intervals.probability_above_random;
+      setBadge(badge, (pa !== undefined ? (pa * 100).toFixed(0) + "% > 0.5" : "N=" + Object.keys(data.intervals).length),
+               pa !== undefined && pa > 0.9 ? "ok" : "warn");
+
+      ["precision", "recall", "roc_auc"].forEach((k) => {
+        const ci = data.intervals[k];
+        if (!ci) return;
+        const wrap = document.createElement("div");
+        wrap.className = "mlr-bar-container";
+        const ci_left = Math.max(0, ci.p5) * 100;
+        const ci_right = Math.min(1, ci.p95) * 100;
+        const p50 = Math.max(0, Math.min(1, ci.p50)) * 100;
+        wrap.innerHTML = `
+          <div class="mlr-bar-label"><span>${k}</span>
+            <span>${fmt(ci.p5)} / <b>${fmt(ci.p50)}</b> / ${fmt(ci.p95)}</span>
+          </div>
+          <div class="mlr-bar-track">
+            <div class="mlr-bar-ci" style="left:${ci_left}%; width:${ci_right - ci_left}%"></div>
+            <div class="mlr-bar-fill" style="left:${p50 - 0.5}%; width:1%; opacity:0.9;"></div>
+          </div>`;
+        body.appendChild(wrap);
+      });
+    } catch (exc) {
+      body.textContent = "Ошибка загрузки: " + exc.message;
+      setBadge(badge, "ERR", "bad");
+    }
+  }
+
+  // ─── Member correlation heatmap ────────────────
+  async function loadCorrelations() {
+    const body = document.getElementById("corr-body");
+    const badge = document.getElementById("corr-badge");
+    try {
+      const data = await mlFetch("/api/ml/member-correlation");
+      if (!data || !data.available) {
+        body.textContent = data && data.reason ? data.reason : "Недоступно";
+        setBadge(badge, "—", "warn");
+        return;
+      }
+      const pairs = data.correlations;
+      const thr = data.warn_threshold || 0.85;
+      const maxAbs = Object.values(pairs).reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+      setBadge(badge, maxAbs > thr ? "⚠ дубликат" : "OK", maxAbs > thr ? "bad" : "ok");
+
+      body.classList.remove("mlr-empty");
+      body.innerHTML = "";
+      const wrap = document.createElement("div");
+      wrap.className = "mlr-heatmap";
+      const entries = Object.entries(pairs).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+      entries.forEach(([pair, corr]) => {
+        const c = Math.abs(corr);
+        // Red when close to 1 (redundant), green when close to 0 (diversified)
+        const hue = Math.round(120 - c * 120);
+        const cell = document.createElement("div");
+        cell.className = "mlr-heatmap-cell";
+        cell.style.background = `hsla(${hue}, 70%, 35%, 0.45)`;
+        cell.innerHTML = `<span>${pair}</span> <b>${corr.toFixed(3)}</b>`;
+        wrap.appendChild(cell);
+      });
+      body.appendChild(wrap);
+      const hint = document.createElement("div");
+      hint.style.cssText = "font-size:0.72rem; color:#7a8599; margin-top:0.6rem;";
+      hint.textContent = `Порог предупреждения: |r| ≥ ${thr} → модель дублирует уже существующий голос.`;
+      body.appendChild(hint);
+    } catch (exc) {
+      body.textContent = "Ошибка загрузки: " + exc.message;
+      setBadge(badge, "ERR", "bad");
+    }
+  }
+
+  function loadAll() {
+    loadWF();
+    loadRegimes();
+    loadBootstrap();
+    loadCorrelations();
+  }
+
+  document.getElementById("refresh-btn").addEventListener("click", loadAll);
+  loadAll();
+})();
+</script>
+</body>
+</html>
