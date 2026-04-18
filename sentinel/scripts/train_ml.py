@@ -101,6 +101,7 @@ def backtest_trade_to_strategy_trade(
         bb_bandwidth_at_entry=f.get("bb_bandwidth", 0.0),
         macd_histogram_at_entry=f.get("macd_histogram", 0.0),
         atr_at_entry=f.get("atr", 0.0),
+        trend_alignment=f.get("trend_alignment", 0.5),
         # Phase 2: Enhanced ML features
         cci_at_entry=f.get("cci", 0.0),
         roc_at_entry=f.get("roc", 0.0),
@@ -251,6 +252,11 @@ def run_backtest_with_features(
                 "price_change_5h": features.price_change_5h,
                 "momentum": features.momentum,
                 "rsi_daily": features.rsi_14_daily,
+                # Multi-TF trend agreement is computed by FeatureBuilder from
+                # candles, so it's available in backtest. Without this line the
+                # feature lands in training as a constant 0.5 and gets flagged
+                # as zero-variance noise.
+                "trend_alignment": features.trend_alignment,
             }
 
         elif signal.direction.value == "SELL" and in_position:

@@ -125,13 +125,14 @@ class TestVotingEnsemble:
         e = VotingEnsemble()
         e.add_member(FakeModel(), "rf", 1.0)
 
-        # Generate validation data for calibration
+        # Generate validation data large enough for the new isotonic floor.
         np.random.seed(42)
-        X_val = np.random.rand(100, 1)
+        X_val = np.random.rand(VotingEnsemble.MIN_SAMPLES_ISOTONIC, 1)
         y_val = (X_val[:, 0] > 0.5).astype(int)
 
         e.apply_isotonic_calibration(y_val, X_val)
         assert e._is_calibrated
+        assert e.calibration_method == "isotonic"
 
         # Calibrated predictions should still be valid probabilities
         X_test = np.array([[0.3], [0.7]])
@@ -139,6 +140,38 @@ class TestVotingEnsemble:
         assert len(proba) == 2
         assert 0.0 <= proba[0] <= 1.0
         assert 0.0 <= proba[1] <= 1.0
+
+    def test_platt_used_for_medium_samples(self):
+        """At medium N (<MIN_SAMPLES_ISOTONIC) the calibrator must be Platt, not isotonic.
+
+        This is the regression for the "ML always shows 95%" failure mode:
+        previously isotonic ran on as few as 50 samples and collapsed into a
+        high plateau. Now anything below MIN_SAMPLES_ISOTONIC must use the
+        smooth Platt sigmoid.
+        """
+        e = VotingEnsemble()
+        e.add_member(FakeModel(), "rf", 1.0)
+        np.random.seed(0)
+        n = VotingEnsemble.MIN_SAMPLES_ISOTONIC - 1
+        X_val = np.random.rand(n, 1)
+        y_val = (X_val[:, 0] > 0.5).astype(int)
+
+        e.apply_isotonic_calibration(y_val, X_val)
+
+        assert e._is_calibrated
+        assert e.calibration_method == "platt", (
+            f"Expected Platt for n={n} (<{VotingEnsemble.MIN_SAMPLES_ISOTONIC}), "
+            f"got {e.calibration_method}"
+        )
+
+    def test_isotonic_threshold_is_at_least_200(self):
+        """Locks the floor introduced for the calibration-collapse fix.
+
+        Lowering MIN_SAMPLES_ISOTONIC reintroduces plateau-style calibration
+        (e.g. all signals → ~0.95) on typical training-set sizes. Bump
+        deliberately and update this test if you really want to lower it.
+        """
+        assert VotingEnsemble.MIN_SAMPLES_ISOTONIC >= 200
 
     def test_uncalibrated_returns_raw(self):
         """Without calibration, predict_proba_calibrated == predict_proba."""
@@ -148,6 +181,22 @@ class TestVotingEnsemble:
         raw = e.predict_proba(X)
         calibrated = e.predict_proba_calibrated(X)
         assert abs(raw[0] - calibrated[0]) < 0.001
+        assert e.calibration_method == "none"
+
+    def test_calibration_method_property_default(self):
+        """A fresh ensemble reports 'none' until apply_isotonic_calibration runs."""
+        e = VotingEnsemble()
+        assert e.calibration_method == "none"
+
+    def test_calibration_skipped_when_single_class(self):
+        """If validation y has a single class, calibration is a no-op (stays 'none')."""
+        e = VotingEnsemble()
+        e.add_member(FakeModel(), "rf", 1.0)
+        X_val = np.random.rand(VotingEnsemble.MIN_SAMPLES_ISOTONIC, 1)
+        y_val = np.zeros(VotingEnsemble.MIN_SAMPLES_ISOTONIC, dtype=int)  # all zeros
+        e.apply_isotonic_calibration(y_val, X_val)
+        assert e.calibration_method == "none"
+        assert not e._is_calibrated
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

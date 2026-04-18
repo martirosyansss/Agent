@@ -49,6 +49,7 @@ class VotingEnsemble:
         self._members: list[tuple[Any, str, float]] = []  # (model, tag, weight)
         self._calibrator: Optional[Any] = None
         self._is_calibrated: bool = False
+        self._calibration_method: str = "none"  # "none" | "platt" | "isotonic"
 
     def add_member(self, model: Any, tag: str, skill_score: float) -> None:
         """Add a trained model to the ensemble."""
@@ -99,23 +100,32 @@ class VotingEnsemble:
 
     # Minimum validation-set size for isotonic calibration. Below this we fall
     # back to Platt (sigmoid) scaling, which fits only two parameters and is
-    # far more stable on tiny samples. 50 samples gives ~6 bins × 8 points —
-    # enough for isotonic to produce a smooth staircase rather than 2-3 plateaus.
-    MIN_SAMPLES_ISOTONIC: int = 50
+    # far more stable on small/medium samples.
+    #
+    # Empirically 50 was too low: at 50–150 samples isotonic still collapses
+    # into 3–5 step plateaus, often with a high one (~0.85–0.96), so every raw
+    # score gets mapped onto that plateau and the displayed "ML probability"
+    # looks systematically inflated. Platt (1 free parameter, monotonic
+    # sigmoid) keeps the ranking and produces smooth, well-spread outputs in
+    # this regime. We only switch to isotonic once there are enough samples
+    # (~20 per bin × 10 bins) for the staircase to actually resolve the
+    # underlying P(win|score) curve.
+    MIN_SAMPLES_ISOTONIC: int = 200
 
     def apply_isotonic_calibration(
         self,
         y_val: np.ndarray,
         X_val_s: np.ndarray,
     ) -> None:
-        """Calibrate ensemble probabilities using Isotonic (≥50 samples) or Platt (<50).
+        """Calibrate ensemble probabilities using Isotonic (≥MIN_SAMPLES_ISOTONIC)
+        or Platt (below) — see MIN_SAMPLES_ISOTONIC for the rationale.
 
-        On small validation sets, unconstrained isotonic regression collapses
-        into 3-5 step plateaus — predictions become bimodal (0.6, 0.96) and the
-        block threshold no longer separates signal from noise. Below
-        MIN_SAMPLES_ISOTONIC we use Platt scaling (logistic regression with
-        2 parameters) which produces smooth, well-behaved probabilities even
-        on tiny samples.
+        On small/medium validation sets, unconstrained isotonic regression
+        collapses into 3-5 step plateaus — predictions become bimodal (e.g.
+        0.6, 0.96) and the block threshold no longer separates signal from
+        noise. Platt scaling (logistic regression, monotonic sigmoid) produces
+        smooth, well-behaved probabilities and is the default until the
+        validation set is large enough for isotonic bins to resolve.
 
         Args:
             y_val: True binary labels on validation set
@@ -138,6 +148,7 @@ class VotingEnsemble:
                 ir.fit(raw_proba, y_val)
                 self._calibrator = ir
                 self._is_calibrated = True
+                self._calibration_method = "isotonic"
                 logger.info(
                     "VotingEnsemble: Isotonic calibration on %d samples", n
                 )
@@ -148,6 +159,7 @@ class VotingEnsemble:
                 lr.fit(raw_proba.reshape(-1, 1), y_val)
                 self._calibrator = _PlattCalibrator(lr)
                 self._is_calibrated = True
+                self._calibration_method = "platt"
                 logger.info(
                     "VotingEnsemble: Platt scaling on %d samples (isotonic needs ≥%d)",
                     n, self.MIN_SAMPLES_ISOTONIC,
@@ -167,6 +179,11 @@ class VotingEnsemble:
 
     def member_count(self) -> int:
         return len(self._members)
+
+    @property
+    def calibration_method(self) -> str:
+        """Which calibrator is currently active: 'none' | 'platt' | 'isotonic'."""
+        return self._calibration_method
 
     def get_member_info(self) -> list[dict]:
         return [{"tag": tag, "weight": w} for _, tag, w in self._members]

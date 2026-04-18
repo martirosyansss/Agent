@@ -93,7 +93,7 @@ def _make_ensemble_with_member(scores_to_return: np.ndarray) -> VotingEnsemble:
 
 def test_calibration_uses_platt_on_small_sample():
     rng = np.random.default_rng(0)
-    n = 30                                # below MIN_SAMPLES_ISOTONIC=50
+    n = 30                                # well below MIN_SAMPLES_ISOTONIC
     raw = rng.uniform(0.3, 0.9, n)
     y = (raw > 0.5).astype(int)
     ens = _make_ensemble_with_member(raw)
@@ -102,10 +102,17 @@ def test_calibration_uses_platt_on_small_sample():
 
 
 def test_calibration_uses_isotonic_on_large_sample():
+    """At/above MIN_SAMPLES_ISOTONIC, isotonic must be selected.
+
+    The threshold was raised (50→200) to fix calibration plateaus that
+    inflated displayed probabilities; sample size below MUST track the
+    constant so this test stays meaningful.
+    """
     from sklearn.isotonic import IsotonicRegression
+    from analyzer.ml_ensemble import VotingEnsemble
 
     rng = np.random.default_rng(1)
-    n = 100
+    n = VotingEnsemble.MIN_SAMPLES_ISOTONIC
     raw = rng.uniform(0.2, 0.95, n)
     y = (raw > 0.5).astype(int)
     # guarantee both classes present

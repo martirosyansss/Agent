@@ -276,3 +276,199 @@ class TestConfig:
     def test_needs_retrain_fresh(self, predictor):
         predictor._last_train_ts = int(time.time() * 1000)
         assert predictor.needs_retrain() is False
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Calibration diagnostics
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestExpectedCalibrationError:
+    """Coverage for MLPredictor._expected_calibration_error.
+
+    ECE is the diagnostic that catches the "every signal looks like 95%"
+    failure mode that AUC/precision miss. These tests pin the contract.
+    """
+
+    def _ece(self, y_true, y_proba, n_bins=10):
+        import numpy as np
+        return MLPredictor._expected_calibration_error(
+            np.asarray(y_true), np.asarray(y_proba), n_bins=n_bins,
+        )
+
+    def test_perfect_calibration_zero(self):
+        # Confidence == realized frequency in every populated bin → ECE = 0.
+        y_true  = [0, 0, 1, 1]
+        y_proba = [0.0, 0.0, 1.0, 1.0]
+        assert self._ece(y_true, y_proba) == pytest.approx(0.0, abs=1e-9)
+
+    def test_inverted_calibration_max(self):
+        # Confidence 1.0 on losses and 0.0 on wins → ECE = 1.0 (maximally bad).
+        y_true  = [0, 0, 1, 1]
+        y_proba = [1.0, 1.0, 0.0, 0.0]
+        assert self._ece(y_true, y_proba) == pytest.approx(1.0, abs=1e-9)
+
+    def test_constant_high_proba_against_balanced_outcomes(self):
+        # The exact "always shows 95%" pathology: model claims 0.9 confidence
+        # but only 50% of trades actually win → ECE ≈ 0.4.
+        y_true  = [0, 1, 0, 1, 0, 1, 0, 1]
+        y_proba = [0.9] * 8
+        assert self._ece(y_true, y_proba) == pytest.approx(0.4, abs=0.01)
+
+    def test_empty_input_returns_zero(self):
+        assert self._ece([], []) == 0.0
+
+    def test_handles_proba_at_exact_bin_edge(self):
+        # 1.0 must land in the last bin (not overflow); single bin → ECE = 0.
+        y_true  = [1, 1, 1]
+        y_proba = [1.0, 1.0, 1.0]
+        assert self._ece(y_true, y_proba) == pytest.approx(0.0, abs=1e-9)
+
+
+class TestMLMetricsCalibrationFields:
+    """MLMetrics carries calibration diagnostics through save/load and to consumers."""
+
+    def test_defaults(self):
+        m = MLMetrics()
+        assert m.brier_score == 0.0
+        assert m.ece == 0.0
+        assert m.mean_proba == 0.5
+        assert m.median_proba == 0.5
+        assert m.proba_p10 == 0.0
+        assert m.proba_p90 == 1.0
+        assert m.calibration_method == "none"
+
+    def test_explicit_assignment(self):
+        m = MLMetrics(
+            brier_score=0.18, ece=0.07, mean_proba=0.62,
+            median_proba=0.58, proba_p10=0.35, proba_p90=0.82,
+            calibration_method="platt",
+        )
+        assert m.brier_score == 0.18
+        assert m.ece == 0.07
+        assert m.calibration_method == "platt"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Backtest training pipeline plumbing
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestTrainMLPipelinePlumbing:
+    """Regression tests for the train_ml.py → StrategyTrade conversion.
+
+    The training script must propagate every feature it has access to;
+    silently dropping `trend_alignment` (computed by FeatureBuilder, available
+    in backtest) caused that feature to land in training as a constant 0.5
+    and get flagged as zero-variance noise.
+    """
+
+    def test_backtest_to_strategy_trade_propagates_trend_alignment(self):
+        from scripts.train_ml import backtest_trade_to_strategy_trade
+        from backtest.engine import BacktestTrade
+
+        bt = BacktestTrade(
+            symbol="BTCUSDT", entry_time=1_700_000_000_000, exit_time=1_700_000_300_000,
+            entry_price=60000.0, exit_price=60500.0, quantity=0.01,
+            pnl=5.0, pnl_pct=0.83, commission=0.06, reason="exit",
+        )
+        st = backtest_trade_to_strategy_trade(
+            bt, "ema_crossover_rsi",
+            features_at_entry={"trend_alignment": 0.83},
+        )
+        assert st.trend_alignment == pytest.approx(0.83)
+
+    def test_backtest_to_strategy_trade_defaults_when_feature_missing(self):
+        """If an upstream version of the training script doesn't pass it, the
+        StrategyTrade default of 0.5 must still hold (no crash, no None)."""
+        from scripts.train_ml import backtest_trade_to_strategy_trade
+        from backtest.engine import BacktestTrade
+
+        bt = BacktestTrade(
+            symbol="BTCUSDT", entry_time=1_700_000_000_000, exit_time=1_700_000_300_000,
+            entry_price=60000.0, exit_price=60500.0, quantity=0.01,
+            pnl=5.0, pnl_pct=0.83, commission=0.06, reason="exit",
+        )
+        st = backtest_trade_to_strategy_trade(bt, "ema_crossover_rsi")
+        assert st.trend_alignment == 0.5  # dataclass default
+
+
+class TestOverfitNoiseMargin:
+    """Statistical margin for the train-vs-val precision gap.
+
+    The previous flat heuristic (`0.5 / sqrt(n_val)`) ignored both training
+    sample size and the actual proportion p, so it falsely rejected models
+    whose train/val gap was within sampling noise. These tests pin the
+    statistically-correct behavior.
+    """
+
+    def _m(self, p_train, p_val, n_train, n_val, z=1.96):
+        return MLPredictor._overfit_noise_margin(p_train, p_val, n_train, n_val, z=z)
+
+    def test_zero_when_either_sample_empty(self):
+        assert self._m(0.5, 0.5, 0, 100) == 0.0
+        assert self._m(0.5, 0.5, 100, 0) == 0.0
+
+    def test_shrinks_with_n(self):
+        big   = self._m(0.5, 0.5, 10_000, 10_000)
+        small = self._m(0.5, 0.5, 100, 100)
+        assert big < small
+        # n×100 → margin ≈ /10 (sqrt-scaling)
+        assert big == pytest.approx(small / 10.0, rel=0.05)
+
+    def test_smaller_at_extreme_proportions(self):
+        # At p ≈ 0.95 the binomial variance p(1-p) is far smaller than at 0.5,
+        # so the margin should be too — preventing false-rejection of models
+        # that genuinely converge to high precision on both splits.
+        m_extreme = self._m(0.95, 0.92, 600, 130)
+        m_middle  = self._m(0.50, 0.50, 600, 130)
+        assert m_extreme < m_middle
+
+    def test_regression_gap_0166_now_passes(self):
+        """The exact case that surfaced in the live training log:
+        train_prec=0.833 val_prec=0.667 n_train≈590 n_val=126.
+        Old flat threshold 0.145 rejected gap=0.166; the statistically-correct
+        threshold (base 0.10 + 1.96σ margin) must accept it."""
+        margin = self._m(0.833, 0.667, 590, 126)
+        # 1.96 × sqrt(0.833·0.167/590 + 0.667·0.333/126) ≈ 0.088
+        assert margin == pytest.approx(0.088, abs=0.005)
+        threshold = 0.10 + margin                # base + noise
+        assert 0.166 <= threshold, (
+            f"Statistical threshold {threshold:.3f} should accept gap=0.166 "
+            f"(was falsely rejected at flat threshold 0.145)"
+        )
+
+    def test_truly_overfit_still_rejected(self):
+        """A train/val precision drop of 0.30 on healthy n must still be flagged."""
+        margin = self._m(0.95, 0.65, 1000, 200)
+        threshold = 0.10 + margin
+        # gap = 0.30 must exceed base + margin
+        assert 0.30 > threshold
+
+
+class TestZeroVarianceForceDrop:
+    """The training routine must remove zero-variance features unconditionally.
+
+    Tree models occasionally split on a constant column (driven by sample
+    weight ties), which can leave the feature with a non-zero "importance"
+    that sneaks past the AdaptiveFeatureSelector. We zero its importance
+    explicitly so it cannot end up in the deployed feature vector — otherwise
+    the StandardScaler divides a constant by std=0 → numerical noise that
+    inflates the calibrated probability spread.
+    """
+
+    def test_dead_feature_importance_zeroed_before_selector_fit(self):
+        """Constant column → variance==0 → its importance must be zeroed
+        before AdaptiveFeatureSelector.fit, regardless of any non-zero
+        importance the underlying model may have assigned to it.
+        """
+        from analyzer.ml_ensemble import AdaptiveFeatureSelector
+        feature_names = ["a", "b", "c"]
+        # Model gave the dead feature 'b' a small but non-zero importance.
+        importances = {"a": 0.3, "b": 0.005, "c": 0.4}
+        # Simulate the force-drop step from train(): set dead importances to 0.
+        for dead in ["b"]:
+            importances[dead] = 0.0
+        sel = AdaptiveFeatureSelector(min_importance=0.001)
+        sel.fit(importances, feature_names)
+        assert "b" in sel.dropped_names
+        assert "a" in sel.selected_names
+        assert "c" in sel.selected_names

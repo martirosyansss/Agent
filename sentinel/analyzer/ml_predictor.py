@@ -228,6 +228,15 @@ class MLMetrics:
     auc_lift: float = 0.0             # model AUC − 0.5 (random baseline)
     # Out-of-time robustness
     oot_auc: float | None = None      # AUC on most-recent 20% (independent OOT set)
+    # Calibration diagnostics — flag silent biases like "every prediction ≈ 0.9"
+    # that hurt downstream interpretation even when AUC/precision look fine.
+    brier_score: float = 0.0          # mean (proba - actual)² on holdout, lower is better
+    ece: float = 0.0                  # Expected Calibration Error (10 bins) on holdout
+    mean_proba: float = 0.5           # mean calibrated probability across holdout
+    median_proba: float = 0.5         # median — flags one-sided distributions
+    proba_p10: float = 0.0            # 10th percentile — should not collapse onto p90
+    proba_p90: float = 1.0            # 90th percentile
+    calibration_method: str = "none"  # "none" | "platt" | "isotonic"
 
 
 @dataclass
@@ -661,6 +670,84 @@ class MLPredictor:
         return pf / 3.0  # normalize to 0..1
 
     @staticmethod
+    def _overfit_noise_margin(
+        p_train: float,
+        p_val: float,
+        n_train: int,
+        n_val: int,
+        z: float = 1.96,
+    ) -> float:
+        """Statistical margin for the train-vs-val precision gap.
+
+        The previous formula `0.5 / sqrt(n_val)` was a flat heuristic that
+        ignored both the training-side variance and the actual proportion p,
+        so it falsely rejected models on small samples whose gap was within
+        sampling noise. This helper returns the *real* z-σ margin for the
+        difference of two binomial proportions:
+
+            SE(p_train) = sqrt(p_train * (1 - p_train) / n_train)
+            SE(p_val)   = sqrt(p_val   * (1 - p_val)   / n_val)
+            margin      = z * sqrt(SE_train² + SE_val²)
+
+        At small n_val (typical for our 70/15/15 splits) this is meaningfully
+        larger than the heuristic; at large n_val it converges to it. Caller
+        adds it to a base tolerance (e.g. `cfg.max_overfit_gap`) and rejects
+        the candidate only when the observed gap exceeds the sum.
+
+        Returns 0 if either sample is empty (caller should treat that as
+        "not enough data to call overfitting either way").
+        """
+        if n_train <= 0 or n_val <= 0:
+            return 0.0
+        # Clamp p into (0, 1) to avoid SE collapsing to 0 when a model trivially
+        # predicts a single class on either split — that hides real variance.
+        p_t = min(max(p_train, 1e-3), 1.0 - 1e-3)
+        p_v = min(max(p_val,   1e-3), 1.0 - 1e-3)
+        var_t = p_t * (1.0 - p_t) / n_train
+        var_v = p_v * (1.0 - p_v) / n_val
+        return float(z * (var_t + var_v) ** 0.5)
+
+    @staticmethod
+    def _expected_calibration_error(
+        y_true: np.ndarray,
+        y_proba: np.ndarray,
+        n_bins: int = 10,
+    ) -> float:
+        """Expected Calibration Error: mean |confidence − accuracy| across equal-width bins.
+
+        ECE complements Brier score: a model with ECE > ~0.10 is meaningfully
+        miscalibrated (the displayed probabilities don't match realized
+        frequencies). Empty bins are skipped, so this is robust on the small
+        holdout sets we work with (~50–300 samples).
+
+        Args:
+            y_true:  Binary labels in {0, 1}, shape (n,)
+            y_proba: Predicted probabilities in [0, 1], shape (n,)
+            n_bins:  Number of equal-width bins (default 10 → bin width 0.1)
+
+        Returns:
+            ECE in [0, 1]. 0 = perfectly calibrated, 1 = maximally miscalibrated.
+        """
+        y_true = np.asarray(y_true, dtype=np.float64)
+        y_proba = np.asarray(y_proba, dtype=np.float64)
+        if len(y_true) == 0:
+            return 0.0
+        bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+        # Bin index per sample; clip the right edge so 1.0 lands in the last bin.
+        bin_idx = np.clip(np.digitize(y_proba, bin_edges[1:-1]), 0, n_bins - 1)
+        n = len(y_true)
+        ece = 0.0
+        for b in range(n_bins):
+            mask = bin_idx == b
+            count = int(mask.sum())
+            if count == 0:
+                continue
+            avg_conf = float(y_proba[mask].mean())
+            avg_acc  = float(y_true[mask].mean())
+            ece += (count / n) * abs(avg_conf - avg_acc)
+        return float(ece)
+
+    @staticmethod
     def _compute_temporal_weights(n: int, decay: float = _TEMPORAL_DECAY) -> np.ndarray:
         """Exponential temporal weights: recent trades weighted more.
 
@@ -840,12 +927,18 @@ class MLPredictor:
         pnl_values = [t.pnl_usd for t in trades]
 
         # Zero-variance feature detection: features that are constant (e.g. always 0)
-        # provide no signal and indicate a broken upstream data pipeline.
+        # provide no signal and either indicate a broken upstream data pipeline
+        # or a feature that simply isn't available in this training corpus
+        # (e.g. news_sentiment during pure-backtest training has no live news
+        # to read). We always force-drop them via the AdaptiveFeatureSelector
+        # below so they cannot end up in the deployed feature vector and
+        # contaminate the StandardScaler's mean/std with constants.
         _variances = np.var(X, axis=0)
         _dead = [FEATURE_NAMES[i] for i in range(len(FEATURE_NAMES)) if i < len(_variances) and _variances[i] < 1e-12]
         if _dead:
             logger.warning(
-                "ML train: %d ZERO-VARIANCE features detected (no signal): %s — check data pipeline",
+                "ML train: %d ZERO-VARIANCE features will be force-dropped: %s "
+                "— upstream data pipeline produces a constant value here",
                 len(_dead), ", ".join(_dead),
             )
 
@@ -950,17 +1043,17 @@ class MLPredictor:
                 logger.debug("XGBoost training failed: %s", xgb_err)
                 xgb = None
 
-        # Adaptive overfit threshold: base gap + variance correction for small val sets.
-        # Precision std on n samples ≈ sqrt(p*(1-p)/n). With p≈0.5,
-        # observed gap ≈ 0.5/√n due to sampling noise alone.
+        # Per-candidate overfit threshold = base gap + statistical noise margin.
+        # The real noise depends on the model's actual train/val precisions
+        # (a candidate predicting near 0.5 has much wider CI than one near 0.95),
+        # so this is recomputed inside the loop instead of one global value.
+        # We log the worst-case (p=0.5) margin upfront just for context.
         _n_val = len(y_val)
-        _adaptive_gap = min(
-            0.18,
-            self._cfg.max_overfit_gap + 0.5 / (_n_val ** 0.5) if _n_val > 0 else self._cfg.max_overfit_gap,
-        )
+        _n_train = len(y_train)
+        _worst_case_margin = self._overfit_noise_margin(0.5, 0.5, _n_train, _n_val)
         logger.info(
-            "ML overfit guard: base=%.2f adaptive=%.3f (n_val=%d)",
-            self._cfg.max_overfit_gap, _adaptive_gap, _n_val,
+            "ML overfit guard: base=%.2f worst-case_margin=%.3f (n_train=%d n_val=%d)",
+            self._cfg.max_overfit_gap, _worst_case_margin, _n_train, _n_val,
         )
 
         # Evaluate each candidate on validation set, reject overfit models
@@ -993,10 +1086,14 @@ class MLPredictor:
             y_train_pred_c = candidate.predict(X_train_s)
             train_prec_c = precision_score(y_train, y_train_pred_c, zero_division=0)
             overfit_gap = train_prec_c - prec_v
-            if overfit_gap > _adaptive_gap:
+            noise_margin = self._overfit_noise_margin(train_prec_c, prec_v, _n_train, _n_val)
+            cand_threshold = self._cfg.max_overfit_gap + noise_margin
+            if overfit_gap > cand_threshold:
                 logger.warning(
-                    "ML OVERFITTING [%s]: train_prec=%.3f val_prec=%.3f gap=%.3f (threshold=%.3f) — REJECTED",
-                    tag, train_prec_c, prec_v, overfit_gap, _adaptive_gap,
+                    "ML OVERFITTING [%s]: train_prec=%.3f val_prec=%.3f gap=%.3f "
+                    "(threshold=%.3f = base %.2f + 1.96σ noise %.3f) — REJECTED",
+                    tag, train_prec_c, prec_v, overfit_gap,
+                    cand_threshold, self._cfg.max_overfit_gap, noise_margin,
                 )
                 continue
 
@@ -1044,6 +1141,13 @@ class MLPredictor:
         # Phase 2: Apply feature selector → refit scaler → retrain all models on selected features
         # This ensures inference pipeline matches training exactly:
         # predict(): selector.transform(30→N) → scaler.transform(N) → model.predict(N)
+        #
+        # Force-drop zero-variance features by zeroing their importance: the
+        # selector keeps anything ≥ min_importance, and tree models can give a
+        # constant column a small but non-zero "importance" via spurious early
+        # splits, so we explicitly suppress them here.
+        for _dead_name in _dead:
+            importances[_dead_name] = 0.0
         self._feature_selector.fit(importances, FEATURE_NAMES)
 
         if self._feature_selector.dropped_names:
@@ -1101,8 +1205,14 @@ class MLPredictor:
                 skill_v = compute_skill_score(prec_v, rec_v, auc_v, pf_v)
                 y_train_pred_c = candidate.predict(X_train_s)
                 train_prec_c   = precision_score(y_train, y_train_pred_c, zero_division=0)
-                if train_prec_c - prec_v > _adaptive_gap:
-                    logger.warning("ML phase-2 OVERFITTING [%s]: gap=%.3f (threshold=%.3f) — REJECTED", tag, train_prec_c - prec_v, _adaptive_gap)
+                noise_margin_p2 = self._overfit_noise_margin(train_prec_c, prec_v, _n_train, _n_val)
+                cand_threshold_p2 = self._cfg.max_overfit_gap + noise_margin_p2
+                if train_prec_c - prec_v > cand_threshold_p2:
+                    logger.warning(
+                        "ML phase-2 OVERFITTING [%s]: gap=%.3f (threshold=%.3f = base %.2f + 1.96σ noise %.3f) — REJECTED",
+                        tag, train_prec_c - prec_v, cand_threshold_p2,
+                        self._cfg.max_overfit_gap, noise_margin_p2,
+                    )
                     continue
                 ensemble.add_member(candidate, tag, skill_v)
                 candidate_metrics[tag] = skill_v
@@ -1273,8 +1383,14 @@ class MLPredictor:
 
                     y_train_pred_b = candidate_b.predict(X_train_s)
                     train_prec_b = precision_score(y_train, y_train_pred_b, zero_division=0)
-                    if train_prec_b - prec_bv > _adaptive_gap:
-                        logger.warning("ML recovery [%s]: overfitting gap=%.3f — skipped", tag_b, train_prec_b - prec_bv)
+                    noise_margin_b = self._overfit_noise_margin(train_prec_b, prec_bv, _n_train, _n_val)
+                    cand_threshold_b = self._cfg.max_overfit_gap + noise_margin_b
+                    if train_prec_b - prec_bv > cand_threshold_b:
+                        logger.warning(
+                            "ML recovery [%s]: overfitting gap=%.3f > threshold=%.3f (base %.2f + 1.96σ noise %.3f) — skipped",
+                            tag_b, train_prec_b - prec_bv, cand_threshold_b,
+                            self._cfg.max_overfit_gap, noise_margin_b,
+                        )
                         continue
 
                     ensemble_b.add_member(candidate_b, tag_b, skill_bv)
@@ -1406,6 +1522,39 @@ class MLPredictor:
             except Exception as _oot_err:
                 logger.warning("OOT test failed: %s", _oot_err)
 
+        # --- Calibration diagnostics on the FINAL chosen ensemble -----------
+        # Computed here (after both Phase A threshold-bump and Phase B retrain
+        # have settled) so the persisted metrics describe the model that will
+        # actually be deployed. ECE/Brier/percentiles flag the "every signal
+        # ≈ 95%" failure mode that AUC/precision alone cannot catch.
+        from sklearn.metrics import brier_score_loss
+        raw_holdout_final = ensemble.predict_proba(X_test_s)
+        try:
+            brier_raw = float(brier_score_loss(y_test, raw_holdout_final))
+            brier_cal = float(brier_score_loss(y_test, y_proba_holdout))
+        except ValueError:
+            brier_raw = brier_cal = 0.0
+        ece_cal      = self._expected_calibration_error(y_test, y_proba_holdout, n_bins=10)
+        proba_mean   = float(y_proba_holdout.mean())
+        proba_median = float(np.median(y_proba_holdout))
+        proba_p10    = float(np.percentile(y_proba_holdout, 10))
+        proba_p90    = float(np.percentile(y_proba_holdout, 90))
+        cal_method   = ensemble.calibration_method
+        logger.info(
+            "ML calibration [%s]: brier raw=%.3f cal=%.3f | ECE=%.3f | "
+            "proba mean=%.3f median=%.3f p10=%.3f p90=%.3f (n=%d)",
+            cal_method, brier_raw, brier_cal, ece_cal,
+            proba_mean, proba_median, proba_p10, proba_p90, len(y_proba_holdout),
+        )
+        if proba_p10 > 0.70 or ece_cal > 0.15:
+            # Loud signal that the displayed probabilities are inflated or
+            # clumped — usually a calibration bug, not real model strength.
+            logger.warning(
+                "ML calibration suspicious: p10=%.3f ECE=%.3f method=%s — outputs look "
+                "inflated or clumped. Check class balance and isotonic plateau collapse.",
+                proba_p10, ece_cal, cal_method,
+            )
+
         metrics = MLMetrics(
             precision=best_precision,
             recall=best_recall,
@@ -1421,6 +1570,13 @@ class MLPredictor:
             precision_lift=precision_lift,
             auc_lift=auc_lift,
             oot_auc=oot_auc,
+            brier_score=brier_cal,
+            ece=ece_cal,
+            mean_proba=proba_mean,
+            median_proba=proba_median,
+            proba_p10=proba_p10,
+            proba_p90=proba_p90,
+            calibration_method=cal_method,
         )
 
         # Gate check — reject if below quality thresholds
@@ -1576,6 +1732,14 @@ class MLPredictor:
                     "auc_lift": self._metrics.auc_lift,
                     # Out-of-time robustness
                     "oot_auc": self._metrics.oot_auc,
+                    # Calibration diagnostics — visible after restart
+                    "brier_score": self._metrics.brier_score,
+                    "ece": self._metrics.ece,
+                    "mean_proba": self._metrics.mean_proba,
+                    "median_proba": self._metrics.median_proba,
+                    "proba_p10": self._metrics.proba_p10,
+                    "proba_p90": self._metrics.proba_p90,
+                    "calibration_method": self._metrics.calibration_method,
                 }
             data = {
                 # v3: full ensemble (primary predictor)
@@ -1709,15 +1873,31 @@ class MLPredictor:
 
             metrics_dict = data.get("metrics", {})
             if metrics_dict:
+                # .get() with dataclass defaults so older saves stay loadable.
+                pci = metrics_dict.get("precision_ci_95")
+                aci = metrics_dict.get("auc_ci_95")
                 self._metrics = MLMetrics(
-                    precision=metrics_dict.get("precision", 0),
-                    recall=metrics_dict.get("recall", 0),
-                    roc_auc=metrics_dict.get("roc_auc", 0),
-                    accuracy=metrics_dict.get("accuracy", 0),
-                    skill_score=metrics_dict.get("skill_score", 0),
+                    precision=metrics_dict.get("precision", 0.0),
+                    recall=metrics_dict.get("recall", 0.0),
+                    roc_auc=metrics_dict.get("roc_auc", 0.0),
+                    accuracy=metrics_dict.get("accuracy", 0.0),
+                    skill_score=metrics_dict.get("skill_score", 0.0),
                     train_samples=metrics_dict.get("train_samples", 0),
                     test_samples=metrics_dict.get("test_samples", 0),
                     feature_importances=metrics_dict.get("feature_importances", {}),
+                    precision_ci_95=tuple(pci) if pci else (0.0, 0.0),
+                    auc_ci_95=tuple(aci) if aci else (0.0, 0.0),
+                    baseline_win_rate=metrics_dict.get("baseline_win_rate", 0.0),
+                    precision_lift=metrics_dict.get("precision_lift", 0.0),
+                    auc_lift=metrics_dict.get("auc_lift", 0.0),
+                    oot_auc=metrics_dict.get("oot_auc"),
+                    brier_score=metrics_dict.get("brier_score", 0.0),
+                    ece=metrics_dict.get("ece", 0.0),
+                    mean_proba=metrics_dict.get("mean_proba", 0.5),
+                    median_proba=metrics_dict.get("median_proba", 0.5),
+                    proba_p10=metrics_dict.get("proba_p10", 0.0),
+                    proba_p90=metrics_dict.get("proba_p90", 1.0),
+                    calibration_method=metrics_dict.get("calibration_method", "none"),
                 )
 
             # Ready if ensemble present OR legacy model present
