@@ -140,16 +140,40 @@ class MLWalkForwardValidator:
         anchored: bool = False,
         min_train_size: int = 100,
         min_test_size: int = 30,
+        purge: int = 0,
+        embargo: int = 0,
     ) -> None:
+        """Initialise the walk-forward validator.
+
+        Args:
+            purge: Number of samples at the tail of the training window
+                to drop. Addresses López de Prado's "purging": when a
+                label at position ``t`` is computed from information
+                through ``t + horizon``, training on rows near the test
+                boundary can leak future information. Default 0 (off);
+                a value of ``horizon`` is the conservative choice.
+            embargo: Number of samples between train_end and test_start
+                to skip entirely. Addresses autocorrelation leak: if
+                adjacent rows share features (e.g. rolling windows),
+                train and test must be separated by a gap large enough
+                that no test row sees a feature computed jointly with
+                a training row's label. Default 0 (off).
+        """
         if n_folds < 2:
             raise ValueError(f"n_folds must be >= 2, got {n_folds}")
         if not 0.0 < test_fraction < 0.5:
             raise ValueError(f"test_fraction must be in (0, 0.5), got {test_fraction}")
+        if purge < 0:
+            raise ValueError(f"purge must be >= 0, got {purge}")
+        if embargo < 0:
+            raise ValueError(f"embargo must be >= 0, got {embargo}")
         self.n_folds = n_folds
         self.test_fraction = test_fraction
         self.anchored = anchored
         self.min_train_size = min_train_size
         self.min_test_size = min_test_size
+        self.purge = purge
+        self.embargo = embargo
 
     # ──────────────────────────────────────────────────────────
     # Public API
@@ -194,6 +218,17 @@ class MLWalkForwardValidator:
             else:
                 train_start = max(0, test_start - rolling_train_size)
                 train_end = test_start
+            # Purge + embargo (López de Prado): drop ``purge`` samples
+            # from the tail of train (possibly label-leaking rows) and
+            # skip ``embargo`` samples between train and test (feature-
+            # autocorrelation buffer). Both default to 0 = off.
+            if self.purge > 0:
+                train_end = max(train_start, train_end - self.purge)
+            if self.embargo > 0:
+                # Shrink training window from the right by ``embargo``
+                # to create the gap (test_start stays put; we just
+                # sacrifice the last embargo rows of training).
+                train_end = max(train_start, train_end - self.embargo)
             if train_end - train_start < self.min_train_size:
                 continue
             if test_end - test_start < self.min_test_size:
