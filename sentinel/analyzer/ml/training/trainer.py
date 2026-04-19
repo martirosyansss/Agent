@@ -25,10 +25,110 @@ import numpy as np
 from core.models import StrategyTrade
 
 from ..domain.constants import FEATURE_NAMES
-from ..domain.metrics import MLMetrics
+from ..domain.metrics import (
+    MLMetrics,
+    compute_pnl_risk_metrics,
+    compute_pnl_risk_metrics_per_symbol,
+)
 from ..domain.scoring import compute_skill_score
+from ..monitoring.feature_drift import FeatureDriftMonitor
 
 logger = logging.getLogger(__name__)
+
+# Number of consecutive non-improving rounds before LGBM/XGB stop. Twenty
+# is a standard default for both libraries — large enough to ride through
+# noise on small validation sets, small enough that runaway boosters get
+# pruned long before the configured n_estimators=250.
+_EARLY_STOPPING_ROUNDS = 20
+
+
+def _fit_with_early_stopping(
+    model: Any,
+    kind: str,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    sample_weight: Optional[np.ndarray],
+) -> None:
+    """Fit a gradient booster with validation-set early stopping.
+
+    Without early stopping, LGBM/XGB train all 250 boosting rounds even
+    when validation logloss has plateaued or started rising — directly
+    overfitting the train set on noisy / small datasets. With early
+    stopping the booster stops as soon as the val metric fails to improve
+    for ``_EARLY_STOPPING_ROUNDS`` consecutive rounds, then keeps the
+    weights from the best iteration.
+
+    Falls back to a plain ``fit()`` (without early stopping) if:
+
+    * the validation set is too small to be a reliable signal (< 10 rows,
+      or fewer than 2 classes), or
+    * the installed library version doesn't support the eval_set / callback
+      API used here (handled via TypeError catch).
+
+    Mutates ``model`` in place; returns ``None``.
+    """
+    use_es = (
+        len(X_val) >= 10
+        and len(np.unique(y_val)) > 1
+    )
+
+    if not use_es:
+        # No usable validation signal — train all rounds without ES.
+        if sample_weight is not None:
+            model.fit(X_train, y_train, sample_weight=sample_weight)
+        else:
+            model.fit(X_train, y_train)
+        return
+
+    if kind == "lgbm":
+        try:
+            from lightgbm import early_stopping, log_evaluation
+            callbacks = [
+                early_stopping(stopping_rounds=_EARLY_STOPPING_ROUNDS, verbose=False),
+                log_evaluation(period=0),
+            ]
+            model.fit(
+                X_train, y_train,
+                sample_weight=sample_weight,
+                eval_set=[(X_val, y_val)],
+                callbacks=callbacks,
+            )
+            best_it = getattr(model, "best_iteration_", None)
+            if best_it is not None:
+                logger.debug("LightGBM early stopping at iter %d", best_it)
+            return
+        except (ImportError, TypeError) as exc:
+            logger.debug("LGBM early-stopping unavailable (%s) — falling back to plain fit", exc)
+            model.fit(X_train, y_train, sample_weight=sample_weight)
+            return
+
+    if kind == "xgb":
+        # XGBoost ≥ 1.6: prefer fit-time eval_set + verbose=False; the
+        # constructor-time early_stopping_rounds path locks in a fixed
+        # validation set at build time which doesn't survive the phase-2
+        # feature-selection re-shape.
+        try:
+            model.fit(
+                X_train, y_train,
+                sample_weight=sample_weight,
+                eval_set=[(X_val, y_val)],
+                verbose=False,
+            )
+            best_it = getattr(model, "best_iteration", None)
+            if best_it is not None:
+                logger.debug("XGBoost best iteration=%d", best_it)
+            return
+        except TypeError as exc:
+            # Older XGBoost without eval_set in fit() — fall back gracefully.
+            logger.debug("XGB early-stopping unavailable (%s) — falling back", exc)
+            model.fit(X_train, y_train, sample_weight=sample_weight)
+            return
+
+    # Unknown kind — defensive fallback.
+    model.fit(X_train, y_train, sample_weight=sample_weight)
+
 
 def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
     """Train VotingEnsemble on historical trades.
@@ -55,6 +155,41 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
     X = predictor.extract_features_batch(trades)
     y_arr = np.array([1 if t.is_win else 0 for t in trades])
     pnl_values = [t.pnl_usd for t in trades]
+
+    # Survivorship-bias diagnostic: a training set drawn only from currently-
+    # listed instruments systematically over-states future performance because
+    # delisted/bankrupt names are missing from the sample. We can't *fix* the
+    # bias here (the universe is fixed upstream), but we can flag it loudly:
+    # if the training corpus has fewer than 5 distinct symbols, or one symbol
+    # accounts for > 80% of trades, the model is at high risk of being a
+    # single-asset over-fit dressed up as a portfolio strategy.
+    _symbol_counts: dict[str, int] = {}
+    for t in trades:
+        s = getattr(t, "symbol", "") or "unknown"
+        _symbol_counts[s] = _symbol_counts.get(s, 0) + 1
+    _n_symbols = len(_symbol_counts)
+    _max_share = max(_symbol_counts.values()) / len(trades) if trades else 1.0
+    if _n_symbols < 5:
+        logger.warning(
+            "ML train: SURVIVORSHIP-BIAS RISK — only %d distinct symbol(s) in %d trades. "
+            "Live performance will likely under-perform reported metrics if any of these "
+            "symbols was selected because it survived. Include delisted / failed assets "
+            "in the training corpus to neutralise this bias.",
+            _n_symbols, len(trades),
+        )
+    elif _max_share > 0.80:
+        top_sym = max(_symbol_counts, key=_symbol_counts.get)
+        logger.warning(
+            "ML train: SURVIVORSHIP-BIAS RISK — symbol '%s' is %.0f%% of training trades. "
+            "The 'ensemble' is effectively a single-asset model — performance metrics "
+            "should be read as such, not as a multi-asset portfolio claim.",
+            top_sym, _max_share * 100.0,
+        )
+    else:
+        logger.info(
+            "ML train: corpus diversity OK — %d distinct symbols, max single-symbol share %.0f%%",
+            _n_symbols, _max_share * 100.0,
+        )
 
     # Zero-variance feature detection: features that are constant (e.g. always 0)
     # provide no signal and either indicate a broken upstream data pipeline
@@ -190,7 +325,7 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
     lgbm = predictor._build_lgbm(scale_pos_weight=eff_spw)
     if lgbm is not None:
         try:
-            lgbm.fit(X_train_s, y_train, sample_weight=train_weights)
+            _fit_with_early_stopping(lgbm, "lgbm", X_train_s, y_train, X_val_s, y_val, train_weights)
         except Exception as lgbm_err:
             logger.debug("LightGBM training failed: %s", lgbm_err)
             lgbm = None
@@ -198,7 +333,7 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
     xgb = predictor._build_xgb(scale_pos_weight=eff_spw)
     if xgb is not None:
         try:
-            xgb.fit(X_train_s, y_train, sample_weight=train_weights)
+            _fit_with_early_stopping(xgb, "xgb", X_train_s, y_train, X_val_s, y_val, train_weights)
         except Exception as xgb_err:
             logger.debug("XGBoost training failed: %s", xgb_err)
             xgb = None
@@ -220,10 +355,15 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
     # We log the worst-case (p=0.5) margin upfront just for context.
     _n_val = len(y_val)
     _n_train = len(y_train)
-    _worst_case_margin = predictor._overfit_noise_margin(0.5, 0.5, _n_train, _n_val)
+    # Bonferroni: K candidates competing for the "least overfit" slot inflate
+    # the family-wise false-acceptance rate. Counting active models here
+    # (rather than predictor._cfg.use_*) reflects what actually gets gated —
+    # if LightGBM failed to import, it doesn't consume an alpha share.
+    _n_candidates_p1 = sum(1 for c in (rf, lgbm, xgb, lr_en) if c is not None)
+    _worst_case_margin = predictor._overfit_noise_margin(0.5, 0.5, _n_train, _n_val, n_tests=_n_candidates_p1)
     logger.info(
-        "ML overfit guard: base=%.2f worst-case_margin=%.3f (n_train=%d n_val=%d)",
-        predictor._cfg.max_overfit_gap, _worst_case_margin, _n_train, _n_val,
+        "ML overfit guard: base=%.2f worst-case_margin=%.3f (n_train=%d n_val=%d, K=%d Bonferroni)",
+        predictor._cfg.max_overfit_gap, _worst_case_margin, _n_train, _n_val, _n_candidates_p1,
     )
 
     # Evaluate each candidate on validation set, reject overfit models
@@ -256,14 +396,16 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
         y_train_pred_c = candidate.predict(X_train_s)
         train_prec_c = precision_score(y_train, y_train_pred_c, zero_division=0)
         overfit_gap = train_prec_c - prec_v
-        noise_margin = predictor._overfit_noise_margin(train_prec_c, prec_v, _n_train, _n_val)
+        noise_margin = predictor._overfit_noise_margin(
+            train_prec_c, prec_v, _n_train, _n_val, n_tests=_n_candidates_p1,
+        )
         cand_threshold = predictor._cfg.max_overfit_gap + noise_margin
         if overfit_gap > cand_threshold:
             logger.warning(
                 "ML OVERFITTING [%s]: train_prec=%.3f val_prec=%.3f gap=%.3f "
-                "(threshold=%.3f = base %.2f + 1.96σ noise %.3f) — REJECTED",
+                "(threshold=%.3f = base %.2f + Bonferroni-z noise %.3f, K=%d) — REJECTED",
                 tag, train_prec_c, prec_v, overfit_gap,
-                cand_threshold, predictor._cfg.max_overfit_gap, noise_margin,
+                cand_threshold, predictor._cfg.max_overfit_gap, noise_margin, _n_candidates_p1,
             )
             continue
 
@@ -348,14 +490,14 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
         lgbm2 = predictor._build_lgbm(scale_pos_weight=eff_spw)
         if lgbm2 is not None:
             try:
-                lgbm2.fit(X_train_s, y_train, sample_weight=train_weights)
+                _fit_with_early_stopping(lgbm2, "lgbm", X_train_s, y_train, X_val_s, y_val, train_weights)
             except Exception:
                 lgbm2 = None
 
         xgb2 = predictor._build_xgb(scale_pos_weight=eff_spw)
         if xgb2 is not None:
             try:
-                xgb2.fit(X_train_s, y_train, sample_weight=train_weights)
+                _fit_with_early_stopping(xgb2, "xgb", X_train_s, y_train, X_val_s, y_val, train_weights)
             except Exception:
                 xgb2 = None
 
@@ -366,6 +508,7 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
             except Exception:
                 lr_en2 = None
 
+        _n_candidates_p2 = sum(1 for c in (rf2, lgbm2, xgb2, lr_en2) if c is not None)
         for candidate, tag in [(rf2, "rf"), (lgbm2, "lgbm"), (xgb2, "xgb"), (lr_en2, "lr_en")]:
             if candidate is None:
                 continue
@@ -385,13 +528,15 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
             skill_v = compute_skill_score(prec_v, rec_v, auc_v, pf_v)
             y_train_pred_c = candidate.predict(X_train_s)
             train_prec_c   = precision_score(y_train, y_train_pred_c, zero_division=0)
-            noise_margin_p2 = predictor._overfit_noise_margin(train_prec_c, prec_v, _n_train, _n_val)
+            noise_margin_p2 = predictor._overfit_noise_margin(
+                train_prec_c, prec_v, _n_train, _n_val, n_tests=_n_candidates_p2,
+            )
             cand_threshold_p2 = predictor._cfg.max_overfit_gap + noise_margin_p2
             if train_prec_c - prec_v > cand_threshold_p2:
                 logger.warning(
-                    "ML phase-2 OVERFITTING [%s]: gap=%.3f (threshold=%.3f = base %.2f + 1.96σ noise %.3f) — REJECTED",
+                    "ML phase-2 OVERFITTING [%s]: gap=%.3f (threshold=%.3f = base %.2f + Bonferroni-z noise %.3f, K=%d) — REJECTED",
                     tag, train_prec_c - prec_v, cand_threshold_p2,
-                    predictor._cfg.max_overfit_gap, noise_margin_p2,
+                    predictor._cfg.max_overfit_gap, noise_margin_p2, _n_candidates_p2,
                 )
                 continue
             ensemble.add_member(candidate, tag, skill_v)
@@ -543,14 +688,14 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
             lgbm_b = predictor._build_lgbm(scale_pos_weight=spw_boost, conservative=True)
             if lgbm_b is not None:
                 try:
-                    lgbm_b.fit(X_train_s, y_train, sample_weight=train_weights)
+                    _fit_with_early_stopping(lgbm_b, "lgbm", X_train_s, y_train, X_val_s, y_val, train_weights)
                 except Exception:
                     lgbm_b = None
 
             xgb_b = predictor._build_xgb(scale_pos_weight=spw_boost, conservative=True)
             if xgb_b is not None:
                 try:
-                    xgb_b.fit(X_train_s, y_train, sample_weight=train_weights)
+                    _fit_with_early_stopping(xgb_b, "xgb", X_train_s, y_train, X_val_s, y_val, train_weights)
                 except Exception:
                     xgb_b = None
 
@@ -561,6 +706,7 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
                 except Exception:
                     lr_en_b = None
 
+            _n_candidates_b = sum(1 for c in (rf_b, lgbm_b, xgb_b, lr_en_b) if c is not None)
             for candidate_b, tag_b in [(rf_b, "rf"), (lgbm_b, "lgbm"), (xgb_b, "xgb"), (lr_en_b, "lr_en")]:
                 if candidate_b is None:
                     continue
@@ -580,13 +726,15 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
 
                 y_train_pred_b = candidate_b.predict(X_train_s)
                 train_prec_b = precision_score(y_train, y_train_pred_b, zero_division=0)
-                noise_margin_b = predictor._overfit_noise_margin(train_prec_b, prec_bv, _n_train, _n_val)
+                noise_margin_b = predictor._overfit_noise_margin(
+                    train_prec_b, prec_bv, _n_train, _n_val, n_tests=_n_candidates_b,
+                )
                 cand_threshold_b = predictor._cfg.max_overfit_gap + noise_margin_b
                 if train_prec_b - prec_bv > cand_threshold_b:
                     logger.warning(
-                        "ML recovery [%s]: overfitting gap=%.3f > threshold=%.3f (base %.2f + 1.96σ noise %.3f) — skipped",
+                        "ML recovery [%s]: overfitting gap=%.3f > threshold=%.3f (base %.2f + Bonferroni-z noise %.3f, K=%d) — skipped",
                         tag_b, train_prec_b - prec_bv, cand_threshold_b,
-                        predictor._cfg.max_overfit_gap, noise_margin_b,
+                        predictor._cfg.max_overfit_gap, noise_margin_b, _n_candidates_b,
                     )
                     continue
 
@@ -810,6 +958,110 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
             cal_method, brier_cal, brier_raw,
         )
 
+    # --- Risk-adjusted PnL metrics on the model's predicted-positive set ---
+    # Sortino/Calmar/MaxDD answer "if we had only taken the trades the
+    # model flagged, what was the risk profile?". VaR/CVaR/Cornish-Fisher
+    # answer "what does the worst-case tail look like?". Returns {} when
+    # fewer than 10 predicted-positives exist — preventing noise on small N.
+    risk_metrics = compute_pnl_risk_metrics(pnl_test, y_pred_holdout)
+
+    # --- Probabilistic Sharpe Ratio (López de Prado) ---
+    # Tells us whether the observed Sharpe on the model's selected trades
+    # is statistically distinguishable from zero once skew/kurtosis and
+    # sample size are accounted for. DSR additionally compensates for the
+    # number of hyper-parameter / model variants tried so a "best of many"
+    # result doesn't slip through the gate. Computed on the same
+    # predicted-positive PnL slice so a non-trivial PSR means the *subset
+    # the model would trade* has robust skill.
+    psr_result = None
+    try:
+        from analyzer.ml.domain.psr import probabilistic_sharpe_ratio
+        _selected_pnl = np.asarray(pnl_test, dtype=np.float64).ravel()[
+            np.asarray(y_pred_holdout, dtype=np.int64).ravel() == 1
+        ]
+        # n_trials = number of ensemble members — each is a "variant"
+        # whose best-performing composition we picked. Conservative lower
+        # bound for the multiple-testing correction.
+        n_members = len(getattr(ensemble, "members", []) or []) or 1
+        psr_result = probabilistic_sharpe_ratio(
+            _selected_pnl, benchmark_sr=0.0, n_trials=n_members,
+        )
+        logger.info(
+            "PSR on predicted-positive PnL: SR=%.3f psr=%.3f dsr=%s "
+            "(n=%d, skew=%.2f, kurt=%.2f, gate=%s)",
+            psr_result.sharpe, psr_result.psr,
+            f"{psr_result.dsr:.3f}" if psr_result.dsr is not None else "n/a",
+            psr_result.n, psr_result.skewness, psr_result.kurtosis,
+            "PASS" if psr_result.gate_passed else "FAIL",
+        )
+    except Exception as exc:  # never break training on a reporting helper
+        logger.warning("PSR computation failed: %s", exc)
+    # Per-symbol breakdown — exposes whether the aggregate edge is one
+    # strong symbol carrying weak ones, or genuine multi-asset signal.
+    test_symbols = [getattr(t, "symbol", "") or "unknown"
+                    for t in trades[val_end:]]
+    per_symbol = compute_pnl_risk_metrics_per_symbol(
+        pnl_test, y_pred_holdout, test_symbols,
+    )
+    if per_symbol:
+        logger.info("ML per-symbol risk attribution (%d symbols):", len(per_symbol))
+        for sym, sub in sorted(per_symbol.items(),
+                               key=lambda kv: kv[1].get("sortino_ratio") or -999, reverse=True):
+            logger.info(
+                "  %s: n=%d sortino=%s calmar=%s max_dd=%.2f%%",
+                sym, sub.get("n_predicted_positive", 0),
+                f"{sub['sortino_ratio']:.3f}" if sub["sortino_ratio"] is not None else "n/a",
+                f"{sub['calmar_ratio']:.3f}" if sub["calmar_ratio"] is not None else "n/a",
+                sub["max_drawdown_pct"],
+            )
+
+    # --- Feature drift baseline: capture training-time reference per feature ---
+    # FeatureDriftMonitor compares live distributions against this on every
+    # subsequent predict() call. Stored on the predictor so persistence
+    # (load_from_file) can rehydrate the monitor across restarts. Reference
+    # is the FULL training-set feature matrix on the active feature
+    # selection — matches what predict() actually feeds the model.
+    try:
+        active_names = [n for n in FEATURE_NAMES
+                        if not predictor._feature_selector.dropped_names
+                        or n not in predictor._feature_selector.dropped_names]
+        # X_train_s is post-scaling; the monitor wants the same domain
+        # the live extract → scaler → model path produces.
+        if predictor._feature_drift_monitor is None:
+            predictor._feature_drift_monitor = FeatureDriftMonitor()
+        predictor._feature_drift_monitor.fit_reference(X_train_s, active_names)
+        logger.info(
+            "ML feature-drift monitor: reference captured for %d features (n_ref=%d)",
+            len(active_names), len(X_train_s),
+        )
+    except Exception as _drift_err:  # noqa: BLE001
+        logger.warning("ML feature-drift monitor init failed: %s", _drift_err)
+    if risk_metrics:
+        logger.info(
+            "ML risk metrics (predicted-positives): sortino=%s calmar=%s max_dd=%.2f%% dd_dur=%d",
+            f"{risk_metrics['sortino_ratio']:.3f}" if risk_metrics["sortino_ratio"] is not None else "n/a",
+            f"{risk_metrics['calmar_ratio']:.3f}" if risk_metrics["calmar_ratio"] is not None else "n/a",
+            risk_metrics["max_drawdown_pct"], risk_metrics["max_drawdown_duration"],
+        )
+        if risk_metrics.get("var_95") is not None:
+            logger.info(
+                "ML tail risk: VaR_95=%.2f VaR_99=%.2f CVaR_95=%.2f VaR_CF_95=%s",
+                risk_metrics["var_95"], risk_metrics["var_99"], risk_metrics["cvar_95"],
+                f"{risk_metrics['var_95_cornish_fisher']:.2f}"
+                if risk_metrics.get("var_95_cornish_fisher") is not None else "n/a",
+            )
+
+    # Cohen's d for precision-vs-baseline: standardised effect size in σ-units.
+    # Pooled SD for two binomial proportions: √[(p₁(1-p₁) + p₂(1-p₂))/2]
+    # (Cohen 1988 §6.2, treating each precision as a sample mean of {0,1}).
+    # Only meaningful when both samples have non-zero variance.
+    cohens_d: Optional[float] = None
+    p1, p2 = float(best_precision), float(baseline_win_rate)
+    if 0.0 < p1 < 1.0 and 0.0 < p2 < 1.0:
+        pooled_sd = float(np.sqrt((p1 * (1 - p1) + p2 * (1 - p2)) / 2.0))
+        if pooled_sd > 0:
+            cohens_d = (p1 - p2) / pooled_sd
+
     metrics = MLMetrics(
         precision=best_precision,
         recall=best_recall,
@@ -832,6 +1084,27 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
         proba_p10=proba_p10,
         proba_p90=proba_p90,
         calibration_method=cal_method,
+        sortino_ratio=risk_metrics.get("sortino_ratio") if risk_metrics else None,
+        calmar_ratio=risk_metrics.get("calmar_ratio") if risk_metrics else None,
+        max_drawdown_pct=risk_metrics.get("max_drawdown_pct", 0.0) if risk_metrics else 0.0,
+        max_drawdown_duration=risk_metrics.get("max_drawdown_duration", 0) if risk_metrics else 0,
+        var_95=risk_metrics.get("var_95") if risk_metrics else None,
+        var_99=risk_metrics.get("var_99") if risk_metrics else None,
+        cvar_95=risk_metrics.get("cvar_95") if risk_metrics else None,
+        var_95_cornish_fisher=risk_metrics.get("var_95_cornish_fisher") if risk_metrics else None,
+        precision_cohens_d=cohens_d,
+        per_symbol_metrics=per_symbol,
+        feature_drift_status="ok" if predictor._feature_drift_monitor and
+                              predictor._feature_drift_monitor.has_reference()
+                              else "unmonitored",
+        feature_drift_max_psi=0.0,  # baseline = 0 by definition right after fit
+        psr=psr_result.psr if psr_result is not None else None,
+        dsr=psr_result.dsr if psr_result is not None else None,
+        # n_trials = number of members (variant count) used for the
+        # deflation — stored so the dashboard can show what multi-testing
+        # correction was applied. Not sample size; that lives elsewhere.
+        psr_n_trials=(len(getattr(ensemble, "members", []) or []) or 1) if psr_result is not None else 1,
+        psr_gate_passed=bool(psr_result.gate_passed) if psr_result is not None else False,
     )
 
     # Gate check — reject if below quality thresholds
