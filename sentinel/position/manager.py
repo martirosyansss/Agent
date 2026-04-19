@@ -65,8 +65,13 @@ class PositionManager:
         self._sl_tp: dict[str, tuple[float, float]] = {}  # symbol → (stop_loss, take_profit)
         self._trailing: dict[str, tuple[float, float, float]] = {}  # symbol → (activate_pct, trail_pct, max_price)
         self._closed_positions: list[Position] = []
-        # Multi-stage TP: symbol → (tp1_price, tp2_price, tp3_price)
-        self._tp_levels: dict[str, tuple[float, float, float]] = {}
+        # Multi-stage TP ladder: symbol → ordered list of priced stages.
+        # Each stage carries its own close_pct_of_remaining and the
+        # trailing-stop config to arm after it fires — allows each
+        # strategy to define a scale-out shape tuned to its edge profile
+        # (momentum wants loose trails; mean-reversion wants tight).
+        # Imported locally inside methods to avoid a top-level cycle.
+        self._tp_levels: dict[str, list["TpStagePriced"]] = {}
         # Chandelier Exit state: symbol → dict (atr, atr_mult, activate_pct,
         # max_stop, activated, floor_at_breakeven, breakeven_buffer_pct).
         # Separate from _trailing so both mechanisms can coexist (whichever
@@ -536,33 +541,67 @@ class PositionManager:
                 "sl_after": round(new_sl, 8),
             }
 
-    async def setup_tp_levels(self, symbol: str) -> None:
-        """Setup multi-stage TP levels based on SL distance (async-safe).
+    async def setup_tp_levels(
+        self,
+        symbol: str,
+        *,
+        tp_stages: Optional[list] = None,
+    ) -> None:
+        """Setup a multi-stage TP ladder based on SL distance (async-safe).
 
-        TP1 = entry + 1.0× risk (1R) → close 50%, move SL to breakeven
-        TP2 = entry + 2.0× risk (2R) → close 30%, tighten trailing
-        TP3 = original TP (full R:R) → remaining 20% rides trailing
+        The ladder is the strategy's scale-out shape: at each R-multiple
+        rung, close a percentage of what's currently open and optionally
+        arm a tighter trailing stop. After the final rung fires, whatever
+        remains rides the last-armed trailing stop (or the original fixed
+        TP if trailing wasn't configured).
+
+        Args:
+            tp_stages: Override the strategy-default ladder. Pass a list
+                of ``risk.tp_splits.TpStage`` to use a custom shape —
+                useful for backtests comparing ladder tunings. When
+                ``None`` (the common case), the per-strategy default from
+                ``STRATEGY_TP_STAGES`` is resolved from ``pos.strategy_name``.
         """
+        from risk.tp_splits import build_priced_ladder, get_tp_stages
         async with self._lock:
             pos = self._positions.get(symbol)
-            sl, tp = self._sl_tp.get(symbol, (0.0, 0.0))
+            sl, _tp = self._sl_tp.get(symbol, (0.0, 0.0))
             if not pos or pos.entry_price <= 0 or sl <= 0:
                 return
 
-            risk = pos.entry_price - sl  # dollar risk per unit
+            risk = pos.entry_price - sl
             if risk <= 0:
                 return
 
-            tp1 = pos.entry_price + risk * 1.0   # 1R
-            tp2 = pos.entry_price + risk * 2.0   # 2R
-            tp3 = tp if tp > tp2 else pos.entry_price + risk * 3.0  # 3R or original TP
+            stages = tp_stages if tp_stages is not None else get_tp_stages(pos.strategy_name)
+            priced = build_priced_ladder(pos.entry_price, risk, stages)
+            if not priced:
+                return
 
-            self._tp_levels[symbol] = (tp1, tp2, tp3)
-            # initial_quantity set at open; keep as authoritative reference
+            self._tp_levels[symbol] = priced
             if pos.initial_quantity <= 0:
                 pos.initial_quantity = pos.quantity
             pos.original_stop_loss = sl
             pos.tp_stage = 0
+
+    def get_current_tp_stage(self, symbol: str) -> Optional["TpStagePriced"]:
+        """Return the ``TpStagePriced`` matching ``pos.tp_stage`` (read-only).
+
+        Used by the trading loop to look up the close% and post-fill
+        trailing config without duplicating the ladder shape in main.py.
+        Returns ``None`` when the ladder isn't armed or the current stage
+        index has advanced past the last rung.
+        """
+        ladder = self._tp_levels.get(symbol)
+        if not ladder:
+            return None
+        pos = self._positions.get(symbol)
+        if not pos:
+            return None
+        idx = int(pos.tp_stage)
+        if 0 <= idx < len(ladder):
+            return ladder[idx]
+        return None
 
     async def move_sl_to_breakeven(self, symbol: str) -> None:
         """Move stop-loss to entry price (breakeven) after TP1 hit (async-safe)."""
@@ -755,18 +794,18 @@ class PositionManager:
         if sl > 0 and pos.current_price <= sl:
             return "stop_loss"
 
-        # Multi-stage TP check (TP1 → TP2 → full TP)
-        if symbol in self._tp_levels and pos.entry_price > 0:
-            tp1, tp2, tp3 = self._tp_levels[symbol]
-
-            if pos.tp_stage == 0 and tp1 > 0 and pos.current_price >= tp1:
-                return "tp1_partial"   # close 50%, move SL to breakeven
-
-            if pos.tp_stage == 1 and tp2 > 0 and pos.current_price >= tp2:
-                return "tp2_partial"   # close 30% of remaining
-
-            # Stage 2+: trailing stop takes over for the remaining position
-            # Fall through to trailing check below
+        # Multi-stage TP check — flexible ladder (Phase 5).
+        # The ladder has N stages; when tp_stage == i and price ≥ stages[i].price,
+        # return f"tp{i+1}_partial". After the last rung fires, the
+        # surviving size rides whatever trailing stop the last stage armed.
+        ladder = self._tp_levels.get(symbol)
+        if ladder and pos.entry_price > 0:
+            stage_idx = int(pos.tp_stage)
+            if 0 <= stage_idx < len(ladder):
+                stage = ladder[stage_idx]
+                if stage.price > 0 and pos.current_price >= stage.price:
+                    return f"tp{stage_idx + 1}_partial"
+            # stage_idx == len(ladder): all partials done, trailing owns it.
 
         # Full take-profit (fallback when TP levels not set)
         if tp > 0 and pos.current_price >= tp:

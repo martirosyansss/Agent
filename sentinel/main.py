@@ -2440,12 +2440,20 @@ async def run() -> None:
         if not pos or pos.quantity <= 0:
             return
 
-        # Determine if this is a partial or full close
-        _is_partial = trigger in ("tp1_partial", "tp2_partial")
-        if trigger == "tp1_partial":
-            _close_pct = 50.0   # close 50% at TP1
-        elif trigger == "tp2_partial":
-            _close_pct = 60.0   # close 60% of remaining (≈30% of original)
+        # Determine if this is a partial or full close.
+        # Phase 5: TP triggers are f"tp{N}_partial" for arbitrary ladder
+        # depth; the per-stage close% and the post-fill trailing config
+        # come from the ladder state, not hard-coded here.
+        _is_partial = trigger.startswith("tp") and trigger.endswith("_partial")
+        _stage_num = 0
+        _stage_info = None
+        if _is_partial:
+            try:
+                _stage_num = int(trigger[len("tp"):-len("_partial")])
+            except ValueError:
+                _stage_num = 0
+            _stage_info = position_manager.get_current_tp_stage(symbol)
+            _close_pct = float(_stage_info.close_pct_of_remaining) if _stage_info else 50.0
         else:
             _close_pct = 100.0  # full close
 
@@ -2484,21 +2492,17 @@ async def run() -> None:
                 # Only advance state if the position is still open after partial close
                 # (partial_close_position returns None or force-closed dust => skip).
                 if closed_pos and position_manager.has_position(symbol):
-                    if trigger == "tp1_partial":
-                        # Atomic: tp_stage=1 + SL→breakeven + tighter trailing
-                        await position_manager.apply_tp_stage_transition(
-                            symbol,
-                            stage=1,
-                            move_to_breakeven=True,
-                            trailing=(1.5, 1.0),
-                        )
-                    elif trigger == "tp2_partial":
-                        # Atomic: tp_stage=2 + very tight trailing for final 20%
-                        await position_manager.apply_tp_stage_transition(
-                            symbol,
-                            stage=2,
-                            trailing=(0.5, 0.8),
-                        )
+                    # Advance tp_stage to the index of the next unmet
+                    # rung; move SL to breakeven on the first partial
+                    # only; arm the trailing configured on the stage
+                    # we just closed (``trailing_after``).
+                    _trailing = _stage_info.trailing_after if _stage_info else None
+                    await position_manager.apply_tp_stage_transition(
+                        symbol,
+                        stage=_stage_num,
+                        move_to_breakeven=(_stage_num == 1),
+                        trailing=_trailing,
+                    )
                 log.info("Partial close {} {}: {}% @ {:.2f}", trigger, symbol, _close_pct, trade.price)
             elif order:
                 log.info("{} {} @ {:.2f} — {}", trigger, symbol, trade.price, reason)
