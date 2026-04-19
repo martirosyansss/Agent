@@ -93,32 +93,25 @@ from analyzer.ml.domain.constants import (  # noqa: E402
 # unpickler tests in ``test_ml_predictor.py`` (which reach into
 # ``analyzer.ml_predictor._RestrictedUnpickler`` directly) continue
 # working without edits.
-from analyzer.ml.persistence.codec import (  # noqa: E402
+# ``_RestrictedUnpickler`` / ``_PICKLE_ALLOWED_PREFIXES`` / ``_restricted_loads``
+# are reached into by ``tests/test_ml_predictor.py::TestRestrictedUnpickler``
+# (the tests import from this module, not from ``ml/persistence/codec``).
+# They look unused here but the test contract requires them to stay.
+from analyzer.ml.persistence.codec import (  # noqa: E402, F401
     RestrictedUnpickler as _RestrictedUnpickler,
     PICKLE_ALLOWED_PREFIXES as _PICKLE_ALLOWED_PREFIXES,
     restricted_loads as _restricted_loads,
 )
 
 
-# NOTE: MLConfig / MLMetrics / MLPrediction / LivePerformanceTracker and the
-# module constants (N_FEATURES, REGIME_ENCODING, STRATEGY_REGIME_FIT,
-# FEATURE_NAMES, _SKILL_W_*, _TEMPORAL_DECAY) plus the helpers
-# compute_skill_score / wilson_lower_bound / _capture_package_versions now
-# live in ``analyzer.ml.domain``. They are re-imported at the top of this
-# module so the names ``analyzer.ml_predictor.MLConfig`` etc. still
-# resolve, keeping every existing caller + pickled model working.
-
-# The dataclass definitions that previously lived below this point
-# (MLConfig, MLMetrics, MLPrediction) now live in
-# ``analyzer.ml.domain.{config,metrics}``. They are imported at the top
-# of this module so external callers like ``main.py`` that read
-# ``analyzer.ml_predictor.MLMetrics`` are unaffected. The legacy-body
-# block that used to sit here has been removed wholesale.
-
-# Legacy dataclass definitions (MLMetrics / MLPrediction / LivePerformanceTracker)
-# have moved to ``analyzer.ml.domain.metrics``; the names are re-imported
-# at the top of this module so downstream code ``from analyzer.ml_predictor
-# import MLMetrics`` remains valid.
+# Why so many re-imports above? Round-10 extraction moved every pure-data
+# type (MLConfig, MLMetrics, MLPrediction, LivePerformanceTracker) and
+# every module-level constant (N_FEATURES, REGIME_ENCODING,
+# STRATEGY_REGIME_FIT, FEATURE_NAMES, _SKILL_W_*, _TEMPORAL_DECAY) plus
+# the scoring / versions helpers into ``analyzer.ml.domain.*``. Callers
+# still ``from analyzer.ml_predictor import MLConfig`` and pickles still
+# reference ``analyzer.ml_predictor.MLMetrics``; the re-exports keep both
+# paths resolving to the same class objects.
 
 
 class MLPredictor:
@@ -1270,19 +1263,6 @@ class MLPredictor:
         if result.attached and result.new_threshold is not None:
             self._calibrated_threshold = result.new_threshold
         return None
-
-    def _deprecated_legacy_stacking_body(
-        self,
-        report: Any,
-        X: np.ndarray,
-        y: np.ndarray,
-        pnl: Optional[np.ndarray] = None,
-    ) -> None:
-        """Legacy inline body — removed in Step 7. This no-op remains to
-        keep any lingering subclass reference non-fatal; will be deleted
-        entirely after the remaining refactor steps complete."""
-        return None
-
 
     # ──────────────────────────────────────────────────────────
     # Phase-4: regime routing

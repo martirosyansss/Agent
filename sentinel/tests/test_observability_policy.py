@@ -116,6 +116,48 @@ def test_emit_component_error_different_exc_types_not_deduped(
     assert len(events) == 2
 
 
+def test_severity_enum_accepted(_fresh_event_log: EventLog) -> None:
+    """Severity enum members and equivalent strings produce identical output."""
+    from monitoring.event_log import Severity
+    record = emit_component_error("x", "r", exc=ValueError(), severity=Severity.CRITICAL)
+    assert record is not None
+    assert record["severity"] == "critical"
+
+
+def test_unknown_severity_falls_back_to_error(_fresh_event_log: EventLog) -> None:
+    """Typo-ed severity strings don't silently create new buckets — they
+    coerce to ``error`` so the dashboard's severity histogram stays clean."""
+    record = emit_component_error("y", "r", exc=ValueError(), severity="warninng")
+    assert record is not None
+    assert record["severity"] == "error"
+
+
+def test_emit_guard_tripped_dedup_within_ttl(_fresh_event_log: EventLog) -> None:
+    """A flapping guard (e.g. CB tripping repeatedly) must not flood
+    events.jsonl. Identical (guard, name) within 15s collapses with a
+    suppressed counter on the next emission."""
+    from monitoring.event_log import emit_guard_tripped
+
+    first = emit_guard_tripped(guard="circuit_breaker", name="CB-1", reason="spike")
+    second = emit_guard_tripped(guard="circuit_breaker", name="CB-1", reason="spike again")
+    assert first is not None
+    assert second is None
+    events = _fresh_event_log.recent_events(type_filter=EventType.GUARD_TRIPPED)
+    assert len(events) == 1
+    assert events[0]["guard"] == "circuit_breaker"
+    assert events[0]["name"] == "CB-1"
+
+
+def test_emit_guard_tripped_distinct_names_not_deduped(_fresh_event_log: EventLog) -> None:
+    """Different ``name`` values are distinct keys — both should emit
+    (CB-1 trip and CB-2 trip are independent events)."""
+    from monitoring.event_log import emit_guard_tripped
+    emit_guard_tripped(guard="circuit_breaker", name="CB-1")
+    emit_guard_tripped(guard="circuit_breaker", name="CB-2")
+    events = _fresh_event_log.recent_events(type_filter=EventType.GUARD_TRIPPED)
+    assert len(events) == 2
+
+
 def test_emit_component_error_state_pruned_on_growth(_fresh_event_log: EventLog) -> None:
     """Stale dedup entries are evicted once the table exceeds the trigger size.
     Without pruning, a long-lived bot accumulating diverse (component, exc_type)
@@ -348,7 +390,12 @@ _CRITICAL_MODULES_MIN_EMITS: list[tuple[str, int]] = [
     # predictor.py``. ``ml_predictor.py`` is now a façade — its emit
     # coverage is accounted for in the new module.
     ("analyzer/ml_predictor.py", 0),               # façade — emits live in ml/ subpackage
-    ("analyzer/ml/prediction/predictor.py", 2),    # predict_from_features silent fallback (component_error + suppressed_count followup)
+    # predict_from_features emits one component_error on silent fallback.
+    # The regex also counts the ``def emit_component_error(*args, **kwargs)``
+    # optional-import fallback stub as a second match — hence baseline 2
+    # rather than 1. A future cleanup that replaces the stub with a
+    # conditional import would drop this back to 1.
+    ("analyzer/ml/prediction/predictor.py", 2),    # real emit + optional-import stub
     ("analyzer/ml_ensemble.py", 3),                # 3 silent-fallback sites
     ("analyzer/ml_stacking.py", 2),                # fit + predict
     ("analyzer/ml_regime_router.py", 2),           # train + predict
@@ -365,6 +412,7 @@ _CRITICAL_MODULES_MIN_EMITS: list[tuple[str, int]] = [
 _EMIT_CALL_PATTERNS = (
     r"\bemit_component_error\s*\(",
     r"\bemit_rejection\s*\(",
+    r"\bemit_guard_tripped\s*\(",
     r"EventType\.GUARD_TRIPPED",
     r"EventType\.COMPONENT_ERROR",
     r"EventType\.SIGNAL_APPROVED",
