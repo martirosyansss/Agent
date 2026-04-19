@@ -1785,40 +1785,10 @@ async def run() -> None:
         # Refresh Chandelier Exit ATR for the open position (if any).
         # Cheap no-op when no position is armed; when one is, a volatility
         # regime shift after entry now propagates into the trailing stop
-        # without waiting for the next open.
+        # without waiting for the next open. Regime-independent, so safe
+        # to run before regime detection.
         if position_manager.has_position(symbol) and features.atr > 0:
             await position_manager.update_chandelier_atr(symbol, features.atr)
-
-            # Phase 2: re-evaluate SL/TP under current regime + ATR.
-            # Ratchets the SL upward when either (a) position got deep
-            # into profit (breakeven raise), or (b) regime flipped
-            # adverse while we're in profit (protective tighten).
-            # Runs after regime detection so features.market_regime is
-            # already populated for this tick.
-            _reeval = await position_manager.reevaluate_sl_tp(
-                symbol,
-                current_atr=features.atr,
-                regime=features.market_regime or "",
-            )
-            _reeval_actions = _reeval.get("actions", [])
-            if _reeval_actions:
-                from monitoring.event_log import emit_guard_tripped
-                _pos_for_evt = position_manager.get_position(symbol)
-                _strat_for_evt = _pos_for_evt.strategy_name if _pos_for_evt else ""
-                for _act in _reeval_actions:
-                    emit_guard_tripped(
-                        guard="sl_reeval",
-                        name=_act["type"],
-                        reason=f"SL adjusted: {_act['from']:.4f} → {_act['to']:.4f}",
-                        severity="info",
-                        symbol=symbol,
-                        strategy=_strat_for_evt,
-                        **{k: v for k, v in _act.items() if k not in ("type", "from", "to")},
-                    )
-                    log.info(
-                        "SL re-evaluated {} ({}): {:.4f} → {:.4f}",
-                        symbol, _act["type"], _act["from"], _act["to"],
-                    )
 
         # 2.5 Update price-history cache for the correlation guard.
         # Cheap: replaces the deque each tick with the same closes feature_builder used.
@@ -1861,6 +1831,58 @@ async def run() -> None:
 
         # 3.5. Inject regime into FeatureVector for adaptive confidence thresholds
         features.market_regime = regime_name
+
+        # 3.6. Post-regime risk updates for open positions.
+        # Placed here so both hooks see the freshly detected regime.
+        if position_manager.has_position(symbol) and features.atr > 0:
+            # Phase 2: re-evaluate SL under current regime + ATR.
+            # Ratchets the SL upward when either (a) position got deep
+            # into profit (breakeven raise), or (b) regime flipped
+            # adverse while in profit (protective tighten).
+            _reeval = await position_manager.reevaluate_sl_tp(
+                symbol,
+                current_atr=features.atr,
+                regime=regime_name,
+            )
+            _reeval_actions = _reeval.get("actions", [])
+            if _reeval_actions:
+                from monitoring.event_log import emit_guard_tripped
+                _pos_for_evt = position_manager.get_position(symbol)
+                _strat_for_evt = _pos_for_evt.strategy_name if _pos_for_evt else ""
+                for _act in _reeval_actions:
+                    emit_guard_tripped(
+                        guard="sl_reeval",
+                        name=_act["type"],
+                        reason=f"SL adjusted: {_act['from']:.4f} → {_act['to']:.4f}",
+                        severity="info",
+                        symbol=symbol,
+                        strategy=_strat_for_evt,
+                        **{k: v for k, v in _act.items() if k not in ("type", "from", "to")},
+                    )
+                    log.info(
+                        "SL re-evaluated {} ({}): {:.4f} → {:.4f}",
+                        symbol, _act["type"], _act["from"], _act["to"],
+                    )
+
+            # Phase 3: hard regime-flip exit. Narrower criteria than
+            # Phase 2 tighten — only fires on confirmed bearish trend
+            # (trending_down + ADX ≥ 25). A tightened stop gives the
+            # market a chance to recover; by the time it hits, most of
+            # the open profit is already gone. This cut locks in the
+            # remainder immediately.
+            _pos_regime = position_manager.get_position(symbol)
+            if _pos_regime is not None:
+                from risk.regime_flip_exit import should_exit_on_regime_flip
+                _should_flip, _flip_reason = should_exit_on_regime_flip(
+                    strategy_name=_pos_regime.strategy_name,
+                    current_regime=regime_name,
+                    adx=features.adx,
+                )
+                if _should_flip:
+                    await _force_exit_position(
+                        _pos_regime, features, reason=_flip_reason,
+                        guard_name="regime_flip",
+                    )
 
         # 3.6. Standing ML evaluation — runs every cycle, independent of signals.
         # Gives the dashboard a fresh probability per symbol without waiting for
@@ -2320,6 +2342,59 @@ async def run() -> None:
             "strategies": strat_results,
             "msg": f"Signal found via {strat_results[-1]['strategy']}" if signal_found else f"Scanned {len(active_names)} strategies — no trade",
         })
+
+    async def _force_exit_position(pos, features, *, reason: str, guard_name: str) -> None:
+        """Hard-close a position outside the tick-level SL/TP loop.
+
+        Used by guards that fire on candle-close events (regime flip,
+        weekend cut-off, …) rather than price-tick triggers. Builds a
+        synthetic SELL signal at the close price, runs it through the
+        executor, then finalises the position. Emits a ``guard_tripped``
+        event so the transition is reconstructable from events.jsonl.
+        """
+        if trading_paused or not executor:
+            return
+        if not position_manager.has_position(pos.symbol):
+            return
+
+        from monitoring.event_log import emit_guard_tripped
+        signal = Signal(
+            timestamp=int(time.time() * 1000),
+            symbol=pos.symbol,
+            direction=Direction.SELL,
+            confidence=1.0,
+            strategy_name=pos.strategy_name or guard_name,
+            reason=reason,
+            suggested_quantity=pos.quantity,
+            stop_loss_price=pos.stop_loss_price,
+            take_profit_price=pos.take_profit_price,
+            close_pct=100.0,
+        )
+        try:
+            order = await executor.execute_order(
+                signal=signal,
+                quantity=pos.quantity,
+                current_price=features.close,
+            )
+            if order:
+                closed = await position_manager.close_position(order)
+                if closed:
+                    emit_guard_tripped(
+                        guard=guard_name,
+                        name=guard_name,
+                        reason=reason,
+                        severity="warning",
+                        symbol=pos.symbol,
+                        strategy=pos.strategy_name,
+                        exit_price=float(features.close),
+                        pnl=float(closed.realized_pnl),
+                    )
+                    log.warning(
+                        "{} FORCED EXIT {} @ {:.4f} — {} (pnl={:.2f})",
+                        guard_name.upper(), pos.symbol, features.close, reason, closed.realized_pnl,
+                    )
+        except Exception as e:
+            log.error("{} force-exit failed for {}: {}", guard_name, pos.symbol, e)
 
     # SL/TP проверка на каждый тик
     async def _check_sl_tp(trade):
