@@ -21,13 +21,12 @@ and friends) — the re-exports below guarantee that, and the pickle-
 unpickler whitelist covers both the legacy and new module paths so
 saved models from before the refactor keep loading.
 
-The remaining 800 LOC of ``MLPredictor.train`` is the central training
-orchestration (phase-1 build, phase-2 feature-selection retrain,
-phase-B precision-recovery retrain, bootstrap CI, OOT validation,
-calibration, skill gate). It stays here as a single method for now
-because its branches share many intermediate variables that don't
-belong in the public API of a separate trainer class. A future round
-may split it into explicit Trainer / TrainingResult types.
+Round-10 Step 9: the central training pipeline (phase-1 build, phase-2
+feature-selection retrain, phase-B precision-recovery retrain,
+bootstrap CI, OOT validation, calibration, skill gate) was extracted
+into ``analyzer/ml/training/trainer.py::run_training``. The method on
+this class is now a 15-line wrapper that delegates to the free
+function while still owning all state mutations on ``self``.
 
 VotingEnsemble: RF + LightGBM + XGBoost + ElasticNet soft-voting
 (round-3 added ElasticNet as the decorrelated 4th member). ML ONLY
