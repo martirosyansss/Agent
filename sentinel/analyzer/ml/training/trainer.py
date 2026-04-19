@@ -1053,17 +1053,18 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
     # is the FULL training-set feature matrix on the active feature
     # selection — matches what predict() actually feeds the model.
     try:
-        active_names = [n for n in FEATURE_NAMES
-                        if not predictor._feature_selector.dropped_names
-                        or n not in predictor._feature_selector.dropped_names]
-        # X_train_s is post-scaling; the monitor wants the same domain
-        # the live extract → scaler → model path produces.
+        # Reference must be captured on the SAME schema that predict()
+        # records on the live path. predict() is called with raw 32-element
+        # feature vectors (post-extract, pre-selector, pre-scaler), so the
+        # monitor must learn the raw distribution — not the scaled / dropped
+        # one. Otherwise the live shape (32) won't match the reference shape
+        # and every record() call gets dropped as a schema mismatch.
         if predictor._feature_drift_monitor is None:
             predictor._feature_drift_monitor = FeatureDriftMonitor()
-        predictor._feature_drift_monitor.fit_reference(X_train_s, active_names)
+        predictor._feature_drift_monitor.fit_reference(X, list(FEATURE_NAMES))
         logger.info(
             "ML feature-drift monitor: reference captured for %d features (n_ref=%d)",
-            len(active_names), len(X_train_s),
+            len(FEATURE_NAMES), len(X),
         )
     except Exception as _drift_err:  # noqa: BLE001
         logger.warning("ML feature-drift monitor init failed: %s", _drift_err)

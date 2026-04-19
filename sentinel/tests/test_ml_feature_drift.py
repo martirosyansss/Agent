@@ -233,6 +233,34 @@ class TestFeatureDriftMonitor:
         m.record([1.0, 2.0, 3.0])
         assert m.n_live_samples() == 0
 
+    def test_record_skips_features_without_reference(self, monitor):
+        """Regression: when fit_reference dropped some columns (zero
+        variance), record() must skip them silently, not KeyError. The
+        try/except in MLPredictor.predict() previously swallowed the
+        KeyError, leaving every feature's live window empty — equivalent
+        to "drift detector is off but reports as on"."""
+        # Build training matrix where one column is constant; fit_reference
+        # will skip it.
+        X = np.column_stack([
+            np.random.default_rng(0).normal(size=500),  # variable
+            np.full(500, 7.0),                          # constant — dropped
+            np.random.default_rng(1).normal(size=500),  # variable
+        ])
+        monitor.fit_reference(X, ["a", "b", "c"])
+        # Now feed a 3-element vector — the constant column has no live
+        # deque. Old code would KeyError on "b".
+        for _ in range(60):
+            monitor.record([1.0, 2.0, 3.0])
+        # n_live_samples() takes min over deques that DO exist; the
+        # constant column is omitted from `_live`, so the min is taken
+        # only over the variable ones — both have 60.
+        assert monitor.n_live_samples() == 60
+        # And the constant column is excluded from the report (no
+        # bin_edges → skip).
+        rep = monitor.report()
+        names = {r.feature for r in rep}
+        assert "b" not in names
+
     def test_pickle_roundtrip_preserves_reference_and_live(self):
         """The trainer persists the monitor in the model pickle. After a
         process restart + load, PSI scoring must still work and the live

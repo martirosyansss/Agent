@@ -314,8 +314,17 @@ class FeatureDriftMonitor:
                 )
                 return
             for name, val in zip(self._feature_names, vec):
+                # ``self._live`` is only populated for features whose
+                # training column had non-degenerate variance (fit_reference
+                # skips columns that collapse to a single bin). Skip the
+                # rest silently — they'd KeyError otherwise and the
+                # try/except in MLPredictor.predict would swallow it,
+                # leaving ALL features with empty live windows.
+                live_q = self._live.get(name)
+                if live_q is None:
+                    continue
                 if val is not None and np.isfinite(val):
-                    self._live[name].append(float(val))
+                    live_q.append(float(val))
 
     # -------------------- reporting --------------------
 

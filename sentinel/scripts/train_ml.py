@@ -8,6 +8,7 @@ ML Model Training Script — генерирует сделки через бэк
 from __future__ import annotations
 
 import json
+from typing import Optional
 import sys
 import time
 from datetime import datetime, timezone
@@ -298,8 +299,14 @@ def build_all_trades(repo: Repository, settings) -> list:
     return all_trades
 
 
-def build_trades_per_symbol(repo: Repository, settings) -> dict:
-    """Build StrategyTrade list per symbol from backtests."""
+def build_trades_per_symbol(repo: Repository, settings, progress_cb=None) -> dict:
+    """Build StrategyTrade list per symbol from backtests.
+
+    ``progress_cb`` is an optional callable (message: str, done: int, total: int).
+    When provided, it's invoked before each per-symbol+strategy backtest so the
+    dashboard can surface sub-step progress during the long collecting_data
+    phase (~1-3 min per symbol × 8 strategies on a full candle history).
+    """
     symbols = settings.trading_symbols
 
     # Load tuned params if available
@@ -350,13 +357,20 @@ def build_trades_per_symbol(repo: Repository, settings) -> dict:
         strategies_map["macd_divergence"] = strategies_map["macd_divergence_default"]
 
     trades_per_symbol: dict[str, list[StrategyTrade]] = {sym: [] for sym in symbols}
+    total_steps = len(symbols) * len(strategies_map)
+    step = 0
     for symbol in symbols:
+        if progress_cb:
+            progress_cb(f"{symbol}: загрузка свечей…", step, total_steps)
         logger.info("build_trades_per_symbol: loading candles for {}...", symbol)
         candles_1h = load_candles(repo, symbol, "1h")
         candles_4h = load_candles(repo, symbol, "4h")
         candles_1d = load_candles(repo, symbol, "1d")
         logger.info("  1h={} 4h={} 1d={}", len(candles_1h), len(candles_4h), len(candles_1d))
         for strat_name, strategy in strategies_map.items():
+            step += 1
+            if progress_cb:
+                progress_cb(f"{symbol} / {strat_name}", step, total_steps)
             reset_regime()
             try:
                 trades = run_backtest_with_features(strategy, strat_name, candles_1h, candles_4h, candles_1d, symbol)
@@ -474,32 +488,73 @@ def main():
     strategies = strategies_map
 
     # ── Collect trades per symbol ──
+    # Two paths:
+    #   1. ``--from-corpus <pkl>`` skips the in-process backtest loop entirely
+    #      and loads a pre-built trade list (typically the output of
+    #      ``scripts/expand_training_corpus.py``). Saves ~10 minutes per run
+    #      and lets operators iterate on the trainer without re-running
+    #      backtests every time.
+    #   2. Default: run all backtests fresh from the candle store.
+    from_corpus_pkl: Optional[Path] = None
+    if "--from-corpus" in sys.argv:
+        try:
+            idx = sys.argv.index("--from-corpus")
+            from_corpus_pkl = Path(sys.argv[idx + 1])
+        except (ValueError, IndexError):
+            logger.error("--from-corpus requires a pickle path")
+            return
+
     trades_per_symbol: dict[str, list[StrategyTrade]] = {sym: [] for sym in symbols}
     all_trades: list[StrategyTrade] = []
 
-    for symbol in symbols:
-        logger.info("Loading candles for {}...", symbol)
-        candles_1h = load_candles(repo, symbol, "1h")
-        candles_4h = load_candles(repo, symbol, "4h")
-        candles_1d = load_candles(repo, symbol, "1d")
-        logger.info("  1h={}, 4h={}, 1d={}", len(candles_1h), len(candles_4h), len(candles_1d))
+    if from_corpus_pkl is not None:
+        if not from_corpus_pkl.exists():
+            logger.error("--from-corpus pickle not found: {}", from_corpus_pkl)
+            return
+        import pickle
+        logger.info("Loading pre-built corpus from {}...", from_corpus_pkl)
+        with from_corpus_pkl.open("rb") as f:
+            loaded = pickle.load(f)
+        if not isinstance(loaded, list):
+            logger.error("--from-corpus pickle must contain a list of StrategyTrade")
+            return
+        all_trades = loaded
+        # Re-bucket per symbol so the rest of the pipeline (per-symbol model
+        # training in `predictor` loop below) keeps working unchanged.
+        for t in all_trades:
+            sym = getattr(t, "symbol", "")
+            if sym in trades_per_symbol:
+                trades_per_symbol[sym].append(t)
+            else:
+                # Symbol from corpus that's not in current TRADING_SYMBOLS —
+                # include in unified all_trades but skip per-symbol bucketing.
+                pass
+        logger.info("Loaded {} trades from corpus, {} symbols matched current config",
+                    len(all_trades), sum(1 for v in trades_per_symbol.values() if v))
+    else:
+        for symbol in symbols:
+            logger.info("Loading candles for {}...", symbol)
+            candles_1h = load_candles(repo, symbol, "1h")
+            candles_4h = load_candles(repo, symbol, "4h")
+            candles_1d = load_candles(repo, symbol, "1d")
+            logger.info("  1h={}, 4h={}, 1d={}", len(candles_1h), len(candles_4h), len(candles_1d))
 
-        for strat_name, strategy in strategies.items():
-            logger.info("Running backtest: {} on {}...", strat_name, symbol)
-            reset_regime()
+            for strat_name, strategy in strategies.items():
+                logger.info("Running backtest: {} on {}...", strat_name, symbol)
+                reset_regime()
 
-            try:
-                trades = run_backtest_with_features(
-                    strategy, strat_name, candles_1h, candles_4h, candles_1d, symbol
-                )
-                wins = sum(1 for t in trades if t.is_win)
-                losses = len(trades) - wins
-                total_pnl = sum(t.pnl_usd for t in trades)
-                logger.info("  {} trades (W:{} L:{}) PnL=${:.2f}", len(trades), wins, losses, total_pnl)
-                trades_per_symbol[symbol].extend(trades)
-                all_trades.extend(trades)
-            except Exception as e:
-                logger.error("  Backtest failed: {}", e)
+                try:
+                    trades = run_backtest_with_features(
+                        strategy, strat_name, candles_1h, candles_4h, candles_1d, symbol
+                    )
+                    wins = sum(1 for t in trades if t.is_win)
+                    losses = len(trades) - wins
+                    total_pnl = sum(t.pnl_usd for t in trades)
+                    logger.info("  {} trades (W:{} L:{}) PnL=${:.2f}", len(trades), wins, losses, total_pnl)
+                    trades_per_symbol[symbol].extend(trades)
+                    all_trades.extend(trades)
+                except Exception as e:
+                    logger.error("  Backtest failed: {}", e)
 
     logger.info("=" * 50)
     logger.info("Total trades from all backtests: {}", len(all_trades))

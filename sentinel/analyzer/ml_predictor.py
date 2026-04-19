@@ -526,7 +526,18 @@ class MLPredictor:
             rollout_mode=self._rollout_mode,
             regime_router=self._regime_router,
         )
-        return predict_from_features(state, trade_features)
+        result = predict_from_features(state, trade_features)
+        # Feed live feature vector into the PSI drift monitor so we can
+        # detect feature-distribution shift between training time and
+        # production. Wrapped in try/except so a broken monitor never
+        # tears down the prediction call — drift detection is observability,
+        # not a hard dependency of trading decisions.
+        if self._feature_drift_monitor is not None:
+            try:
+                self._feature_drift_monitor.record(trade_features)
+            except Exception as _drift_err:  # noqa: BLE001
+                logger.debug("PSI monitor record failed: %s", _drift_err)
+        return result
 
     def needs_retrain(self) -> bool:
         """Return True if retraining is needed: scheduled interval OR concept drift."""
