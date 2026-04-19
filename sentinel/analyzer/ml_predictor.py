@@ -138,6 +138,11 @@ class MLPredictor:
         self._regime_router: Optional[Any] = None        # RegimeRouter
         self._bootstrap_ci: dict[str, Any] = {}          # {metric: BootstrapCI.summary()}
         self._member_error_correlation: dict[str, float] = {}  # {"rf__lgbm": 0.67, ...}
+        # Feature-drift monitor — populated by trainer.run_training after
+        # the reference is fit, then exercised on every predict() call to
+        # accumulate live samples. Optional to keep cold-start cheap when
+        # the predictor is constructed only to hold loaded artifacts.
+        self._feature_drift_monitor: Optional[Any] = None
 
     @property
     def is_ready(self) -> bool:
@@ -336,10 +341,11 @@ class MLPredictor:
 
     @staticmethod
     def _overfit_noise_margin(
-        p_train: float, p_val: float, n_train: int, n_val: int, z: float = 1.96,
+        p_train: float, p_val: float, n_train: int, n_val: int,
+        z: float = 1.96, n_tests: int = 1,
     ) -> float:
         from analyzer.ml.training.calibration import overfit_noise_margin
-        return overfit_noise_margin(p_train, p_val, n_train, n_val, z=z)
+        return overfit_noise_margin(p_train, p_val, n_train, n_val, z=z, n_tests=n_tests)
 
     @staticmethod
     def _expected_calibration_error(
@@ -604,6 +610,9 @@ class MLPredictor:
             "regime_router": self._regime_router,
             "bootstrap_ci": self._bootstrap_ci,
             "member_error_correlation": self._member_error_correlation,
+            # PSI feature-drift monitor — survives restarts so the live
+            # window keeps growing across deploys instead of resetting.
+            "feature_drift_monitor": self._feature_drift_monitor,
         }
         ok, checksum = save_signed_payload_with_checksum(path, data)
         if not ok:
@@ -703,6 +712,10 @@ class MLPredictor:
             self._regime_router = data.get("regime_router")
             self._bootstrap_ci = data.get("bootstrap_ci", {}) or {}
             self._member_error_correlation = data.get("member_error_correlation", {}) or {}
+            # PSI feature-drift monitor — older pickles (schema < 6) don't
+            # carry it; the trainer re-fits a fresh monitor on the next
+            # training cycle, so missing here is operationally fine.
+            self._feature_drift_monitor = data.get("feature_drift_monitor")
 
             # Round-8 §4.4: restore rollout_mode if persisted (schema ≥ 5).
             # Pre-schema-5 pickles don't carry the mode, so fall back to

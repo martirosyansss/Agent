@@ -94,22 +94,50 @@ def compute_profit_factor_score(y_pred, pnl_values) -> float:
     return pf / 3.0
 
 
+def bonferroni_z(alpha: float = 0.05, n_tests: int = 1) -> float:
+    """Two-sided z critical value with Bonferroni family-wise correction.
+
+    The overfit guard runs the same test on K ≥ 1 candidate models and
+    accepts the best one. Without correction, the family-wise error rate
+    inflates roughly linearly in K — at K=4 you have ≈ 18.5% chance of
+    accepting an overfit candidate at a nominal 5% per-test level. Splitting
+    alpha across the K tests (Bonferroni) restores the family-wise level
+    at the cost of a wider per-test margin.
+
+    Uses ``scipy.stats.norm.ppf`` (already a transitive dep via scikit-learn)
+    so we don't carry a hand-rolled rational approximation that needs its own
+    accuracy proof. For K=1 returns ≈ 1.96; K=4 returns ≈ 2.498; K=10 ≈ 2.807.
+    """
+    from scipy.stats import norm
+    n = max(int(n_tests), 1)
+    a = max(min(float(alpha), 0.5), 1e-6)
+    per_test_tail = a / (2.0 * n)  # two-sided
+    return float(norm.ppf(1.0 - per_test_tail))
+
+
 def overfit_noise_margin(
     p_train: float,
     p_val: float,
     n_train: int,
     n_val: int,
     z: float = 1.96,
+    n_tests: int = 1,
 ) -> float:
     """Statistical z-σ margin for the train-vs-val precision gap.
 
     Replaces the earlier ``0.5 / sqrt(n_val)`` heuristic, which ignored
     training-side variance and the actual proportion ``p``. Returns the
-    real 1.96-σ margin for the difference of two binomial proportions::
+    real z-σ margin for the difference of two binomial proportions::
 
         SE(p_train) = sqrt(p_train * (1 - p_train) / n_train)
         SE(p_val)   = sqrt(p_val   * (1 - p_val)   / n_val)
         margin      = z * sqrt(SE_train² + SE_val²)
+
+    When ``n_tests > 1`` (e.g. the guard runs the same test on K candidate
+    models and we accept the best one) the supplied ``z`` is widened via
+    Bonferroni so the family-wise false-acceptance rate stays at α=0.05.
+    Without this, the "best-of-K" selection biases the holdout estimate
+    upward by 5–15% on K=4.
 
     Returns 0 when either sample is empty — caller treats that as "not
     enough data to call overfitting either way".
@@ -122,7 +150,8 @@ def overfit_noise_margin(
     p_v = min(max(p_val, 1e-3), 1.0 - 1e-3)
     var_t = p_t * (1.0 - p_t) / n_train
     var_v = p_v * (1.0 - p_v) / n_val
-    return float(z * (var_t + var_v) ** 0.5)
+    z_eff = bonferroni_z(alpha=0.05, n_tests=n_tests) if n_tests > 1 else z
+    return float(z_eff * (var_t + var_v) ** 0.5)
 
 
 def expected_calibration_error(

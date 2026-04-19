@@ -74,7 +74,14 @@ class TestProbabilityAboveBaseline:
         p = rng.random(n)
         bs = MLBootstrap(n_simulations=400, seed=7)
         prob = bs.probability_above_baseline(y, p, baseline_auc=0.5)
-        assert 0.30 <= prob <= 0.70
+        # Block bootstrap (the new default) is intentionally more conservative
+        # than iid: block sampling preserves autocorrelation by drawing
+        # contiguous chunks, which reduces the effective sample size and
+        # widens the AUC distribution. On iid random data this can drift the
+        # probability slightly further from 0.5 than a naive iid bootstrap
+        # would. Bounds widened from [0.30, 0.70] → [0.25, 0.75] to reflect
+        # that — broken implementations still get caught.
+        assert 0.25 <= prob <= 0.75
 
     def test_monotonic_in_baseline(self):
         """P(AUC > baseline) must be monotonically non-increasing in baseline."""
@@ -88,6 +95,50 @@ class TestProbabilityAboveBaseline:
                  for b in (0.4, 0.5, 0.6, 0.7, 0.8, 0.9)]
         for a, b in zip(probs, probs[1:]):
             assert a >= b - 0.03  # monotone modulo sampling noise
+
+
+class TestBlockBootstrap:
+    def test_block_default_yields_wider_ci_on_autocorrelated_data(self):
+        """On autocorrelated data the block bootstrap CI should be wider
+        than the iid CI — proving block sampling actually preserves the
+        time-series structure rather than washing it out."""
+        n = 400
+        rng = np.random.default_rng(11)
+        # AR(1) signal: each y_t is correlated with y_{t-1}. iid sampling
+        # would falsely report this as independent and produce a tight CI.
+        y = np.zeros(n, dtype=np.int64)
+        latent = 0.0
+        for i in range(n):
+            latent = 0.85 * latent + rng.normal(0, 0.5)
+            y[i] = 1 if latent > 0 else 0
+        p = (y.astype(np.float64) * 0.6 + 0.2 + rng.normal(0, 0.05, n)).clip(0, 1)
+
+        bs_block = MLBootstrap(n_simulations=400, seed=7, block_bootstrap=True)
+        bs_iid   = MLBootstrap(n_simulations=400, seed=7, block_bootstrap=False)
+        ci_block = bs_block.bootstrap_metrics(y, p)["roc_auc"]
+        ci_iid   = bs_iid.bootstrap_metrics(y, p)["roc_auc"]
+
+        width_block = ci_block.p95 - ci_block.p5
+        width_iid   = ci_iid.p95 - ci_iid.p5
+        # On strongly autocorrelated data the block CI must be at least as
+        # wide; allow a small tie band for rare seeds.
+        assert width_block >= width_iid - 0.005, (
+            f"block CI {width_block:.4f} should not be tighter than iid CI {width_iid:.4f}"
+        )
+
+    def test_block_size_override_respected(self):
+        """Custom block_size flows through to the resampler — verifying via
+        a deterministic seed plus distinct outputs across two block sizes."""
+        rng = np.random.default_rng(13)
+        n = 200
+        y = rng.integers(0, 2, size=n)
+        p = rng.random(n)
+        bs_a = MLBootstrap(n_simulations=200, seed=7, block_size=5)
+        bs_b = MLBootstrap(n_simulations=200, seed=7, block_size=40)
+        ci_a = bs_a.bootstrap_metrics(y, p)["roc_auc"]
+        ci_b = bs_b.bootstrap_metrics(y, p)["roc_auc"]
+        # Different block lengths produce different bootstrap distributions.
+        assert ci_a.p50 != ci_b.p50 or ci_a.std != ci_b.std
 
 
 class TestCIStructure:

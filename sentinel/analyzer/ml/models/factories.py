@@ -23,6 +23,29 @@ from ..domain.config import MLConfig
 logger = logging.getLogger(__name__)
 
 
+# Cached probe result for XGBoost early-stopping kwarg support. Filled on
+# first call to ``_xgb_es_kwargs()`` and reused thereafter.
+_XGB_ES_PROBED: Optional[dict] = None
+
+
+def _xgb_es_kwargs() -> dict:
+    """Return ``{'early_stopping_rounds': 20}`` if the installed XGBoost
+    accepts it as a constructor argument, else ``{}``. Cached after the
+    first call so the probe (which constructs a throwaway classifier)
+    runs at most once per process.
+    """
+    global _XGB_ES_PROBED
+    if _XGB_ES_PROBED is not None:
+        return _XGB_ES_PROBED
+    try:
+        from xgboost import XGBClassifier
+        XGBClassifier(n_estimators=1, early_stopping_rounds=20, eval_metric="logloss")
+        _XGB_ES_PROBED = {"early_stopping_rounds": 20}
+    except Exception:
+        _XGB_ES_PROBED = {}
+    return _XGB_ES_PROBED
+
+
 def build_rf(cfg: MLConfig, conservative: bool = False) -> Any:
     """Build a RandomForest classifier.
 
@@ -181,6 +204,13 @@ def build_xgb(cfg: MLConfig, scale_pos_weight: float = 1.0, conservative: bool =
         logger.debug("XGBoost not available")
         return None
 
+    # XGBoost ≥ 1.6 expects early_stopping_rounds as a constructor argument;
+    # passing it in fit() raises a UserWarning on 2.x. inspect.signature can't
+    # see the parameter on 3.x (collected through **kwargs), so we probe by
+    # actually instantiating a minimal classifier and cache the result on
+    # the module so the probe runs at most once per process.
+    _es_kwargs = _xgb_es_kwargs()
+
     if conservative:
         return XGBClassifier(
             n_estimators=200,
@@ -197,6 +227,7 @@ def build_xgb(cfg: MLConfig, scale_pos_weight: float = 1.0, conservative: bool =
             n_jobs=-1,
             eval_metric='logloss',
             verbosity=0,
+            **_es_kwargs,
         )
     # Deliberately conservative hyperparams to prevent overfitting on
     # small datasets. max_depth=5 + strong L1/L2 + high min_child_weight
@@ -217,4 +248,5 @@ def build_xgb(cfg: MLConfig, scale_pos_weight: float = 1.0, conservative: bool =
         n_jobs=-1,
         eval_metric='logloss',
         verbosity=0,
+        **_es_kwargs,
     )

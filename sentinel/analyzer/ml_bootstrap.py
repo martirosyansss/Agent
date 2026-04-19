@@ -69,17 +69,22 @@ class BootstrapCI:
 class MLBootstrap:
     """Monte Carlo bootstrap for classification metrics.
 
-    Uses naive sample-with-replacement bootstrap — appropriate for iid
-    trade samples. If you suspect trade-level autocorrelation (e.g. you're
-    trading the same instrument every bar), a block bootstrap would be
-    more conservative; we're starting with the simple version because the
-    project already applies temporal train/test separation upstream.
+    Defaults to **moving-block bootstrap** (Künsch 1989) because trade-level
+    samples are temporally autocorrelated: the same regime, same volatility
+    cluster, and same instrument feed adjacent rows. iid resampling breaks
+    that structure and reports CIs that are too narrow — the model looks
+    more certain than it is. Block size follows the cube-root rule
+    ``b = max(5, n^(1/3))`` (Hall, Horowitz & Jing 1995); pass
+    ``block_bootstrap=False`` to recover the older iid behaviour for
+    genuinely independent samples.
     """
 
     def __init__(
         self,
         n_simulations: int = 1000,
         seed: int = 42,
+        block_bootstrap: bool = True,
+        block_size: Optional[int] = None,
     ) -> None:
         if n_simulations < 50:
             raise ValueError(f"n_simulations must be >= 50, got {n_simulations}")
@@ -92,6 +97,29 @@ class MLBootstrap:
         # should be reproducible regardless of how the caller sequences
         # the helpers.
         self._seed = seed
+        self._block_bootstrap = bool(block_bootstrap)
+        # Override only when the caller has a domain-specific block length;
+        # otherwise the cube-root rule is computed per-call from len(y).
+        self._block_size_override = block_size
+
+    def _resample_indices(self, n: int, rng: np.random.Generator) -> np.ndarray:
+        """Draw a length-n index array.
+
+        Block-bootstrap path (default): pick contiguous blocks of length
+        ``b ≈ n^(1/3)`` with replacement, concatenate, trim to n. Preserves
+        local autocorrelation so the resulting CIs reflect time-series noise
+        rather than iid noise.
+
+        IID path (``block_bootstrap=False``): legacy ``rng.integers(0, n, n)``.
+        """
+        if not self._block_bootstrap:
+            return rng.integers(0, n, size=n)
+        b = self._block_size_override or max(5, int(round(n ** (1.0 / 3.0))))
+        b = max(1, min(b, n))
+        n_blocks = max(1, (n + b - 1) // b)
+        starts = rng.integers(0, n - b + 1, size=n_blocks)
+        idx = np.concatenate([np.arange(s, s + b) for s in starts])
+        return idx[:n]
 
     def bootstrap_metrics(
         self,
@@ -136,7 +164,7 @@ class MLBootstrap:
         # reproducible independent of method call order.
         rng = np.random.default_rng(self._seed)
         for i in range(self.n_simulations):
-            idx = rng.integers(0, n, size=n)
+            idx = self._resample_indices(n, rng)
             y_s, p_s = y_true[idx], y_proba[idx]
             pred_s = (p_s >= threshold).astype(int)
             # Single-class resamples collapse the metrics to 0/undefined; we
@@ -187,7 +215,7 @@ class MLBootstrap:
         wins = 0
         rng = np.random.default_rng(self._seed)
         for _ in range(self.n_simulations):
-            idx = rng.integers(0, n, size=n)
+            idx = self._resample_indices(n, rng)
             y_s, p_s = y_true[idx], y_proba[idx]
             if len(np.unique(y_s)) < 2:
                 continue

@@ -82,6 +82,23 @@ class BacktestResult:
     expected_real_pnl: float
     trades: list[BacktestTrade] = field(default_factory=list)
     guards_rejected: int = 0  # number of BUY signals blocked by pro guards
+    # Probabilistic Sharpe Ratio (López de Prado, 2012). Reports the
+    # probability that the strategy's *true* Sharpe exceeds 0 (or any
+    # benchmark), correcting the point-estimate Sharpe for skewness and
+    # excess kurtosis of the daily-returns sample. PSR ≥ 0.95 means the
+    # observed Sharpe is significantly better than the benchmark; values
+    # near 0.5 are inconclusive. Defaults to 0.0 when too few daily
+    # returns exist for a stable estimate.
+    psr: float = 0.0
+    # Returns-distribution diagnostics: Shapiro-Wilk p-value flags whether the
+    # daily-returns sample is normal enough to trust the naïve annualised
+    # Sharpe (which assumes Gaussian). p < 0.05 → returns are non-normal,
+    # Sharpe is biased — prefer PSR. ``returns_normal`` is the binary
+    # decision; ``returns_shapiro_p`` is the raw p-value for transparency.
+    # Both default to ``None`` when the sample is too small (n < 8) for the
+    # test to be meaningful.
+    returns_shapiro_p: Optional[float] = None
+    returns_normal: Optional[bool] = None
 
 
 class BacktestEngine:
@@ -403,6 +420,40 @@ class BacktestEngine:
         else:
             sharpe = 0.0
 
+        # PSR — corrects Sharpe for non-normal returns (crypto has fat tails).
+        # Imported lazily so this module's import graph stays light when only
+        # the engine façade is needed (e.g. CLI report formatters).
+        try:
+            from backtest.walk_forward import probabilistic_sharpe_ratio
+            psr = probabilistic_sharpe_ratio(daily_ret_pct) if daily_returns_agg and len(daily_returns_agg) > 3 else 0.0
+        except Exception as _psr_err:  # noqa: BLE001
+            psr = 0.0
+
+        # Shapiro-Wilk normality test on daily returns. Sharpe ratio assumes
+        # Gaussian returns; for crypto strategies with fat tails this test
+        # almost always rejects normality at p < 0.05, signalling the user
+        # to trust PSR over Sharpe. n < 8 makes Shapiro-Wilk unstable; we
+        # report None in that case rather than a misleading p-value.
+        returns_shapiro_p: Optional[float] = None
+        returns_normal: Optional[bool] = None
+        if daily_returns_agg and len(daily_returns_agg) >= 8:
+            try:
+                from scipy.stats import shapiro
+                # Shapiro-Wilk's published validity range tops out at n=5000;
+                # subsample to that ceiling deterministically (every k-th
+                # sample) so larger backtests don't crash or warn.
+                rets_arr = daily_ret_pct
+                if len(rets_arr) > 5000:
+                    step = max(1, len(rets_arr) // 5000)
+                    rets_arr = rets_arr[::step][:5000]
+                _, p_val = shapiro(rets_arr)
+                returns_shapiro_p = float(p_val)
+                returns_normal = bool(p_val >= 0.05)
+            except Exception as _sw_err:  # noqa: BLE001
+                # Test failed (degenerate sample, scipy missing) — leave None.
+                returns_shapiro_p = None
+                returns_normal = None
+
         expected_real = total_pnl * cfg.safety_discount
 
         period_start = candles_1h[0].timestamp if candles_1h else 0
@@ -430,7 +481,22 @@ class BacktestEngine:
             expected_real_pnl=expected_real,
             trades=trades,
             guards_rejected=guards_rejected,
+            psr=psr,
+            returns_shapiro_p=returns_shapiro_p,
+            returns_normal=returns_normal,
         )
+
+    @staticmethod
+    def _normality_tag(result: "BacktestResult") -> str:
+        """Compact human-readable label for the Shapiro-Wilk normality
+        diagnostic. Used in the text report so operators know whether to
+        trust the printed Sharpe at face value, or rely on PSR instead.
+        """
+        if result.returns_normal is None:
+            return "n/a (мало данных)"
+        if result.returns_normal:
+            return f"да (Shapiro p={result.returns_shapiro_p:.3f})"
+        return f"НЕТ (Shapiro p={result.returns_shapiro_p:.3f}) — используйте PSR"
 
     def format_report(self, result: BacktestResult) -> str:
         """Форматировать текстовый отчёт."""
@@ -452,6 +518,8 @@ class BacktestEngine:
             f"{'─' * 45}\n"
             f" Макс просадка:       {result.max_drawdown_pct:.1f}%\n"
             f" Sharpe Ratio:        {result.sharpe_ratio:.2f}\n"
+            f" Sharpe trustworthy?  {self._normality_tag(result)}\n"
+            f" PSR (P[Sharpe>0]):   {result.psr:.2f}  ({'значимо' if result.psr >= 0.95 else 'неубедительно'})\n"
             f" Profit Factor:       {pf}\n"
             f" Средний выигрыш:     ${result.avg_win:.2f}\n"
             f" Средний проигрыш:    ${result.avg_loss:.2f}\n"
