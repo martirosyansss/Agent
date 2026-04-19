@@ -488,9 +488,48 @@
             .accent-bar { animation: none; }
             body::before { animation: none; }
         }
+        /* Mobile hamburger menu */
+        .mobile-menu-toggle {
+            display: none;
+            background: transparent;
+            border: 1px solid var(--glass-border, rgba(99,102,241,0.2));
+            color: var(--text-secondary, #94a3b8);
+            width: 36px; height: 36px;
+            border-radius: 8px;
+            align-items: center; justify-content: center;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .mobile-menu-toggle:hover { background: var(--bg-hover, rgba(99,102,241,0.06)); color: var(--text-primary, #f1f5f9); }
+        .mobile-menu-toggle svg { width: 18px; height: 18px; }
+        .mobile-sidebar-backdrop {
+            display: none;
+            position: fixed; inset: 0;
+            background: rgba(2, 4, 8, 0.7);
+            backdrop-filter: blur(4px);
+            z-index: 89;
+            opacity: 0;
+            transition: opacity 0.25s;
+        }
+        .mobile-sidebar-backdrop.active { display: block; opacity: 1; }
+        @media (max-width: 768px) {
+            .mobile-menu-toggle { display: inline-flex; }
+            .sidebar {
+                display: flex !important;
+                transform: translateX(-100%);
+                width: 220px !important;
+                transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+            .sidebar.open { transform: translateX(0); }
+            .sidebar.open .sidebar-link span,
+            .sidebar.open .sidebar-section { opacity: 1 !important; }
+            .sidebar.open .sidebar-divider { width: calc(100% - 24px) !important; }
+        }
+
+
 
         /* ═══ Sidebar ═══ */
-        .sidebar-nav {
+        .sidebar {
             position: fixed; left: 0; top: 58px; bottom: 0; z-index: 90;
             width: 56px; display: flex; flex-direction: column;
             background: rgba(6, 10, 20, 0.88);
@@ -500,7 +539,7 @@
             transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
             overflow: hidden;
         }
-        .sidebar-nav:hover { width: 200px; }
+        .sidebar:hover { width: 200px; }
         .sidebar-link {
             display: flex; align-items: center; gap: 12px;
             width: calc(100% - 16px); margin: 0 8px;
@@ -511,7 +550,7 @@
         }
         .sidebar-link svg { width: 20px; height: 20px; flex-shrink: 0; }
         .sidebar-link span { opacity: 0; transition: opacity 0.2s; }
-        .sidebar-nav:hover .sidebar-link span { opacity: 1; }
+        .sidebar:hover .sidebar-link span { opacity: 1; }
         .sidebar-link:hover { color: var(--text-primary); background: var(--bg-hover); }
         .sidebar-link.active {
             color: var(--accent-light); background: var(--accent-dim);
@@ -522,21 +561,20 @@
             width: 3px; height: 20px; border-radius: 0 3px 3px 0; background: var(--accent);
         }
         .sidebar-divider { width: 32px; height: 1px; background: var(--border); margin: 8px auto; transition: width 0.2s; }
-        .sidebar-nav:hover .sidebar-divider { width: calc(100% - 24px); }
+        .sidebar:hover .sidebar-divider { width: calc(100% - 24px); }
         .sidebar-section {
             font-size: 9px; font-weight: 700; text-transform: uppercase;
             letter-spacing: 1.2px; color: var(--text-dim);
             padding: 8px 14px 4px; width: 100%;
             opacity: 0; transition: opacity 0.2s;
         }
-        .sidebar-nav:hover .sidebar-section { opacity: 1; }
+        .sidebar:hover .sidebar-section { opacity: 1; }
         .app-layout { padding-left: 56px; }
         @media (max-width: 768px) {
-            .sidebar-nav { display: none; }
             .app-layout { padding-left: 0; }
         }
         @media (min-width: 1280px) {
-            .sidebar-nav { width: 200px; }
+            .sidebar { width: 200px; }
             .sidebar-link span,
             .sidebar-section { opacity: 1; }
             .sidebar-divider { width: calc(100% - 24px); }
@@ -551,6 +589,7 @@
     <!-- ═══ Header ═══ -->
     <header class="header" role="banner">
         <div class="header-left">
+            <button class="mobile-menu-toggle" id="mobile-menu-toggle" aria-label="Открыть меню" aria-expanded="false" aria-controls="sidebar"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
             <a href="/" style="text-decoration:none;color:inherit;">
                 <div class="header-logo">
                     <div class="header-logo-icon">
@@ -579,38 +618,8 @@
         </div>
     </header>
 
-    <nav class="sidebar-nav" role="navigation">
-        <a href="/" class="sidebar-link">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-            <span>Dashboard</span>
-        </a>
-        <a href="/analytics" class="sidebar-link">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-6"/></svg>
-            <span>Аналитика</span>
-        </a>
-        <a href="/ml-robustness" class="sidebar-link">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"/><path d="M12 2v20"/><path d="M4.93 4.93l14.14 14.14"/><path d="M19.07 4.93 4.93 19.07"/></svg>
-            <span>ML Robustness</span>
-        </a>
-        <a href="/trades" class="sidebar-link active">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-            <span>История сделок</span>
-        </a>
-        <a href="/news" class="sidebar-link">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
-            <span>Новости</span>
-        </a>
-        <a href="/logs" class="sidebar-link">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg>
-            <span>Логи</span>
-        </a>
-        <div class="sidebar-divider"></div>
-        <div class="sidebar-section">Система</div>
-        <a href="/settings" class="sidebar-link">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            <span>Настройки</span>
-        </a>
-    </nav>
+    <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop" aria-hidden="true"></div>
+    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation"></nav>
 
     <div class="app-layout">
     <main class="container" role="main">
@@ -716,6 +725,8 @@
     </main>
     </div><!-- /app-layout -->
 
+<script src="/static/js/sidebar.js"></script>
+
 <script>
 (function() {
     'use strict';
@@ -773,6 +784,36 @@
     }
 
     function pnlClass(v) { return v > 0 ? 'positive' : (v < 0 ? 'negative' : 'neutral'); }
+
+    // Map backend ``close_reason`` strings to human-readable Russian labels.
+    // The backend uses tokens like "chandelier_exit" or
+    // "regime_flip_exit:bearish_trend adx=27.5" — the leading token (before
+    // ':') identifies the guard, the tail is diagnostic detail. We render
+    // a friendly label + keep the full string as a tooltip so operators
+    // can still see the raw reason.
+    var EXIT_REASON_LABELS = {
+        "chandelier_exit": "Ползучий стоп",
+        "stop_loss": "Стоп-лосс",
+        "take_profit": "Тейк-профит",
+        "trailing_stop": "Trailing stop",
+        "tp1_partial": "TP1 (50%)",
+        "tp2_partial": "TP2 (~30%)",
+        "tp3_partial": "TP3",
+        "regime_flip_exit": "Разворот рынка",
+        "regime_flip": "Разворот рынка",
+        "weekend_exit": "Выход на выходные",
+        "time_exit": "Выход по времени",
+    };
+
+    function humaniseExitReason(raw) {
+        if (!raw) return "";
+        // Leading token before ':' / ' ' identifies the guard class.
+        var head = String(raw).split(/[:\s]/)[0];
+        // tpN_partial tokens for arbitrary N — fall back to "TPN (частичный)".
+        var tpPartial = /^tp(\d+)_partial$/.exec(head);
+        if (tpPartial) return "TP" + tpPartial[1] + " (частичный)";
+        return EXIT_REASON_LABELS[head] || raw;
+    }
 
     function symIcon(symbol) {
         if (!symbol) return '<span class="sym-icon sym-default">?</span>';
@@ -852,7 +893,10 @@
         html += directionBadge(t);
         if (t.strategy_name) html += '<span class="badge badge-strategy">' + escapeHtml(t.strategy_name) + '</span>';
         if (t.market_regime) html += '<span class="badge badge-regime">' + escapeHtml(t.market_regime) + '</span>';
-        if (t.exit_reason) html += '<span class="badge badge-exit">' + escapeHtml(t.exit_reason) + '</span>';
+        if (t.exit_reason) {
+            var label = humaniseExitReason(t.exit_reason);
+            html += '<span class="badge badge-exit" title="' + escapeHtml(t.exit_reason) + '">' + escapeHtml(label) + '</span>';
+        }
         html += '</div>';
         html += '<div class="trade-pnl-right">';
         html += '<div class="trade-pnl-usd ' + pnlClass(pnl) + '">' + formatUsd(pnl) + '</div>';

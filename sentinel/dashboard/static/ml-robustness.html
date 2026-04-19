@@ -31,6 +31,10 @@
       .mlr-bar-ci { position: absolute; top: 2px; bottom: 2px; background: rgba(110, 168, 254, 0.28); border-radius: 4px; }
       .mlr-heatmap { display: grid; gap: 3px; font-size: 0.75rem; }
       .mlr-heatmap-cell { padding: 0.55rem 0.45rem; border-radius: 4px; text-align: center; font-family: "JetBrains Mono", monospace; }
+      .mlr-desc { font-size: 0.78rem; line-height: 1.5; color: #9aa4b7; margin: 0 0 0.9rem; padding: 0.55rem 0.7rem; background: rgba(110, 168, 254, 0.06); border-left: 2px solid rgba(110, 168, 254, 0.45); border-radius: 3px; }
+      .mlr-desc b { color: #cdd4e0; }
+      .mlr-desc .mlr-verdict { display: block; margin-top: 0.35rem; color: #7a8599; font-size: 0.72rem; }
+      .mlr-desc .mlr-verdict code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 3px; font-family: "JetBrains Mono", monospace; font-size: 0.7rem; color: #cdd4e0; }
     </style>
 </head>
 <body>
@@ -59,40 +63,15 @@
     </header>
 
     <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop" aria-hidden="true"></div>
-    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation">
-        <a href="/" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-            <span>Dashboard</span>
-        </a>
-        <a href="/analytics" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-6"/></svg>
-            <span>Аналитика</span>
-        </a>
-        <a href="/ml-robustness" class="sidebar-link active">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"/><path d="M12 2v20"/><path d="M4.93 4.93l14.14 14.14"/><path d="M19.07 4.93 4.93 19.07"/></svg>
-            <span>ML Robustness</span>
-        </a>
-        <a href="/trades" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-            <span>История сделок</span>
-        </a>
-        <a href="/logs" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
-            <span>Логи</span>
-        </a>
-        <div class="sidebar-divider"></div>
-        <div class="sidebar-section">Система</div>
-        <a href="/settings" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>
-            <span>Настройки</span>
-        </a>
-    </nav>
+    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation"></nav>
 
     <div class="app-layout">
     <main class="container" role="main">
         <p class="metrics-intro fade-in">
-            Диагностика устойчивости ML-модели: walk-forward стабильность, производительность по рыночным режимам,
-            bootstrap доверительные интервалы и корреляция ошибок между членами ансамбля.
+            <b>Что это за страница?</b> Здесь видно, насколько можно доверять ML-модели, которая решает «входить в сделку или нет».
+            Четыре теста отвечают на вопросы: <b>не переобучена ли модель</b> (Walk-Forward),
+            <b>работает ли она в разных рынках</b> (режимы), <b>не случайны ли её метрики</b> (Bootstrap) и
+            <b>не дублируют ли друг друга модели в ансамбле</b> (корреляция). Если все четыре карточки «зелёные» — модели можно верить.
         </p>
 
         <div class="mlr-grid">
@@ -131,6 +110,24 @@
                     <span id="corr-badge" class="mlr-badge warn" style="float:right;font-size:0.65rem;">—</span>
                 </h3>
                 <div id="corr-body" class="mlr-empty">Загрузка…</div>
+            </section>
+
+            <!-- PSR / DSR (López de Prado) -->
+            <section class="mlr-card fade-in" id="card-psr">
+                <h3>
+                    Вероятностный Sharpe (PSR / DSR)
+                    <span id="psr-badge" class="mlr-badge warn" style="float:right;font-size:0.65rem;">—</span>
+                </h3>
+                <div id="psr-body" class="mlr-empty">Загрузка…</div>
+            </section>
+
+            <!-- Feature importance stability -->
+            <section class="mlr-card fade-in" id="card-fi">
+                <h3>
+                    Стабильность важности фич
+                    <span id="fi-badge" class="mlr-badge warn" style="float:right;font-size:0.65rem;">—</span>
+                </h3>
+                <div id="fi-body" class="mlr-empty">Загрузка…</div>
             </section>
         </div>
     </main>
@@ -181,6 +178,18 @@
       setBadge(badge, s.mode.toUpperCase(), s.std_auc > 0.08 ? "warn" : "ok");
       body.classList.remove("mlr-empty");
       body.innerHTML = "";
+
+      const desc = document.createElement("div");
+      desc.className = "mlr-desc";
+      desc.innerHTML = `
+        <b>Что это?</b> Модель тренируют на прошлых данных и проверяют на «будущих» — так делают несколько раз подряд (fold 1…5).
+        Если на каждом новом куске данных метрики примерно одинаковые — модель <b>устойчивая</b>, а не подогнана под прошлое.
+        <span class="mlr-verdict">
+          <b>AUC</b> = качество ранжирования (1.0 = идеал, 0.5 = случайность). <b>Std AUC</b> &lt; 0.05 — стабильно.
+          <b>Degradation OOS/IS</b> = во сколько раз падает качество на новых данных (0.8–0.95 норма, &lt;0.7 — переобучение).
+        </span>`;
+      body.appendChild(desc);
+
       [
         ["Folds", s.n_folds_completed],
         ["Mean AUC", fmt(s.mean_auc)],
@@ -225,7 +234,15 @@
     try {
       const data = await mlFetch("/api/ml/regime-performance");
       if (!data || !data.available) {
-        body.textContent = data && data.reason ? data.reason : "Недоступно";
+        body.innerHTML = `
+          <div class="mlr-desc" style="margin:0;">
+            <b>Что это?</b> Рынок бывает в разных состояниях: тренд вверх/вниз, флэт, высокая волатильность.
+            Если включён <code>regime_routing</code>, для каждого режима обучается <b>отдельная модель</b> — она лучше понимает свой рынок.
+            <span class="mlr-verdict">
+              Сейчас: <b>${(data && data.reason) || "routing не активен"}</b>.
+              Включается в <code>settings.yaml</code> → <code>ml.regime_routing.enabled: true</code>.
+            </span>
+          </div>`;
         setBadge(badge, "OFF", "warn");
         return;
       }
@@ -233,6 +250,18 @@
       setBadge(badge, `${data.trained_regimes.length} спец.`, rows.length ? "ok" : "warn");
       body.classList.remove("mlr-empty");
       body.innerHTML = "";
+
+      const desc = document.createElement("div");
+      desc.className = "mlr-desc";
+      desc.innerHTML = `
+        <b>Что это?</b> Для каждого рыночного режима (тренд/флэт/волатильность) обучена своя модель.
+        В таблице видно, как каждая ведёт себя на своих данных.
+        <span class="mlr-verdict">
+          <b>Skill</b> &gt; 0 = модель лучше случайного угадывания. <b>Обучен ✓</b> = хватило данных для своей модели;
+          <b>—</b> = используется общая (fallback).
+        </span>`;
+      body.appendChild(desc);
+
       const table = document.createElement("table");
       table.className = "mlr-table";
       table.innerHTML = `
@@ -278,6 +307,18 @@
       setBadge(badge, (pa !== undefined ? (pa * 100).toFixed(0) + "% > 0.5" : "N=" + Object.keys(data.intervals).length),
                pa !== undefined && pa > 0.9 ? "ok" : "warn");
 
+      const desc = document.createElement("div");
+      desc.className = "mlr-desc";
+      desc.innerHTML = `
+        <b>Что это?</b> Из истории сделок случайно «перетасовываем» выборки тысячи раз и смотрим, в каком диапазоне оказываются метрики.
+        Это показывает, насколько <b>уверенно</b> можно утверждать, что модель реально работает, а не случайно удачна.
+        <span class="mlr-verdict">
+          Формат: <code>нижняя / <b>медиана</b> / верхняя</code> граница 90% доверительного интервала.
+          Бейдж <code>100% &gt; 0.5</code> = во всех пересемплингах модель лучше подбрасывания монетки.
+          Чем <b>уже</b> полоса — тем надёжнее метрика.
+        </span>`;
+      body.appendChild(desc);
+
       ["precision", "recall", "roc_auc"].forEach((k) => {
         const ci = data.intervals[k];
         if (!ci) return;
@@ -320,6 +361,18 @@
 
       body.classList.remove("mlr-empty");
       body.innerHTML = "";
+
+      const desc = document.createElement("div");
+      desc.className = "mlr-desc";
+      desc.innerHTML = `
+        <b>Что это?</b> В ансамбле работают несколько моделей (LR, RF, XGB, LGBM). Они «голосуют» — и если все ошибаются
+        <b>одинаково</b>, ансамбль бесполезен: это как спрашивать совет у пяти копий одного человека.
+        <span class="mlr-verdict">
+          <b>|r|</b> = корреляция ошибок между парой моделей. Близко к <b>0</b> — модели разные (хорошо).
+          Близко к <b>1</b> — модели дублируют друг друга (плохо, одну можно выкинуть). Красный = предупреждение.
+        </span>`;
+      body.appendChild(desc);
+
       const wrap = document.createElement("div");
       wrap.className = "mlr-heatmap";
       const entries = Object.entries(pairs).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
@@ -344,16 +397,129 @@
     }
   }
 
+  // ─── PSR / DSR (López de Prado) ────────────────
+  async function loadPSR() {
+    const body = document.getElementById("psr-body");
+    const badge = document.getElementById("psr-badge");
+    try {
+      const data = await mlFetch("/api/ml/status");
+      const m = data && data.metrics ? data.metrics : null;
+      if (!m || m.psr === null || m.psr === undefined) {
+        body.innerHTML = `
+          <div class="mlr-desc" style="margin:0;">
+            <b>Что это?</b> Обычный Sharpe — точечная оценка: «вот такое число».
+            PSR (Probabilistic Sharpe) отвечает на вопрос «это реальный навык или мы попали на удачную выборку?».
+            DSR — то же, но с поправкой на то, что мы перебрали несколько вариантов модели.
+            <span class="mlr-verdict">Пройдёт после следующего обучения — в старых моделях полей ещё нет.</span>
+          </div>`;
+        setBadge(badge, "Н/Д", "warn");
+        return;
+      }
+      const passed = !!m.psr_gate_passed;
+      setBadge(badge, passed ? "PASS" : "FAIL", passed ? "ok" : "bad");
+
+      body.classList.remove("mlr-empty");
+      body.innerHTML = "";
+      const desc = document.createElement("div");
+      desc.className = "mlr-desc";
+      desc.innerHTML = `
+        <b>Что это?</b> Вероятность того, что настоящий Sharpe модели &gt; 0 с учётом объёма выборки, скоса и «хвостов» распределения.
+        <span class="mlr-verdict">
+          <b>PSR ≥ 0.95</b> — навык статистически значим. <b>DSR ≥ 0.95</b> — остаётся значимым даже с учётом того,
+          что мы перебрали <b>${m.psr_n_trials}</b> вариантов модели (поправка на множественное тестирование).
+        </span>`;
+      body.appendChild(desc);
+
+      [
+        ["PSR", fmt(m.psr)],
+        ["DSR", m.dsr === null ? "—" : fmt(m.dsr)],
+        ["Проверено вариантов", m.psr_n_trials || 1],
+        ["Вердикт", passed ? "PASS ✓" : "FAIL ✗"],
+      ].forEach(([k, v]) => {
+        const row = document.createElement("div");
+        row.className = "mlr-kv";
+        row.innerHTML = `<span>${k}</span><span>${v}</span>`;
+        body.appendChild(row);
+      });
+    } catch (exc) {
+      body.textContent = "Ошибка загрузки: " + exc.message;
+      setBadge(badge, "ERR", "bad");
+    }
+  }
+
+  // ─── Feature importance stability ─────────────
+  async function loadFeatureStability() {
+    const body = document.getElementById("fi-body");
+    const badge = document.getElementById("fi-badge");
+    try {
+      const data = await mlFetch("/api/ml/status");
+      const m = data && data.metrics ? data.metrics : null;
+      const stab = m && m.feature_importance_stability
+        ? m.feature_importance_stability : null;
+      if (!stab || !stab.features || stab.features.length === 0) {
+        body.innerHTML = `
+          <div class="mlr-desc" style="margin:0;">
+            <b>Что это?</b> 4 модели в ансамбле (RF/LGBM/XGB/ElasticNet) оценивают важность фич независимо.
+            Если они согласны — доверяй. Если спорят — «важная фича» может быть просто шумом одной модели.
+            <span class="mlr-verdict">Появится после обучения с 2+ моделями.</span>
+          </div>`;
+        setBadge(badge, "Н/Д", "warn");
+        return;
+      }
+
+      const rho = Number(stab.mean_rank_spearman || 0);
+      const status = rho >= 0.7 ? "СТАБИЛЬНО" : rho >= 0.4 ? "СРЕДНЕ" : "НЕСТАБИЛЬНО";
+      const cls = rho >= 0.7 ? "ok" : rho >= 0.4 ? "warn" : "bad";
+      setBadge(badge, status, cls);
+
+      body.classList.remove("mlr-empty");
+      body.innerHTML = "";
+      const desc = document.createElement("div");
+      desc.className = "mlr-desc";
+      desc.innerHTML = `
+        <b>Согласие моделей:</b> rank-Spearman = <b>${rho.toFixed(3)}</b> (между ${stab.n_runs || 0} моделями).
+        <span class="mlr-verdict">
+          ≥ 0.7 — согласны (топ-5 фич стабильный). 0.4–0.7 — среднее. &lt; 0.4 — каждая модель видит свой набор.
+        </span>`;
+      body.appendChild(desc);
+
+      // Top-10 by mean importance with top-3 persistence
+      const tbl = document.createElement("table");
+      tbl.style.cssText = "width:100%; font-size:0.8rem; border-collapse:collapse;";
+      tbl.innerHTML = `
+        <thead><tr style="color:#9aa4b7; text-align:left;">
+          <th>Фича</th><th>Ср. важность</th><th>Топ-3 в % моделей</th>
+        </tr></thead><tbody></tbody>`;
+      const tbody = tbl.querySelector("tbody");
+      (stab.features || []).slice(0, 10).forEach((f) => {
+        const tr = document.createElement("tr");
+        tr.style.cssText = "border-top: 1px solid rgba(255,255,255,0.05);";
+        tr.innerHTML = `
+          <td>${f.name}</td>
+          <td>${(f.mean || 0).toFixed(4)}</td>
+          <td>${((f.top3_rate || 0) * 100).toFixed(0)}%</td>`;
+        tbody.appendChild(tr);
+      });
+      body.appendChild(tbl);
+    } catch (exc) {
+      body.textContent = "Ошибка загрузки: " + exc.message;
+      setBadge(badge, "ERR", "bad");
+    }
+  }
+
   function loadAll() {
     loadWF();
     loadRegimes();
     loadBootstrap();
     loadCorrelations();
+    loadPSR();
+    loadFeatureStability();
   }
 
   document.getElementById("refresh-btn").addEventListener("click", loadAll);
   loadAll();
 })();
 </script>
+    <script src="/static/js/sidebar.js"></script>
 </body>
 </html>

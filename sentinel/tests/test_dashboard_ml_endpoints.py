@@ -230,6 +230,17 @@ class TestStatusEndpoint:
         # same dataclass — catches silent default drift.
         assert d["block_threshold"] == pytest.approx(EXPECTED_BLOCK_THRESHOLD)
         assert d["reduce_threshold"] == pytest.approx(EXPECTED_REDUCE_THRESHOLD)
+        # Phase-ML1/4 fields exposed by /api/ml/status. All five keys must
+        # be present even when the underlying MLMetrics instance pre-dates
+        # PSR/DSR (a stale pickle on disk) — the endpoint fills ``None`` /
+        # ``False`` / ``{}`` rather than omitting the fields, so the
+        # dashboard's render path never has to feature-detect.
+        for k in ("psr", "dsr", "psr_gate_passed", "psr_n_trials",
+                  "feature_importance_stability"):
+            assert k in m, f"/api/ml/status metrics missing {k}"
+        # Old pickles without the fields should serialise without error.
+        assert m["psr_gate_passed"] is False or m["psr_gate_passed"] is True
+        assert isinstance(m["feature_importance_stability"], dict)
 
 
 # ─────────────────────────────────────────────
@@ -371,3 +382,286 @@ class TestMLRobustnessPage:
             assert body.get("available") is True, (
                 f"{path}: available != True when fake has data; body={body}"
             )
+
+
+# ─────────────────────────────────────────────
+# /api/observability/summary — observability dashboard endpoint
+# ─────────────────────────────────────────────
+
+class TestObservabilityEndpoint:
+    """Exercise the summary endpoint end-to-end.
+
+    The endpoint reads from ``sentinel/logs/events.jsonl`` at a path hard-
+    derived from the module's ``__file__``, so we write real events into
+    that file and snapshot its prior contents to restore after the test.
+    This is less tidy than a monkeypatch but exercises the real code path
+    including the tail-reader.
+    """
+
+    @pytest.fixture
+    def events_file(self, tmp_path, monkeypatch):
+        """Point the endpoint at a tmp events.jsonl via env override.
+        Production logs/events.jsonl is never touched — earlier versions
+        of this fixture snapshotted/restored the real file, which was
+        unsafe if a live bot was writing to it concurrently."""
+        import json as _json
+        import time as _time
+        events_path = tmp_path / "events.jsonl"
+        monkeypatch.setenv("SENTINEL_EVENTS_LOG_PATH", str(events_path))
+        now_ms = int(_time.time() * 1000)
+
+        def _write(records: list[dict]) -> None:
+            with events_path.open("w", encoding="utf-8") as fh:
+                for r in records:
+                    fh.write(_json.dumps(r) + "\n")
+
+        yield _write, now_ms
+
+    def test_summary_returns_empty_sections_when_file_missing_or_empty(
+        self, dashboard_client, events_file
+    ):
+        write, _ = events_file
+        write([])  # empty file
+        r = dashboard_client.get("/api/observability/summary?window_hours=24")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["signals"]["approved"] == 0
+        assert d["signals"]["rejected"] == 0
+        assert d["signals"]["approval_rate"] is None
+        assert d["signals"]["buy"]["approval_rate"] is None
+        assert d["signals"]["sell"]["approval_rate"] is None
+        assert d["top_blocking_gates"] == []
+        assert d["errors_by_component"] == []
+        assert d["guards_tripped"] == []
+        assert d["events_scanned"] == 0
+
+    def test_summary_aggregates_signals_and_gates(self, dashboard_client, events_file):
+        write, now_ms = events_file
+        write([
+            {"ts": now_ms - 1000, "type": "signal_approved", "symbol": "BTCUSDT"},
+            {"ts": now_ms - 2000, "type": "signal_rejected", "gate": "liquidity_gate",
+             "reason": "thin volume"},
+            {"ts": now_ms - 3000, "type": "signal_rejected", "gate": "liquidity_gate",
+             "reason": "thin volume"},
+            {"ts": now_ms - 4000, "type": "signal_rejected", "gate": "drawdown_breaker",
+             "reason": "dd tripped"},
+        ])
+        r = dashboard_client.get("/api/observability/summary?window_hours=24")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["signals"]["approved"] == 1
+        assert d["signals"]["rejected"] == 3
+        assert d["signals"]["approval_rate"] == 0.25
+        # Top blocker must be liquidity_gate (2) then drawdown_breaker (1)
+        gates = d["top_blocking_gates"]
+        assert gates[0]["gate"] == "liquidity_gate"
+        assert gates[0]["count"] == 2
+        assert gates[1]["gate"] == "drawdown_breaker"
+
+    def test_summary_surfaces_component_errors_and_guards(self, dashboard_client, events_file):
+        write, now_ms = events_file
+        # Chronological order (oldest first) — matches real events.jsonl semantics.
+        write([
+            {"ts": now_ms - 4000, "type": "guard_tripped", "guard": "circuit_breaker",
+             "name": "CB-1", "reason": "price spike"},
+            {"ts": now_ms - 3000, "type": "guard_tripped", "guard": "drawdown_breaker",
+             "window": "daily", "reason": "dd 7%"},
+            {"ts": now_ms - 2000, "type": "component_error", "component": "ml_ensemble.calibrator",
+             "severity": "warning", "exc_type": "RuntimeError", "reason": "calibrator broken"},
+            {"ts": now_ms - 1000, "type": "component_error", "component": "ml_predictor.predict",
+             "severity": "warning", "exc_type": "ValueError", "reason": "feature mismatch"},
+        ])
+        r = dashboard_client.get("/api/observability/summary?window_hours=24")
+        assert r.status_code == 200
+        d = r.json()
+        err_components = {e["component"] for e in d["errors_by_component"]}
+        assert "ml_predictor.predict" in err_components
+        assert "ml_ensemble.calibrator" in err_components
+        assert d["errors_by_severity"].get("warning") == 2
+        assert any(g["guard"] == "drawdown_breaker" for g in d["guards_tripped"])
+        assert any(g["guard"] == "circuit_breaker" for g in d["guards_tripped"])
+        # Recent errors are returned newest-first
+        assert len(d["recent_component_errors"]) == 2
+        assert d["recent_component_errors"][0]["component"] == "ml_predictor.predict"
+
+    def test_summary_respects_window_hours(self, dashboard_client, events_file):
+        write, now_ms = events_file
+        ancient = now_ms - int(10 * 3600 * 1000)   # 10 hours ago
+        recent = now_ms - int(0.25 * 3600 * 1000)  # 15 minutes ago
+        write([
+            {"ts": ancient, "type": "signal_rejected", "gate": "old_gate", "reason": "old"},
+            {"ts": recent,  "type": "signal_rejected", "gate": "new_gate", "reason": "new"},
+        ])
+        # 1-hour window should drop the ancient event entirely.
+        r = dashboard_client.get("/api/observability/summary?window_hours=1")
+        assert r.status_code == 200
+        d = r.json()
+        gates = {g["gate"] for g in d["top_blocking_gates"]}
+        assert "new_gate" in gates
+        assert "old_gate" not in gates
+
+    def test_summary_page_reachable(self, dashboard_client):
+        r = dashboard_client.get("/observability")
+        assert r.status_code == 200
+        assert "SENTINEL" in r.text
+        assert "Observability" in r.text
+
+    def test_summary_reads_rotated_backups_for_long_windows(
+        self, dashboard_client, events_file, monkeypatch, tmp_path
+    ):
+        """``window_hours > 24`` must include rotated backup files
+        (``events.jsonl.1`` etc.); otherwise multi-day views are silently
+        truncated at the rotation boundary."""
+        import json as _json
+        import time as _time
+        events_path = tmp_path / "events.jsonl"
+        backup_path = tmp_path / "events.jsonl.1"
+        now_ms = int(_time.time() * 1000)
+        # In-window event lives in the rotated backup, NOT the active file.
+        backup_path.write_text(
+            _json.dumps({
+                "ts": now_ms - int(36 * 3600 * 1000),  # 36h ago — within 7-day window
+                "type": "signal_rejected",
+                "gate": "from_backup",
+                "reason": "old",
+                "direction": "BUY",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        events_path.write_text("", encoding="utf-8")  # empty active file
+
+        # 24h window → backup ignored (window <= 24h threshold) → 0 events
+        r = dashboard_client.get("/api/observability/summary?window_hours=24")
+        assert r.status_code == 200
+        assert r.json()["events_scanned"] == 0
+        # 72h window → backup IS scanned → backup gate visible
+        r = dashboard_client.get("/api/observability/summary?window_hours=72")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["events_scanned"] == 1
+        assert d["files_read"] == 2
+        gates = {g["gate"] for g in d["top_blocking_gates"]}
+        assert "from_backup" in gates
+
+    def test_summary_caches_within_ttl(self, dashboard_client, events_file):
+        """Identical calls within the 10s TTL must serve from cache —
+        otherwise N open tabs × 30s refresh × file IO compounds."""
+        write, now_ms = events_file
+        write([
+            {"ts": now_ms - 1000, "type": "signal_approved", "direction": "BUY"},
+        ])
+        r1 = dashboard_client.get("/api/observability/summary?window_hours=24")
+        d1 = r1.json()
+        assert d1["events_scanned"] == 1
+
+        # Mutate the file out from under the endpoint — within TTL the
+        # cached payload should still be returned.
+        write([
+            {"ts": now_ms - 500, "type": "signal_approved", "direction": "BUY"},
+            {"ts": now_ms - 600, "type": "signal_approved", "direction": "BUY"},
+            {"ts": now_ms - 700, "type": "signal_approved", "direction": "BUY"},
+        ])
+        r2 = dashboard_client.get("/api/observability/summary?window_hours=24")
+        d2 = r2.json()
+        assert d2["events_scanned"] == d1["events_scanned"], (
+            "expected cache hit (same payload) within TTL window"
+        )
+
+    def test_slo_endpoint_reports_breach_when_buy_rate_below_target(
+        self, dashboard_client, events_file, monkeypatch
+    ):
+        """When BUY approval rate falls below the configured SLO target,
+        the endpoint must report a breach so on-call sees it immediately."""
+        monkeypatch.setenv("SENTINEL_SLO_BUY_APPROVAL_RATE", "0.80")
+        write, now_ms = events_file
+        # 1 BUY approved, 4 BUY rejected → 20% — well below 80% target.
+        events = [{"ts": now_ms - 100, "type": "signal_approved", "direction": "BUY"}]
+        for i in range(4):
+            events.append({"ts": now_ms - 200 - i, "type": "signal_rejected",
+                           "direction": "BUY", "gate": "any", "reason": "x"})
+        write(events)
+        r = dashboard_client.get("/api/observability/slo?window_hours=24")
+        assert r.status_code == 200
+        d = r.json()
+        slo_buy = next(s for s in d["slos"] if s["name"] == "buy_approval_rate")
+        assert slo_buy["status"] == "breach", f"expected breach, got {slo_buy}"
+        assert d["any_breach"] is True
+
+    def test_slo_endpoint_ok_when_within_targets(self, dashboard_client, events_file):
+        write, now_ms = events_file
+        # 8 approved, 2 rejected → 80% — well above default 40% target.
+        events = []
+        for i in range(8):
+            events.append({"ts": now_ms - 100 - i, "type": "signal_approved", "direction": "BUY"})
+        for i in range(2):
+            events.append({"ts": now_ms - 200 - i, "type": "signal_rejected",
+                           "direction": "BUY", "gate": "g", "reason": "x"})
+        write(events)
+        r = dashboard_client.get("/api/observability/slo?window_hours=24")
+        d = r.json()
+        slo_buy = next(s for s in d["slos"] if s["name"] == "buy_approval_rate")
+        assert slo_buy["status"] == "ok"
+        assert d["any_breach"] is False
+
+    def test_metrics_endpoint_returns_prometheus_text(
+        self, dashboard_client, events_file
+    ):
+        """The /api/observability/metrics endpoint must return parseable
+        Prometheus text format with the expected metric families."""
+        write, now_ms = events_file
+        write([
+            {"ts": now_ms - 100, "type": "signal_approved", "direction": "BUY"},
+            {"ts": now_ms - 200, "type": "signal_rejected", "direction": "BUY",
+             "gate": "drawdown_breaker", "reason": "dd"},
+            {"ts": now_ms - 300, "type": "component_error", "component": "ml_predictor",
+             "severity": "warning", "exc_type": "ValueError", "reason": "x"},
+            {"ts": now_ms - 400, "type": "guard_tripped", "guard": "circuit_breaker", "name": "CB-1"},
+        ])
+        r = dashboard_client.get("/api/observability/metrics")
+        assert r.status_code == 200
+        body = r.text
+        assert "sentinel_signals_total" in body
+        assert 'direction="BUY"' in body
+        assert "sentinel_gate_rejections_total" in body
+        assert 'gate="drawdown_breaker"' in body
+        assert "sentinel_component_errors_total" in body
+        assert 'component="ml_predictor"' in body
+        assert "sentinel_guard_trips_total" in body
+        # Format sanity — every metric line must start with a metric name
+        # or be a HELP/TYPE comment.
+        for line in body.strip().split("\n"):
+            assert line.startswith("#") or line.startswith("sentinel_"), (
+                f"unexpected line: {line!r}"
+            )
+
+    def test_summary_splits_buy_and_sell_approval_rate(
+        self, dashboard_client, events_file
+    ):
+        """SELL bypasses entry gates and would inflate the overall approval
+        rate; the BUY-only rate must be tracked separately so a BUY-rejection
+        storm isn't masked by routine SELL approvals."""
+        write, now_ms = events_file
+        # 1 BUY approved, 3 BUY rejected → BUY rate = 25%
+        # 5 SELL approved, 0 SELL rejected → SELL rate = 100%
+        # Overall: 6 approved, 3 rejected → 67% (would mislead)
+        events = []
+        for i in range(1):
+            events.append({"ts": now_ms - 100 - i, "type": "signal_approved", "direction": "BUY"})
+        for i in range(3):
+            events.append({"ts": now_ms - 200 - i, "type": "signal_rejected",
+                           "direction": "BUY", "gate": "liquidity_gate", "reason": "x"})
+        for i in range(5):
+            events.append({"ts": now_ms - 300 - i, "type": "signal_approved", "direction": "SELL"})
+        write(events)
+        r = dashboard_client.get("/api/observability/summary?window_hours=24")
+        assert r.status_code == 200
+        d = r.json()
+        s = d["signals"]
+        assert s["buy"]["approved"] == 1
+        assert s["buy"]["rejected"] == 3
+        assert s["buy"]["approval_rate"] == 0.25
+        assert s["sell"]["approved"] == 5
+        assert s["sell"]["rejected"] == 0
+        assert s["sell"]["approval_rate"] == 1.0
+        # Overall rate kept for back-compat but should equal 6/9
+        assert s["approval_rate"] == round(6 / 9, 4)

@@ -285,7 +285,7 @@ class Dashboard:
               • Read-only GETs in _READ_ONLY still work without auth for embed use
             """
             _ALWAYS_PUBLIC = {"/api/health", "/api/login", "/api/logout", "/login", "/ws"}
-            _HTML_PAGES = {"/", "/settings", "/trades", "/analytics", "/news", "/logs", "/ml-robustness"}
+            _HTML_PAGES = {"/", "/settings", "/trades", "/analytics", "/news", "/logs", "/ml-robustness", "/observability"}
             _READ_ONLY = {"/api/status", "/api/positions", "/api/trades",
                           "/api/pnl-history", "/api/market-chart",
                           "/api/backtest-results", "/api/config",
@@ -294,7 +294,8 @@ class Dashboard:
                           "/api/logs", "/api/logs/list",
                           "/api/ml/status", "/api/ml/walk-forward",
                           "/api/ml/regime-performance", "/api/ml/bootstrap-ci",
-                          "/api/ml/member-correlation"}
+                          "/api/ml/member-correlation",
+                          "/api/ml/training-progress"}
 
             async def dispatch(self, request: Request, call_next):
                 from starlette.responses import RedirectResponse
@@ -332,7 +333,7 @@ class Dashboard:
         # echo the cookie value back in `X-CSRF-Token`. Blocks cross-origin
         # POST attacks that can't read same-origin cookies.
         class CsrfMiddleware(BaseHTTPMiddleware):
-            _HTML_PATHS = {"/", "/settings", "/trades", "/analytics", "/news", "/logs", "/ml-robustness"}
+            _HTML_PATHS = {"/", "/settings", "/trades", "/analytics", "/news", "/logs", "/ml-robustness", "/observability"}
             _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
             _COOKIE = "sentinel_csrf"
             _HEADER = "X-CSRF-Token"
@@ -644,9 +645,15 @@ class Dashboard:
             return JSONResponse(content=state.get("pnl_history", []))
 
         @app.get("/api/market-chart")
-        async def market_chart(interval: str = "1m", symbol: str = ""):
+        async def market_chart(interval: str = "1m", symbol: str = "", end: int = 0):
+            """Return chart candles. `end` (ms, optional) shifts the window back
+            in time for historical browsing; 0 or missing = live tail."""
             if self.market_chart_provider:
-                return JSONResponse(content=self.market_chart_provider(interval, symbol))
+                try:
+                    return JSONResponse(content=self.market_chart_provider(interval, symbol, end))
+                except TypeError:
+                    # Legacy provider without end_ts arg — fall back silently
+                    return JSONResponse(content=self.market_chart_provider(interval, symbol))
             state = self._get_state()
             return JSONResponse(content=state.get("market_chart", {"candles": []}))
 
@@ -857,12 +864,23 @@ class Dashboard:
             m = predictor.metrics
             # M-5: read through public properties instead of private attrs
             # so the dashboard stays decoupled from MLPredictor internals.
+            last_train_ms = getattr(predictor, "_last_train_ts", 0) or 0
+            # PSR / DSR fields were added in Phase-1 of the ML overhaul but
+            # the status endpoint predated them. Exposing via getattr keeps
+            # older pickled MLMetrics objects (no psr/dsr fields) loadable
+            # without breaking the payload shape.
+            _psr = getattr(m, "psr", None) if m else None
+            _dsr = getattr(m, "dsr", None) if m else None
+            _psr_gate = bool(getattr(m, "psr_gate_passed", False)) if m else False
+            _psr_n_trials = int(getattr(m, "psr_n_trials", 1)) if m else 1
+            _fi_stab = getattr(m, "feature_importance_stability", None) if m else None
             return JSONResponse(content={
                 "enabled": True,
                 "ready": predictor.is_ready,
                 "mode": predictor.rollout_mode,
                 "version": predictor.model_version or "none",
                 "needs_retrain": predictor.needs_retrain(),
+                "last_trained_at": (last_train_ms / 1000.0) if last_train_ms else None,
                 "metrics": {
                     "precision": round(m.precision, 4) if m else None,
                     "recall": round(m.recall, 4) if m else None,
@@ -870,6 +888,16 @@ class Dashboard:
                     "skill_score": round(m.skill_score, 4) if m else None,
                     "train_samples": m.train_samples if m else 0,
                     "test_samples": m.test_samples if m else 0,
+                    # López de Prado Phase-1 fields — PSR/DSR tell whether
+                    # the observed Sharpe is statistically distinguishable
+                    # from zero (PSR) + from multi-testing inflation (DSR).
+                    "psr": round(_psr, 4) if _psr is not None else None,
+                    "dsr": round(_dsr, 4) if _dsr is not None else None,
+                    "psr_gate_passed": _psr_gate,
+                    "psr_n_trials": _psr_n_trials,
+                    # Phase-4 feature-importance stability across ensemble
+                    # members. Empty dict when < 2 members contributed.
+                    "feature_importance_stability": _fi_stab or {},
                 } if m else None,
                 "threshold": predictor.block_threshold,
                 "block_threshold": predictor.block_threshold,
@@ -883,8 +911,45 @@ class Dashboard:
             retrain_fn = ml.get("ml_retrain_fn") if ml else None
             if retrain_fn is None:
                 return JSONResponse(content={"status": "error", "message": "retrain function not wired"}, status_code=503)
+            progress_fn = ml.get("ml_training_progress_fn") if ml else None
+            progress_set_fn = ml.get("ml_training_progress_set_fn") if ml else None
+            if progress_fn is not None and progress_fn().get("active"):
+                return JSONResponse(
+                    content={"status": "busy", "message": "Обучение уже выполняется"},
+                    status_code=409,
+                )
+            # Pre-arm progress state synchronously so the very first poll from the
+            # dashboard sees an active job even if the background coroutine hasn't
+            # scheduled its first await yet.
+            if progress_set_fn is not None:
+                progress_set_fn(
+                    active=True,
+                    phase="queued",
+                    message="Задача поставлена в очередь…",
+                    symbols_total=0,
+                    symbols_done=0,
+                    current_symbol=None,
+                    percent=0,
+                    started_at=time.time(),
+                    finished_at=None,
+                    ok=None,
+                    metrics=None,
+                )
             asyncio.create_task(retrain_fn())
             return JSONResponse(content={"status": "started", "message": "ML retraining triggered in background"})
+
+        @app.get("/api/ml/training-progress")
+        async def ml_training_progress():
+            """Live snapshot of the manual retrain job."""
+            ml = self._state_provider() if self._state_provider else {}
+            progress_fn = ml.get("ml_training_progress_fn") if ml else None
+            if progress_fn is None:
+                return JSONResponse(content={
+                    "active": False,
+                    "phase": "unavailable",
+                    "message": "progress tracker not wired",
+                })
+            return JSONResponse(content=progress_fn())
 
         # ──────────────────────────────────────────────────────
         # Phase-7: ML Robustness — WF / regime / bootstrap / correlations
@@ -977,6 +1042,346 @@ class Dashboard:
                 "correlations": {k: round(v, 4) for k, v in corr.items()},
                 "warn_threshold": 0.85,
             })
+
+        # 10-second TTL cache shared across requests. The endpoint is auto-
+        # refreshed every 30s by each open dashboard tab — without a cache,
+        # N tabs × 30s × file-IO would tail-read events.jsonl repeatedly.
+        # Keyed by (events_path, window_hours, max_events) so different
+        # paths (e.g. test tmpfiles) and different views don't collide.
+        _OBS_CACHE: dict[tuple[str, float, int], tuple[float, dict]] = {}
+        _OBS_CACHE_TTL_SEC = 10.0
+
+        @app.get("/api/observability/summary")
+        async def observability_summary(window_hours: float = 24.0, max_events: int = 500):
+            """Aggregate recent observability events for the dashboard.
+
+            Reads ``logs/events.jsonl`` (tail-only — bounded by ``max_events``
+            so a multi-GB archive never blocks the request) and groups by:
+
+            - ``signal_rejected.gate`` — which risk-gate blocks most signals
+            - ``component_error.component`` — which subsystem fails most
+            - ``guard_tripped.guard`` — recent guard activations
+            - ``signal_approved`` vs ``signal_rejected`` — overall + BUY/SELL split
+
+            ``window_hours`` filters by event timestamp (default 24h). When
+            the window exceeds 24h, rotated backups (``events.jsonl.1``,
+            ``.2``, …) are also scanned in chronological order so multi-day
+            views aren't silently truncated at the rotation boundary.
+
+            Path resolution honours ``SENTINEL_EVENTS_LOG_PATH`` so tests
+            can isolate from the real production file via ``monkeypatch.setenv``.
+
+            Results are cached in-process for ~10s — multiple open dashboard
+            tabs auto-refreshing every 30s would otherwise tail-read the file
+            repeatedly. Keyed by ``(window_hours, max_events)``.
+            """
+            window_hours = max(0.5, min(float(window_hours), 168.0))  # 30min..7d
+            max_events = max(50, min(int(max_events), 5000))
+
+            now_wall = time.time()
+
+            # Path resolution: env override wins so test fixtures can point
+            # at a tmp file without clobbering production logs.
+            import os as _os
+            env_path = _os.environ.get("SENTINEL_EVENTS_LOG_PATH", "").strip()
+            if env_path:
+                events_path = pathlib.Path(env_path).resolve()
+            else:
+                events_path = (
+                    pathlib.Path(__file__).parent.parent / "logs" / "events.jsonl"
+                ).resolve()
+
+            # Cache key includes the resolved path so test fixtures with
+            # distinct ``SENTINEL_EVENTS_LOG_PATH`` values get distinct
+            # cache entries (otherwise consecutive tests would see stale
+            # data from the prior test's cache fill).
+            cache_key = (str(events_path), window_hours, max_events)
+            cached = _OBS_CACHE.get(cache_key)
+            if cached is not None and (now_wall - cached[0]) < _OBS_CACHE_TTL_SEC:
+                return JSONResponse(content=cached[1])
+
+            cutoff_ms = int(now_wall * 1000) - int(window_hours * 3600 * 1000)
+
+            def _read_tail(path: pathlib.Path, n_lines: int) -> list[dict]:
+                """Tail-read up to n_lines from a JSONL file. Each line one JSON object.
+                Skips malformed lines silently (a corrupt last write must not break the dashboard)."""
+                if not path.exists() or not path.is_file():
+                    return []
+                try:
+                    size = path.stat().st_size
+                    if size == 0:
+                        return []
+                    block = 64 * 1024
+                    data = b""
+                    pos = size
+                    with path.open("rb") as fh:
+                        while pos > 0 and data.count(b"\n") <= n_lines:
+                            read_size = min(block, pos)
+                            pos -= read_size
+                            fh.seek(pos)
+                            data = fh.read(read_size) + data
+                    text = data.decode("utf-8", errors="replace")
+                    out: list[dict] = []
+                    for ln in text.splitlines()[-n_lines:]:
+                        ln = ln.strip()
+                        if not ln:
+                            continue
+                        try:
+                            out.append(json.loads(ln))
+                        except (ValueError, TypeError):
+                            continue
+                    return out
+                except OSError as exc:
+                    logger.warning("observability read_tail failed: %s", exc)
+                    return []
+
+            # Backup-file inclusion: when the requested window exceeds 24h,
+            # rotated backups (.1, .2, ...) may contain in-window events.
+            # Read newest backup first (just-rotated has the most relevant
+            # data) up to the configured count, then merge with active file.
+            files_to_read: list[pathlib.Path] = [events_path]
+            if window_hours > 24.0:
+                # Iterate possible backup suffixes — EventLog rotates up to
+                # ``backup_count`` (default 5). Stop on first missing file
+                # so we don't waste stat() calls.
+                for i in range(1, 11):
+                    backup = events_path.with_suffix(events_path.suffix + f".{i}")
+                    if not backup.exists():
+                        break
+                    files_to_read.append(backup)
+
+            # Read newest file first (events_path), oldest last. Combined
+            # tail is capped at max_events so a 7-day window with 6 huge
+            # backups still bounds memory.
+            collected: list[dict] = []
+            remaining = max_events
+            for fp in files_to_read:
+                if remaining <= 0:
+                    break
+                chunk = _read_tail(fp, remaining)
+                collected = chunk + collected  # older file → prepended
+                remaining = max_events - len(collected)
+            events = [e for e in collected if int(e.get("ts", 0)) >= cutoff_ms]
+
+            # Aggregations
+            from collections import Counter
+            rejected_by_gate: Counter = Counter()
+            errors_by_component: Counter = Counter()
+            errors_by_severity: Counter = Counter()
+            guards_tripped: Counter = Counter()
+            # Per-direction signal counters: SELL is never gated (close-out
+            # always allowed) so it dominates the overall approval rate
+            # and would otherwise mask BUY-gating health. Splitting BUY vs
+            # SELL gives the dashboard an honest BUY-rate signal.
+            approved = {"BUY": 0, "SELL": 0, "OTHER": 0}
+            rejected = {"BUY": 0, "SELL": 0, "OTHER": 0}
+            recent_errors: list[dict] = []
+            recent_trips: list[dict] = []
+
+            def _bucket(direction: Any) -> str:
+                d = str(direction or "").upper()
+                return d if d in ("BUY", "SELL") else "OTHER"
+
+            for ev in events:
+                t = ev.get("type")
+                if t == "signal_rejected":
+                    rejected[_bucket(ev.get("direction"))] += 1
+                    rejected_by_gate[str(ev.get("gate") or "unknown")] += 1
+                elif t == "signal_approved":
+                    approved[_bucket(ev.get("direction"))] += 1
+                elif t == "component_error":
+                    component = str(ev.get("component") or "unknown")
+                    severity = str(ev.get("severity") or "error")
+                    errors_by_component[component] += 1
+                    errors_by_severity[severity] += 1
+                    recent_errors.append({
+                        "ts": ev.get("ts"),
+                        "component": component,
+                        "severity": severity,
+                        "exc_type": ev.get("exc_type", ""),
+                        "reason": ev.get("reason", ""),
+                        "suppressed_count": ev.get("suppressed_count", 0),
+                    })
+                elif t == "guard_tripped":
+                    guard = str(ev.get("guard") or "unknown")
+                    guards_tripped[guard] += 1
+                    recent_trips.append({
+                        "ts": ev.get("ts"),
+                        "guard": guard,
+                        "name": ev.get("name", ""),
+                        "reason": ev.get("reason", ""),
+                    })
+
+            def _rate(a: int, r: int) -> Optional[float]:
+                tot = a + r
+                return round(a / tot, 4) if tot else None
+
+            total_approved = sum(approved.values())
+            total_rejected = sum(rejected.values())
+            payload = {
+                "window_hours": window_hours,
+                "events_scanned": len(events),
+                "events_path_exists": events_path.exists(),
+                "files_read": len(files_to_read),
+                "signals": {
+                    "approved": total_approved,
+                    "rejected": total_rejected,
+                    # Headline overall rate kept for back-compat; meaningful
+                    # only when SELL volume is small.
+                    "approval_rate": _rate(total_approved, total_rejected),
+                    # BUY-only rate is the honest gating-health metric
+                    # (SELLs bypass entry gates and always approve, so an
+                    # overall rate near 100% can hide BUY rejection storms).
+                    "buy": {
+                        "approved": approved["BUY"],
+                        "rejected": rejected["BUY"],
+                        "approval_rate": _rate(approved["BUY"], rejected["BUY"]),
+                    },
+                    "sell": {
+                        "approved": approved["SELL"],
+                        "rejected": rejected["SELL"],
+                        "approval_rate": _rate(approved["SELL"], rejected["SELL"]),
+                    },
+                },
+                "top_blocking_gates": [
+                    {"gate": g, "count": c, "pct_of_rejections": round(c / total_rejected * 100, 1) if total_rejected else 0.0}
+                    for g, c in rejected_by_gate.most_common(10)
+                ],
+                "errors_by_component": [
+                    {"component": k, "count": v} for k, v in errors_by_component.most_common(10)
+                ],
+                "errors_by_severity": dict(errors_by_severity),
+                "recent_component_errors": recent_errors[-25:][::-1],
+                "guards_tripped": [
+                    {"guard": g, "count": c} for g, c in guards_tripped.most_common(10)
+                ],
+                "recent_guards_tripped": recent_trips[-15:][::-1],
+            }
+            # Bound the cache size: a misbehaving client could call with
+            # arbitrary (window_hours, max_events) tuples and balloon it.
+            if len(_OBS_CACHE) > 64:
+                # Drop the oldest half — cheap, no need for true LRU here.
+                for k in sorted(_OBS_CACHE, key=lambda k: _OBS_CACHE[k][0])[:32]:
+                    _OBS_CACHE.pop(k, None)
+            _OBS_CACHE[cache_key] = (now_wall, payload)
+            return JSONResponse(content=payload)
+
+        @app.get("/api/observability/slo")
+        async def observability_slo(window_hours: float = 24.0):
+            """SLO / error-budget computation against documented targets.
+
+            Targets are simple operator commitments — adjust by env vars
+            so on-call can re-tune without code changes:
+
+            - ``SENTINEL_SLO_BUY_APPROVAL_RATE`` (default 0.40) — fraction
+              of BUY signals that must pass the risk pipeline. Below this,
+              gating is too aggressive *or* upstream signals are bad.
+            - ``SENTINEL_SLO_MAX_ERRORS_PER_HR`` (default 5.0) — error-rate
+              ceiling for ``component_error`` events.
+            - ``SENTINEL_SLO_MAX_CRITICAL`` (default 0) — critical events
+              are always a budget breach.
+
+            The endpoint reuses the same data the summary endpoint reads
+            (events.jsonl tail) and computes burn-rate as
+            ``actual / budget`` per dimension. burn>=1.0 means the budget
+            is exhausted for the window.
+            """
+            import os as _os
+            target_buy_rate = float(_os.environ.get("SENTINEL_SLO_BUY_APPROVAL_RATE", "0.40"))
+            target_errors_per_hr = float(_os.environ.get("SENTINEL_SLO_MAX_ERRORS_PER_HR", "5.0"))
+            target_max_critical = int(_os.environ.get("SENTINEL_SLO_MAX_CRITICAL", "0"))
+
+            # Reuse the summary endpoint's machinery via direct call. This
+            # benefits from the same cache (within TTL) so SLO refreshes
+            # are cheap when the summary panel just refreshed.
+            summary_resp = await observability_summary(window_hours=window_hours, max_events=2000)
+            import json as _json
+            summary = _json.loads(summary_resp.body.decode("utf-8"))
+
+            buy = summary["signals"]["buy"]
+            buy_rate = buy.get("approval_rate")
+            buy_burn = None
+            if buy_rate is not None and 0.0 < target_buy_rate < 1.0:
+                # SRE-style burn rate: error_budget = 1 - target.
+                # actual_bad = 1 - actual. burn = actual_bad / error_budget.
+                # burn=1.0 means budget exactly consumed; >1.0 means breach.
+                error_budget = 1.0 - target_buy_rate
+                actual_bad = max(0.0, 1.0 - buy_rate)
+                buy_burn = round(actual_bad / error_budget, 4) if error_budget > 0 else None
+
+            errors_total = sum(summary["errors_by_severity"].get(k, 0) for k in ("warning", "error", "critical"))
+            errors_per_hr = errors_total / max(window_hours, 0.001)
+            error_burn = round(errors_per_hr / target_errors_per_hr, 4) if target_errors_per_hr > 0 else None
+
+            critical = summary["errors_by_severity"].get("critical", 0)
+            critical_burn = round(critical / max(target_max_critical, 1), 4) if critical > target_max_critical else 0.0
+
+            slos = [
+                {"name": "buy_approval_rate", "target": target_buy_rate,
+                 "actual": buy_rate, "burn": buy_burn,
+                 "status": "ok" if (buy_burn is None or buy_burn < 0.5) else ("warn" if buy_burn < 1.0 else "breach")},
+                {"name": "errors_per_hour", "target": target_errors_per_hr,
+                 "actual": round(errors_per_hr, 3), "burn": error_burn,
+                 "status": "ok" if (error_burn is None or error_burn < 0.5) else ("warn" if error_burn < 1.0 else "breach")},
+                {"name": "critical_events", "target": target_max_critical,
+                 "actual": critical, "burn": critical_burn,
+                 "status": "ok" if critical <= target_max_critical else "breach"},
+            ]
+            return JSONResponse(content={
+                "window_hours": window_hours,
+                "slos": slos,
+                "any_breach": any(s["status"] == "breach" for s in slos),
+            })
+
+        @app.get("/api/observability/metrics")
+        async def observability_metrics():
+            """Prometheus text-format metrics for scraping.
+
+            Exposes counters derived from a 15-minute window over
+            ``events.jsonl`` so a Prometheus instance can scrape this
+            endpoint at its usual 15-30s cadence and build dashboards /
+            alerts in Grafana.
+
+            We deliberately keep the metric set small — gate counts,
+            error counts by component, severity histograms — because each
+            metric line is a label cardinality dimension that pricing-
+            sensitive Prometheus tiers will charge for.
+            """
+            summary_resp = await observability_summary(window_hours=0.25, max_events=5000)
+            import json as _json
+            summary = _json.loads(summary_resp.body.decode("utf-8"))
+
+            lines: list[str] = []
+            # HELP/TYPE headers per metric family; values follow.
+            lines.append("# HELP sentinel_signals_total Risk pipeline decisions in the last 15 min.")
+            lines.append("# TYPE sentinel_signals_total counter")
+            for direction in ("BUY", "SELL"):
+                key = direction.lower()
+                lines.append(f'sentinel_signals_total{{direction="{direction}",outcome="approved"}} {summary["signals"][key]["approved"]}')
+                lines.append(f'sentinel_signals_total{{direction="{direction}",outcome="rejected"}} {summary["signals"][key]["rejected"]}')
+
+            lines.append("# HELP sentinel_gate_rejections_total Rejections by risk-gate.")
+            lines.append("# TYPE sentinel_gate_rejections_total counter")
+            for g in summary["top_blocking_gates"]:
+                lines.append(f'sentinel_gate_rejections_total{{gate="{g["gate"]}"}} {g["count"]}')
+
+            lines.append("# HELP sentinel_component_errors_total Component errors by name.")
+            lines.append("# TYPE sentinel_component_errors_total counter")
+            for c in summary["errors_by_component"]:
+                lines.append(f'sentinel_component_errors_total{{component="{c["component"]}"}} {c["count"]}')
+
+            lines.append("# HELP sentinel_component_errors_by_severity Error counts by severity.")
+            lines.append("# TYPE sentinel_component_errors_by_severity counter")
+            for sev, n in summary["errors_by_severity"].items():
+                lines.append(f'sentinel_component_errors_by_severity{{severity="{sev}"}} {n}')
+
+            lines.append("# HELP sentinel_guard_trips_total Guard activations by guard.")
+            lines.append("# TYPE sentinel_guard_trips_total counter")
+            for g in summary["guards_tripped"]:
+                lines.append(f'sentinel_guard_trips_total{{guard="{g["guard"]}"}} {g["count"]}')
+
+            from fastapi.responses import PlainTextResponse
+            return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
         @app.get("/api/config")
         async def config_snapshot():
@@ -1208,6 +1613,10 @@ class Dashboard:
         async def ml_robustness_page():
             return _ML_ROBUSTNESS_HTML
 
+        @app.get("/observability", response_class=HTMLResponse)
+        async def observability_page():
+            return _OBSERVABILITY_HTML
+
         self._app = app
         return app
 
@@ -1288,3 +1697,4 @@ _NEWS_HTML = (_STATIC_DIR / "news.html").read_text(encoding="utf-8") if (_STATIC
 _LOGS_HTML = (_STATIC_DIR / "logs.html").read_text(encoding="utf-8") if (_STATIC_DIR / "logs.html").exists() else "<h1>Logs HTML not found</h1>"
 _LOGIN_HTML = (_STATIC_DIR / "login.html").read_text(encoding="utf-8") if (_STATIC_DIR / "login.html").exists() else "<h1>Login HTML not found</h1>"
 _ML_ROBUSTNESS_HTML = (_STATIC_DIR / "ml-robustness.html").read_text(encoding="utf-8") if (_STATIC_DIR / "ml-robustness.html").exists() else "<h1>ML Robustness HTML not found</h1>"
+_OBSERVABILITY_HTML = (_STATIC_DIR / "observability.html").read_text(encoding="utf-8") if (_STATIC_DIR / "observability.html").exists() else "<h1>Observability HTML not found</h1>"
