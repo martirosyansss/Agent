@@ -36,6 +36,19 @@ _STDLOG_MODULE_MAP = (
     ("dashboard.", "dashboard"),
 )
 
+# UI-флаги *_enabled из Settings → имена ключей в словаре `strategies`.
+# Используется в hot-path фильтре (см. шаг "4. Определить активные стратегии"),
+# чтобы выключение тоггла в дашборде реально снимало стратегию с ротации,
+# а не работало как косметика. EMA Crossover RSI флага не имеет — это
+# базовая стратегия и в UI не выводится.
+_STRATEGY_ENABLE_FLAGS: dict[str, str] = {
+    "grid_trading": "grid_enabled",
+    "mean_reversion": "meanrev_enabled",
+    "bollinger_breakout": "bb_breakout_enabled",
+    "dca_bot": "dca_enabled",
+    "macd_divergence": "macd_div_enabled",
+}
+
 
 class _InterceptHandler(logging.Handler):
     """Перенаправляет stdlib logging → loguru с авто-биндом extra[module]."""
@@ -844,6 +857,16 @@ async def run() -> None:
                 # Setup multi-stage TP levels (TP1→50% close+breakeven, TP2→30%, TP3→trailing)
                 if opened:
                     await position_manager.setup_tp_levels(order.symbol)
+                # Arm Chandelier Exit (ATR ratchet) using entry-time ATR.
+                # Parallel to the fixed-% trailing — whichever stop is
+                # tighter at trigger time wins. ATR is refreshed on each
+                # new candle via update_chandelier_atr() in _on_new_candle.
+                if opened and order.features is not None and order.features.atr > 0:
+                    await position_manager.setup_chandelier(
+                        order.symbol,
+                        atr=order.features.atr,
+                        strategy_name=order.strategy_name,
+                    )
                 # Persist opened position to DB
                 if opened and repo:
                     try:
@@ -1299,9 +1322,57 @@ async def run() -> None:
     _ml_model_path_unified = Path(__file__).parent / "data" / "ml_models" / "ml_predictor.pkl"
     _ml_retrain_lock = asyncio.Lock()
 
+    # Dashboard-facing progress snapshot. Mutated only by _run_ml_training;
+    # read by GET /api/ml/training-progress. Kept as a plain dict so the
+    # dashboard state provider can return it without locking — the coarse
+    # fields (phase / percent) are updated atomically per assignment.
+    _ml_training_progress: dict = {
+        "active": False,
+        "phase": "idle",
+        "message": "",
+        "symbols_total": 0,
+        "symbols_done": 0,
+        "current_symbol": None,
+        "percent": 0,
+        "started_at": None,
+        "finished_at": None,
+        "ok": None,
+        "metrics": None,
+    }
+
+    def _ml_progress_set(**kwargs) -> None:
+        _ml_training_progress.update(kwargs)
+        t = _ml_training_progress.get("symbols_total") or 0
+        d = _ml_training_progress.get("symbols_done") or 0
+        if t > 0:
+            _ml_training_progress["percent"] = min(100, int(round(d / t * 100)))
+
+    def _get_ml_training_progress() -> dict:
+        return dict(_ml_training_progress)
+
     async def _run_ml_training() -> bool:
         """Load trades from DB, train per-symbol + unified ML models, save to disk."""
+        _ml_progress_set(
+            active=True,
+            phase="starting",
+            message="Подготовка к обучению…",
+            symbols_total=0,
+            symbols_done=0,
+            current_symbol=None,
+            percent=0,
+            started_at=_ml_training_progress.get("started_at") or time.time(),
+            finished_at=None,
+            ok=None,
+            metrics=None,
+        )
         if not _ml_predictor or not repo:
+            _ml_progress_set(
+                phase="failed",
+                message="ML-предиктор или БД не инициализированы",
+                ok=False,
+                active=False,
+                finished_at=time.time(),
+            )
             return False
         try:
             import sys as _sys
@@ -1309,15 +1380,51 @@ async def run() -> None:
             if _scripts_dir not in _sys.path:
                 _sys.path.insert(0, _scripts_dir)
             from scripts.train_ml import build_trades_per_symbol
+            _ml_progress_set(
+                phase="collecting_data",
+                message="Собираем сделки из БД…",
+                symbols_total=0,
+                symbols_done=0,
+            )
             log.info("ML auto-retrain: collecting training data...")
-            trades_by_sym = await asyncio.to_thread(build_trades_per_symbol, repo, settings)
+
+            # Per-backtest callback — fires from the worker thread, mutates
+            # the same dict the dashboard reads. Keeps the operator informed
+            # during the 3–6 min data-collection phase instead of the bar
+            # sitting at 0% for the whole window.
+            def _collecting_progress(msg: str, done: int, total: int) -> None:
+                # During this phase the bar fills 0→100% on its own scale;
+                # when training starts it resets to 0 and fills again. The
+                # phase label on the UI makes the two steps distinguishable.
+                pct_collect = int(round((done / total) * 100)) if total else 0
+                _ml_training_progress.update({
+                    "message": f"Сбор данных: {msg}",
+                    "percent": pct_collect,
+                })
+
+            trades_by_sym = await asyncio.to_thread(
+                build_trades_per_symbol, repo, settings, _collecting_progress,
+            )
             if not trades_by_sym:
                 log.warning("ML auto-retrain: no trades available for training")
+                _ml_progress_set(
+                    phase="failed",
+                    message="Нет сделок для обучения",
+                    ok=False,
+                )
                 return False
 
             _ml_models_dir = Path(__file__).parent / "data" / "ml_models"
             _ml_models_dir.mkdir(parents=True, exist_ok=True)
             any_saved = False
+
+            # +1 for unified step at the end
+            _ml_progress_set(
+                phase="training",
+                message="Обучение моделей…",
+                symbols_total=len(trades_by_sym) + 1,
+                symbols_done=0,
+            )
 
             from analyzer.ml_predictor import MLPredictor as _MLP
 
@@ -1396,8 +1503,13 @@ async def run() -> None:
                     log.warning("ml_wf_instability bus emit failed: {}", _err)
 
             for sym, sym_trades in trades_by_sym.items():
+                _ml_progress_set(
+                    current_symbol=sym,
+                    message=f"{sym}: {len(sym_trades)} сделок",
+                )
                 if len(sym_trades) < 50:
                     log.info("ML auto-retrain: {} — too few trades ({}), skip", sym, len(sym_trades))
+                    _ml_progress_set(symbols_done=_ml_training_progress["symbols_done"] + 1)
                     continue
                 old_predictor = _ml_predictors.get(sym)
                 old_skill = (
@@ -1419,15 +1531,18 @@ async def run() -> None:
                     else _ml_predictor.rollout_mode
                 )
                 log.info("ML auto-retrain: training {} on {} trades...", sym, len(sym_trades))
+                _ml_progress_set(message=f"Обучение {sym}…")
                 metrics = await asyncio.to_thread(_run_configured_training, sym_predictor, sym_trades)
                 if metrics is None or not sym_predictor.is_ready:
                     log.warning("ML auto-retrain: {} — training failed or below threshold", sym)
+                    _ml_progress_set(symbols_done=_ml_training_progress["symbols_done"] + 1)
                     continue
                 if old_skill > 0 and metrics.skill_score < old_skill - SKILL_REGRESSION_TOLERANCE:
                     log.warning(
                         "ML auto-retrain: {} — new skill={:.3f} < old skill={:.3f} - {:.2f} → keeping old model",
                         sym, metrics.skill_score, old_skill, SKILL_REGRESSION_TOLERANCE,
                     )
+                    _ml_progress_set(symbols_done=_ml_training_progress["symbols_done"] + 1)
                     continue
                 sym_path = _ml_models_dir / f"ml_predictor_{sym}.pkl"
                 saved = await asyncio.to_thread(sym_predictor.save_to_file, sym_path)
@@ -1440,12 +1555,17 @@ async def run() -> None:
                     )
                     await _maybe_emit_wf_instability(sym_predictor, sym)
                     any_saved = True
+                _ml_progress_set(symbols_done=_ml_training_progress["symbols_done"] + 1)
 
             # Train unified fallback — same pattern (new instance, swap)
             all_trades = []
             for sym_trades in trades_by_sym.values():
                 all_trades.extend(sym_trades)
             all_trades.sort(key=lambda t: t.timestamp_open)
+            _ml_progress_set(
+                current_symbol="unified",
+                message=f"Обучение unified на {len(all_trades)} сделках…",
+            )
             if all_trades:
                 old_unified_skill = (
                     _ml_predictor.metrics.skill_score
@@ -1508,10 +1628,52 @@ async def run() -> None:
                             await _maybe_emit_wf_instability(_ml_predictor, "unified")
                             any_saved = True
 
+            _ml_progress_set(symbols_done=_ml_training_progress["symbols_total"])
+            final_metrics = None
+            if _ml_predictor and _ml_predictor.metrics:
+                m = _ml_predictor.metrics
+                final_metrics = {
+                    "precision": round(m.precision, 4),
+                    "recall": round(m.recall, 4),
+                    "roc_auc": round(m.roc_auc, 4),
+                    "skill_score": round(m.skill_score, 4),
+                    "train_samples": m.train_samples,
+                }
+            _ml_progress_set(
+                phase="done" if any_saved else "failed",
+                message=(
+                    "Готово — модели обновлены"
+                    if any_saved
+                    else "Обучение завершилось без сохранения (skill-регрессия)"
+                ),
+                current_symbol=None,
+                ok=any_saved,
+                metrics=final_metrics,
+            )
             return any_saved
         except Exception as exc:
             log.error("ML auto-retrain error: {}", exc)
+            try:
+                from monitoring.event_log import emit_component_error
+                emit_component_error(
+                    "ml_auto_retrain",
+                    str(exc) or type(exc).__name__,
+                    exc=exc,
+                    severity="error",
+                    phase=_ml_training_progress.get("phase"),
+                    current_symbol=_ml_training_progress.get("current_symbol"),
+                )
+            except Exception as _emit_err:
+                log.debug("event_log emit failed: {}", _emit_err)
+            _ml_progress_set(
+                phase="failed",
+                message=f"Ошибка: {exc}",
+                ok=False,
+                current_symbol=None,
+            )
             return False
+        finally:
+            _ml_progress_set(active=False, finished_at=time.time())
 
     # ── Strategy Decision Log (ring buffer) ──
     from collections import deque
@@ -1620,6 +1782,13 @@ async def run() -> None:
         _last_features_per_symbol[symbol] = features
         _last_cycle_ts_per_symbol[symbol] = int(time.time() * 1000)
 
+        # Refresh Chandelier Exit ATR for the open position (if any).
+        # Cheap no-op when no position is armed; when one is, a volatility
+        # regime shift after entry now propagates into the trailing stop
+        # without waiting for the next open.
+        if position_manager.has_position(symbol) and features.atr > 0:
+            await position_manager.update_chandelier_atr(symbol, features.atr)
+
         # 2.5 Update price-history cache for the correlation guard.
         # Cheap: replaces the deque each tick with the same closes feature_builder used.
         if price_history_cache is not None and candles_1h:
@@ -1725,9 +1894,17 @@ async def run() -> None:
             else:
                 active_names = get_active_strategies(_current_regime)
         else:
-            # Запускаем все стратегии, у которых есть инициализированный объект
-            # (стратегии фильтруются через .env флаги при инициализации)
             active_names = list(strategies.keys())
+
+        # Hot-path фильтр по UI-тогглам *_enabled. Применяется к обеим веткам
+        # выше, чтобы отключённая в дашборде стратегия гарантированно не
+        # попадала в ротацию — раньше эти флаги читались только UI и были
+        # косметикой. settings уже подменяется в _handle_settings_update,
+        # поэтому изменение тоггла подхватывается без рестарта.
+        active_names = [
+            n for n in active_names
+            if getattr(settings, _STRATEGY_ENABLE_FLAGS.get(n, ""), True)
+        ]
 
         # 5. Проверить позицию
         has_position = position_manager.has_position(symbol)
@@ -2316,7 +2493,7 @@ async def run() -> None:
     _ALLOWED_INTERVALS = {"1m", "5m", "15m", "1h", "4h", "1d"}
     _INTERVAL_LIMITS = {"1m": 120, "5m": 120, "15m": 96, "1h": 96, "4h": 120, "1d": 90}
 
-    def build_market_chart(interval: str = "1m", symbol: str = "") -> dict:
+    def build_market_chart(interval: str = "1m", symbol: str = "", end_ts: int = 0) -> dict:
         primary_symbol = symbol.upper() if symbol else (settings.trading_symbols[0] if settings.trading_symbols else "BTCUSDT")
         # Validate symbol is in configured list
         if settings.trading_symbols and primary_symbol not in [s.upper() for s in settings.trading_symbols]:
@@ -2324,9 +2501,14 @@ async def run() -> None:
         if interval not in _ALLOWED_INTERVALS:
             interval = "1m"
         limit = _INTERVAL_LIMITS.get(interval, 120)
+        # Historical pagination: end_ts (ms) shifts the window to end at that time
+        try:
+            end_ts_int = int(end_ts) if end_ts else 0
+        except (TypeError, ValueError):
+            end_ts_int = 0
 
         try:
-            candles = repo.get_candles(primary_symbol, interval, limit=limit)
+            candles = repo.get_candles(primary_symbol, interval, limit=limit, before_ts=end_ts_int)
         except Exception as _candle_err:
             log.debug("Chart candle fetch failed: {}", _candle_err)
             candles = []
@@ -2340,7 +2522,7 @@ async def run() -> None:
             bucket_mins = 5 if interval == "5m" else 15
             raw_limit = bucket_mins * limit
             try:
-                raw = repo.get_candles(primary_symbol, "1m", limit=raw_limit)
+                raw = repo.get_candles(primary_symbol, "1m", limit=raw_limit, before_ts=end_ts_int)
             except Exception as _agg_err:
                 log.debug("Aggregation candle fetch failed: {}", _agg_err)
                 raw = []
@@ -2405,8 +2587,8 @@ async def run() -> None:
                 "candles": built,
             }
 
-        # Fallback to trades for 1m only
-        if interval == "1m":
+        # Fallback to trades for 1m only — skip in historical mode (end_ts set)
+        if interval == "1m" and not end_ts_int:
             try:
                 trades = repo.get_recent_trades(primary_symbol, limit=120)
             except Exception as _trade_err:
@@ -2778,6 +2960,8 @@ async def run() -> None:
             "signal_exec_stats": repo.get_signal_execution_stats() if repo else {},
             "ml_predictor": _ml_predictor,
             "ml_retrain_fn": _run_ml_training,
+            "ml_training_progress_fn": _get_ml_training_progress,
+            "ml_training_progress_set_fn": _ml_progress_set,
         }
 
     # Control handlers — shared by Dashboard and Telegram bot
@@ -2843,7 +3027,34 @@ async def run() -> None:
     def _handle_settings_update(new_settings):
         """Propagate risk-limit changes to runtime objects without restart."""
         nonlocal settings
+        # Snapshot strategy-enable flags BEFORE swapping settings so we can
+        # diff old → new and emit one transition event per actually-changed
+        # toggle. Per-tick logging would spam events.jsonl; this fires only
+        # when the user clicks Save and a flag flipped.
+        prev_strategy_flags = {
+            strat: bool(getattr(settings, flag, False))
+            for strat, flag in _STRATEGY_ENABLE_FLAGS.items()
+        }
         settings = new_settings
+        try:
+            from monitoring.event_log import get_event_log, EventType
+            evlog = get_event_log()
+            for strat, flag in _STRATEGY_ENABLE_FLAGS.items():
+                new_val = bool(getattr(new_settings, flag, False))
+                if new_val != prev_strategy_flags[strat]:
+                    evlog.emit(
+                        EventType.STRATEGY_TOGGLED,
+                        strategy=strat,
+                        flag=flag,
+                        enabled=new_val,
+                        source="settings_update",
+                    )
+                    log.info(
+                        "Strategy {} toggled via UI: {} -> {}",
+                        strat, prev_strategy_flags[strat], new_val,
+                    )
+        except Exception as _toggle_emit_err:
+            log.debug("strategy_toggled emit failed: {}", _toggle_emit_err)
         if risk_sentinel:
             risk_sentinel._limits.max_open_positions = new_settings.max_open_positions
             risk_sentinel._limits.max_daily_loss_usd = new_settings.max_daily_loss_usd

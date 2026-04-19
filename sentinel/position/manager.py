@@ -67,6 +67,12 @@ class PositionManager:
         self._closed_positions: list[Position] = []
         # Multi-stage TP: symbol → (tp1_price, tp2_price, tp3_price)
         self._tp_levels: dict[str, tuple[float, float, float]] = {}
+        # Chandelier Exit state: symbol → dict (atr, atr_mult, activate_pct,
+        # max_stop, activated, floor_at_breakeven, breakeven_buffer_pct).
+        # Separate from _trailing so both mechanisms can coexist (whichever
+        # triggers first wins) and so Phase-2 re-evaluation can refresh the
+        # ATR input without touching the fixed-% trail configuration.
+        self._chandelier: dict[str, dict[str, float | bool]] = {}
         self._total_realized_pnl: float = 0.0
         self._realized_pnl_today: float = 0.0
         self._trades_today: int = 0
@@ -333,6 +339,7 @@ class PositionManager:
             self._sl_tp.pop(order.symbol, None)
             self._trailing.pop(order.symbol, None)
             self._tp_levels.pop(order.symbol, None)
+            self._chandelier.pop(order.symbol, None)
             self._closed_positions.append(position)
             self._record_equity_snapshot()
 
@@ -359,6 +366,56 @@ class PositionManager:
             pos = self._positions.get(symbol)
             if pos:
                 self._trailing[symbol] = (activate_pct, trail_pct, pos.entry_price)
+
+    async def setup_chandelier(
+        self,
+        symbol: str,
+        atr: float,
+        *,
+        strategy_name: str = "",
+        atr_mult: Optional[float] = None,
+        activate_pct: Optional[float] = None,
+    ) -> None:
+        """Arm Chandelier Exit (ATR-based ratchet trailing stop) for a position.
+
+        Runs in parallel with ``set_trailing_stop`` — whichever triggers first
+        wins. Chandelier scales the trailing buffer with realised volatility,
+        so a sudden ATR spike after entry no longer shakes us out on noise.
+
+        Args:
+            atr: Current ATR on the signal timeframe (must be > 0).
+            strategy_name: Feeds ``STRATEGY_CHANDELIER_DEFAULTS`` when explicit
+                overrides are not provided. Falls back to ``pos.strategy_name``.
+            atr_mult: Override the tuned multiplier (typical 2.5–3.5).
+            activate_pct: Override the tuned activation threshold (PnL%).
+        """
+        from risk.chandelier_exit import get_chandelier_config
+        async with self._lock:
+            pos = self._positions.get(symbol)
+            if not pos or atr <= 0:
+                return
+            cfg = get_chandelier_config(strategy_name or pos.strategy_name)
+            self._chandelier[symbol] = {
+                "atr": float(atr),
+                "atr_mult": float(atr_mult if atr_mult is not None else cfg.atr_mult),
+                "activate_pct": float(activate_pct if activate_pct is not None else cfg.activate_pct),
+                "floor_at_breakeven": bool(cfg.floor_at_breakeven),
+                "breakeven_buffer_pct": float(cfg.breakeven_buffer_pct),
+                "max_stop": 0.0,   # ratchet — monotonically non-decreasing
+                "activated": False,
+            }
+
+    async def update_chandelier_atr(self, symbol: str, atr: float) -> None:
+        """Refresh the ATR input on a new candle close (async-safe).
+
+        Does NOT reset the ratchet — if the new ATR would raise the stop,
+        the next ``check_stop_loss_take_profit`` tick picks it up; if it
+        would lower the stop, the previous ``max_stop`` is retained.
+        """
+        async with self._lock:
+            state = self._chandelier.get(symbol)
+            if state is not None and atr > 0:
+                state["atr"] = float(atr)
 
     async def setup_tp_levels(self, symbol: str) -> None:
         """Setup multi-stage TP levels based on SL distance (async-safe).
@@ -538,6 +595,7 @@ class PositionManager:
         self._sl_tp.pop(position.symbol, None)
         self._trailing.pop(position.symbol, None)
         self._tp_levels.pop(position.symbol, None)
+        self._chandelier.pop(position.symbol, None)
         self._closed_positions.append(position)
         self._record_equity_snapshot()
         await self._event_bus.emit(EVENT_POSITION_CLOSED, position)
@@ -603,6 +661,32 @@ class PositionManager:
                 drawdown_from_max = (max_price - pos.current_price) / max_price * 100
                 if drawdown_from_max >= trail_pct:
                     return "trailing_stop"
+
+        # Chandelier Exit (ATR-based ratchet trailing).
+        # Evaluated after the fixed-% trailing so a tighter classical trail
+        # still wins when both would fire; chandelier is the safety net for
+        # trades that survived beyond the fixed trail's activation window.
+        ch = self._chandelier.get(symbol)
+        if ch and pos.entry_price > 0 and pos.max_price_during_hold > 0:
+            pnl_pct = (pos.current_price - pos.entry_price) / pos.entry_price * 100
+            if pnl_pct >= float(ch["activate_pct"]):
+                ch["activated"] = True
+            if ch["activated"]:
+                from risk.chandelier_exit import compute_chandelier_stop
+                raw_stop = compute_chandelier_stop(
+                    max_price=pos.max_price_during_hold,
+                    atr=float(ch["atr"]),
+                    atr_mult=float(ch["atr_mult"]),
+                    entry_price=pos.entry_price,
+                    floor_at_breakeven=bool(ch["floor_at_breakeven"]),
+                    breakeven_buffer_pct=float(ch["breakeven_buffer_pct"]),
+                )
+                # Ratchet: the stop can only move up. If ATR widens after
+                # the trail has already tightened, we keep the tighter level.
+                if raw_stop > float(ch["max_stop"]):
+                    ch["max_stop"] = raw_stop
+                if float(ch["max_stop"]) > 0 and pos.current_price <= float(ch["max_stop"]):
+                    return "chandelier_exit"
 
         return None
 
