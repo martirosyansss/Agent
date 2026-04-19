@@ -137,13 +137,26 @@ def run_walk_forward(
             "member_probas": member_probas,
         }
 
+    # Phase-11 wiring: ``wfv_purge`` and ``wfv_embargo`` live on MLConfig.
+    # Both default to 0 so pre-Phase-11 deployments see identical splits.
+    # Operators flip them on when rolling-window features (rolling_win_rate_10,
+    # recent pnl averages, ...) are in play — those create implicit
+    # autocorrelation between train and test that can't be seen in a simple
+    # chronological split.
     wf = MLWalkForwardValidator(
         n_folds=n_folds,
         test_fraction=0.15,
         anchored=anchored,
         min_train_size=100,
         min_test_size=30,
+        purge=int(getattr(cfg, "wfv_purge", 0) or 0),
+        embargo=int(getattr(cfg, "wfv_embargo", 0) or 0),
     )
+    if wf.purge or wf.embargo:
+        logger.info(
+            "walk-forward: purge=%d embargo=%d (López de Prado)",
+            wf.purge, wf.embargo,
+        )
 
     report = wf.run(X, y, _fold_trainer)
 

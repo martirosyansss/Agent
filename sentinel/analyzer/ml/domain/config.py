@@ -74,3 +74,10 @@ class MLConfig:
     # Single random seed propagated to every estimator and bootstrap sampler —
     # changing it here (not in three builder methods) re-seeds the pipeline.
     random_seed: int = 42
+    # Phase-11 — walk-forward purge / embargo (López de Prado). Both default
+    # to 0 (legacy behaviour) so flipping ``use_walk_forward=True`` alone
+    # doesn't silently change split geometry. Turn on when features carry
+    # rolling-window dependencies (our rolling_win_rate_10 etc. do, so
+    # ``wfv_embargo=10`` is a conservative default once opt-in).
+    wfv_purge: int = 0
+    wfv_embargo: int = 0
