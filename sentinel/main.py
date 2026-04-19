@@ -1789,6 +1789,37 @@ async def run() -> None:
         if position_manager.has_position(symbol) and features.atr > 0:
             await position_manager.update_chandelier_atr(symbol, features.atr)
 
+            # Phase 2: re-evaluate SL/TP under current regime + ATR.
+            # Ratchets the SL upward when either (a) position got deep
+            # into profit (breakeven raise), or (b) regime flipped
+            # adverse while we're in profit (protective tighten).
+            # Runs after regime detection so features.market_regime is
+            # already populated for this tick.
+            _reeval = await position_manager.reevaluate_sl_tp(
+                symbol,
+                current_atr=features.atr,
+                regime=features.market_regime or "",
+            )
+            _reeval_actions = _reeval.get("actions", [])
+            if _reeval_actions:
+                from monitoring.event_log import emit_guard_tripped
+                _pos_for_evt = position_manager.get_position(symbol)
+                _strat_for_evt = _pos_for_evt.strategy_name if _pos_for_evt else ""
+                for _act in _reeval_actions:
+                    emit_guard_tripped(
+                        guard="sl_reeval",
+                        name=_act["type"],
+                        reason=f"SL adjusted: {_act['from']:.4f} → {_act['to']:.4f}",
+                        severity="info",
+                        symbol=symbol,
+                        strategy=_strat_for_evt,
+                        **{k: v for k, v in _act.items() if k not in ("type", "from", "to")},
+                    )
+                    log.info(
+                        "SL re-evaluated {} ({}): {:.4f} → {:.4f}",
+                        symbol, _act["type"], _act["from"], _act["to"],
+                    )
+
         # 2.5 Update price-history cache for the correlation guard.
         # Cheap: replaces the deque each tick with the same closes feature_builder used.
         if price_history_cache is not None and candles_1h:

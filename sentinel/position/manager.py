@@ -417,6 +417,125 @@ class PositionManager:
             if state is not None and atr > 0:
                 state["atr"] = float(atr)
 
+    # Adverse market regimes for a LONG position — used by re-evaluation to
+    # decide when to tighten the stop aggressively. Module-level constant so
+    # callers and tests share one definition.
+    _ADVERSE_REGIMES_FOR_LONG: frozenset[str] = frozenset({
+        "trending_down", "volatile", "sideways",
+    })
+
+    async def reevaluate_sl_tp(
+        self,
+        symbol: str,
+        *,
+        current_atr: float,
+        regime: str = "",
+        breakeven_threshold_pct: float = 1.5,
+        regime_tighten_atr_mult: float = 1.5,
+    ) -> dict:
+        """Re-evaluate SL for an open position under current market state.
+
+        Bridges the blind spot of "SL set at entry and forgotten" — the
+        classic failure mode on multi-day holds where a regime flip or a
+        large favourable move happens *after* entry and the static stop no
+        longer reflects the right risk.
+
+        **Invariant: the stop only moves UP.** Lowering the stop mid-trade
+        would silently increase risk beyond the sizing decision made at
+        entry — that's a free option gifted to the market. The TP is left
+        alone (lowering TP is speculative; raising it is speculative in
+        the other direction — we defer to the strategy-level exit signals
+        for that).
+
+        Rules applied, in order:
+
+        1. **Breakeven raise** — once PnL% ≥ ``breakeven_threshold_pct`` and
+           the SL is still below entry + 0.1% buffer, pull it up to
+           breakeven. Locks in commission coverage on any trade that got
+           meaningfully in the money but hasn't yet hit TP1.
+        2. **Adverse-regime tighten** — if regime flipped to a non-bullish
+           state AND the position is in profit, pull the SL to
+           ``current_price − current_atr × regime_tighten_atr_mult``, but
+           never below the current SL (ratchet) nor below breakeven.
+
+        Args:
+            current_atr: ATR on the signal timeframe at the moment of
+                the call. Required; the method no-ops when ≤ 0.
+            regime: MarketRegimeType.value string (``"trending_up"``,
+                ``"trending_down"``, etc.) — empty means "don't apply
+                the regime rule", useful for tests.
+            breakeven_threshold_pct: PnL% at which the breakeven raise
+                arms. Tuned per-deployment; 1.5% ≈ half of a typical
+                intraday range.
+            regime_tighten_atr_mult: ATR multiplier for the adverse-regime
+                tightened stop. Tighter than chandelier (default 3.0)
+                because this fires only when the regime has already
+                turned against us.
+
+        Returns:
+            Dict with ``symbol``, ``actions`` (list of applied changes),
+            ``pnl_pct``, ``sl_before``, ``sl_after``. Callers emit
+            observability events from the ``actions`` list — keeping
+            I/O out of the locked section.
+        """
+        async with self._lock:
+            pos = self._positions.get(symbol)
+            if not pos or pos.entry_price <= 0 or pos.current_price <= 0:
+                return {"symbol": symbol, "actions": [], "reason": "no_position"}
+
+            sl, tp = self._sl_tp.get(symbol, (0.0, 0.0))
+            if sl <= 0:
+                return {"symbol": symbol, "actions": [], "reason": "no_sl"}
+
+            pnl_pct = (pos.current_price - pos.entry_price) / pos.entry_price * 100.0
+            actions: list[dict] = []
+            new_sl = sl
+
+            # Rule 1 — breakeven raise
+            breakeven = pos.entry_price * 1.001
+            if pnl_pct >= breakeven_threshold_pct and new_sl < breakeven:
+                actions.append({
+                    "type": "breakeven_raise",
+                    "from": round(new_sl, 8),
+                    "to": round(breakeven, 8),
+                    "pnl_pct": round(pnl_pct, 2),
+                })
+                new_sl = breakeven
+
+            # Rule 2 — adverse-regime tighten (only when in profit;
+            # don't tighten a losing position into an immediate stop-out)
+            if (
+                regime
+                and regime in self._ADVERSE_REGIMES_FOR_LONG
+                and pnl_pct > 0
+                and current_atr > 0
+            ):
+                tightened = pos.current_price - current_atr * regime_tighten_atr_mult
+                # Floor at breakeven so an adverse regime can't drop SL
+                # back below entry when we were already in profit.
+                tightened_floor = max(tightened, breakeven)
+                if tightened_floor > new_sl:
+                    actions.append({
+                        "type": "regime_tighten",
+                        "from": round(new_sl, 8),
+                        "to": round(tightened_floor, 8),
+                        "regime": regime,
+                        "atr_mult": regime_tighten_atr_mult,
+                    })
+                    new_sl = tightened_floor
+
+            if actions:
+                self._sl_tp[symbol] = (new_sl, tp)
+                pos.stop_loss_price = new_sl
+
+            return {
+                "symbol": symbol,
+                "actions": actions,
+                "pnl_pct": round(pnl_pct, 2),
+                "sl_before": round(sl, 8),
+                "sl_after": round(new_sl, 8),
+            }
+
     async def setup_tp_levels(self, symbol: str) -> None:
         """Setup multi-stage TP levels based on SL distance (async-safe).
 
