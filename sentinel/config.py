@@ -151,6 +151,17 @@ class Settings(BaseSettings):
     trend_timeframe: str = "4h"
     max_trades_per_day: int = 6
 
+    # === Weekend Exit Guard (opt-in) ===
+    # Crypto trades 24/7, but weekend liquidity is materially thinner and
+    # flash crashes cluster there. Enable to force-close open positions
+    # inside the Fri 20:00 UTC → Mon 00:00 UTC window. Off by default so
+    # existing deployments don't change behaviour on upgrade.
+    weekend_exit_enabled: bool = False
+    weekend_exit_cutoff_day_of_week: int = 4   # 0=Mon … 4=Fri, 6=Sun
+    weekend_exit_cutoff_hour_utc: int = 20
+    weekend_exit_reopen_day_of_week: int = 0   # Monday
+    weekend_exit_reopen_hour_utc: int = 0
+
     # === Grid Trading (V1.3) ===
     grid_enabled: bool = False
     grid_num_levels: int = 8
@@ -342,7 +353,22 @@ def _write_env_updates(updates: dict[str, Any]) -> None:
     for key in missing_keys:
         updated_lines.append(f"{key}={serialized[key]}")
 
-    ENV_FILE_PATH.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+    payload = "\n".join(updated_lines) + "\n"
+
+    # Snapshot the previous .env next to itself so a botched UI save (corrupted
+    # text, partial write, etc.) is recoverable. Single rolling backup — older
+    # state lives in git. We append ".bak"/".tmp" to the filename directly
+    # rather than via Path.with_suffix because dotfiles like ".env" have an
+    # empty stem in pathlib, which makes with_suffix produce surprising paths.
+    if ENV_FILE_PATH.exists():
+        backup_path = ENV_FILE_PATH.with_name(ENV_FILE_PATH.name + ".bak")
+        backup_path.write_bytes(ENV_FILE_PATH.read_bytes())
+
+    # Atomic replace: write to a sibling temp file, then rename. Avoids leaving
+    # a half-written .env if the process is killed mid-write.
+    tmp_path = ENV_FILE_PATH.with_name(ENV_FILE_PATH.name + ".tmp")
+    tmp_path.write_text(payload, encoding="utf-8")
+    tmp_path.replace(ENV_FILE_PATH)
 
 
 def save_settings_updates(current_settings: Settings, updates: dict[str, Any]) -> Settings:

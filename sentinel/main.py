@@ -1884,6 +1884,31 @@ async def run() -> None:
                         guard_name="regime_flip",
                     )
 
+            # Phase 4: weekend exit guard (opt-in).
+            # Crypto weekend liquidity is thin and flash-crash-prone;
+            # operators who leave a bot unattended over the weekend
+            # can flip settings.weekend_exit_enabled on to get
+            # cash-out-by-cutoff behaviour. Default-off — existing
+            # deployments see no behaviour change.
+            if settings.weekend_exit_enabled:
+                _pos_weekend = position_manager.get_position(symbol)
+                if _pos_weekend is not None:
+                    from datetime import datetime, timezone
+                    from risk.weekend_exit import should_exit_before_weekend
+                    _should_we, _we_reason = should_exit_before_weekend(
+                        datetime.now(timezone.utc),
+                        enabled=settings.weekend_exit_enabled,
+                        cutoff_day_of_week=settings.weekend_exit_cutoff_day_of_week,
+                        cutoff_hour_utc=settings.weekend_exit_cutoff_hour_utc,
+                        reopen_day_of_week=settings.weekend_exit_reopen_day_of_week,
+                        reopen_hour_utc=settings.weekend_exit_reopen_hour_utc,
+                    )
+                    if _should_we:
+                        await _force_exit_position(
+                            _pos_weekend, features, reason=_we_reason,
+                            guard_name="weekend_exit",
+                        )
+
         # 3.6. Standing ML evaluation — runs every cycle, independent of signals.
         # Gives the dashboard a fresh probability per symbol without waiting for
         # a strategy to fire. We bypass MLPredictor.predict() (which short-circuits
