@@ -10,6 +10,8 @@ on it.
 from __future__ import annotations
 
 import asyncio
+import re
+from pathlib import Path
 
 import pytest
 
@@ -112,6 +114,31 @@ def test_emit_component_error_different_exc_types_not_deduped(
     emit_component_error("x", "r", exc=TypeError("b"))
     events = _fresh_event_log.recent_events(type_filter=EventType.COMPONENT_ERROR)
     assert len(events) == 2
+
+
+def test_emit_component_error_state_pruned_on_growth(_fresh_event_log: EventLog) -> None:
+    """Stale dedup entries are evicted once the table exceeds the trigger size.
+    Without pruning, a long-lived bot accumulating diverse (component, exc_type)
+    pairs would leak memory in the singleton dict.
+    """
+    from monitoring import event_log as el
+
+    el._reset_component_error_dedup()
+    # Synthesize many stale entries (last_ts well outside the prune cutoff).
+    stale_ts = el.time.time() - el._COMPONENT_ERROR_DEDUP_TTL_SEC * el._PRUNE_FACTOR - 100
+    with el._component_error_lock:
+        for i in range(el._PRUNE_TRIGGER_SIZE + 50):
+            el._component_error_state[(f"comp_{i}", "Stale")] = {
+                "last_ts": stale_ts, "suppressed": 0,
+            }
+    pre = len(el._component_error_state)
+    assert pre > el._PRUNE_TRIGGER_SIZE
+
+    # Any emit triggers the opportunistic prune sweep.
+    el.emit_component_error("trigger", "wakeup", exc=RuntimeError("x"))
+    post = len(el._component_error_state)
+    # All synthetic stale entries should be gone; only the one we just emitted remains.
+    assert post == 1, f"expected 1 entry after prune, got {post}"
 
 
 # ──────────────────────────────────────────────
@@ -285,3 +312,93 @@ def test_gate_exception_emits_component_error(_fresh_event_log: EventLog) -> Non
     assert ev["exc_type"] == "RuntimeError"
     assert "synthetic gate failure" in ev["reason"]
     assert ev["symbol"] == "BTCUSDT"
+
+
+# ──────────────────────────────────────────────
+# CI guard — observability-policy regression test
+#
+# Critical modules MUST keep their structured-emit coverage above a
+# minimum baseline. If someone deletes an ``emit_component_error`` /
+# ``emit_rejection`` / ``GUARD_TRIPPED`` call, or adds new
+# ``logger.error/critical`` paths without a matching emit, this test
+# fails — forcing the regression to be addressed in the PR rather than
+# silently drifting the observability surface.
+# ──────────────────────────────────────────────
+
+
+# (relative_path_under_sentinel, minimum_required_emit_count)
+# Counts CALL sites only — imports don't count. When you ADD coverage,
+# raise the threshold; when you legitimately remove a site, lower it AND
+# explain in the PR. The whole point is that drops are visible.
+_CRITICAL_MODULES_MIN_EMITS: list[tuple[str, int]] = [
+    # risk/sentinel.py emits both branches via the canonical-decision helper:
+    # the approve branch references EventType.SIGNAL_APPROVED, the reject
+    # branch goes through emit_rejection(...). Both patterns are tracked so
+    # silent removal of either branch fails this test.
+    ("risk/sentinel.py", 2),                       # SIGNAL_APPROVED + emit_rejection
+    ("risk/decision_tracer.py", 1),                # GateTimer.__exit__ on gate exception
+    ("risk/circuit_breakers.py", 1),               # CircuitBreakerState.trip → GUARD_TRIPPED
+    ("risk/drawdown_breaker.py", 1),               # update() trip path
+    ("risk/kill_switch.py", 3),                    # activate header + close failure + final
+    ("position/manager.py", 4),                    # 3 open + 1 close validation sites
+    ("execution/live_executor.py", 2),             # execute_order + emergency_sell
+    ("collector/news_collector.py", 1),            # @traced_component on _fetch_all
+    # Round-10 refactor: ``predict()``'s silent-fallback emit moved with
+    # the rest of the prediction path into ``analyzer/ml/prediction/
+    # predictor.py``. ``ml_predictor.py`` is now a façade — its emit
+    # coverage is accounted for in the new module.
+    ("analyzer/ml_predictor.py", 0),               # façade — emits live in ml/ subpackage
+    ("analyzer/ml/prediction/predictor.py", 2),    # predict_from_features silent fallback (component_error + suppressed_count followup)
+    ("analyzer/ml_ensemble.py", 3),                # 3 silent-fallback sites
+    ("analyzer/ml_stacking.py", 2),                # fit + predict
+    ("analyzer/ml_regime_router.py", 2),           # train + predict
+    ("analyzer/ml_walk_forward.py", 1),            # fold-trainer failure
+]
+
+# Patterns intentionally require a trailing ``(`` so that a ``from … import``
+# line never inflates the count. ``EventType.{GUARD_TRIPPED, COMPONENT_ERROR,
+# SIGNAL_APPROVED, SIGNAL_REJECTED}`` count as call-context references —
+# they only appear inside ``emit(...)`` arguments in production code.
+# The decorator pattern is anchored to start-of-line whitespace
+# (``re.MULTILINE``) so a docstring mention of ``@traced_component(...)``
+# does NOT inflate the count.
+_EMIT_CALL_PATTERNS = (
+    r"\bemit_component_error\s*\(",
+    r"\bemit_rejection\s*\(",
+    r"EventType\.GUARD_TRIPPED",
+    r"EventType\.COMPONENT_ERROR",
+    r"EventType\.SIGNAL_APPROVED",
+    r"EventType\.SIGNAL_REJECTED",
+    r"^\s*@traced_component\s*\(",
+)
+
+
+def _count_emits(path: Path) -> int:
+    text = path.read_text(encoding="utf-8")
+    return sum(
+        len(re.findall(p, text, re.MULTILINE)) for p in _EMIT_CALL_PATTERNS
+    )
+
+
+def test_observability_emit_baseline_holds() -> None:
+    """Critical modules must keep structured-emit coverage at or above the
+    documented baseline. Failing this test means observability regressed —
+    fix by restoring the emit, or (if the deletion was intentional) lower
+    the baseline in this file with a justification in the PR description.
+    """
+    sentinel_root = Path(__file__).resolve().parent.parent
+    failures: list[str] = []
+    for rel_path, expected_min in _CRITICAL_MODULES_MIN_EMITS:
+        full = sentinel_root / rel_path
+        assert full.exists(), f"missing critical module: {rel_path}"
+        actual = _count_emits(full)
+        if actual < expected_min:
+            failures.append(
+                f"  {rel_path}: {actual} emit-call(s), expected ≥ {expected_min}"
+            )
+    assert not failures, (
+        "Observability-policy regression — emit coverage dropped:\n"
+        + "\n".join(failures)
+        + "\n\nFix: restore the missing emit (preferred) or, if intentional,"
+        " lower the baseline in test_observability_policy.py with rationale."
+    )

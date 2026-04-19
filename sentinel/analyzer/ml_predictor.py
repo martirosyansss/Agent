@@ -1,50 +1,54 @@
 """
-Trade Analyzer Level 3 — ML Predictor (Triple-Engine Ensemble, v3).
+Trade Analyzer Level 3 — ML Predictor façade (Triple-Engine Ensemble, v3).
 
-VotingEnsemble: RF + LightGBM + XGBoost soft-voting instead of winner-takes-all.
-ML ONLY filters (block/reduce), NEVER initiates trades.
+Round-10 refactor status: this module is a **façade** over the
+``analyzer.ml`` subpackage. Historically it was a 2800-LOC monolith;
+after the refactor, most concerns have been extracted and only the
+``MLPredictor`` class remains here as the stateful orchestrator that
+composes the ML pipeline:
+
+    analyzer.ml/
+    ├── domain/         — MLConfig, MLMetrics, MLPrediction, constants, scoring
+    ├── features/       — StrategyTrade → feature matrix
+    ├── models/         — RF / LGBM / XGB / ElasticNet builders
+    ├── training/       — calibration, stacking fit, walk-forward, regime routing
+    ├── prediction/     — feature vector → MLPrediction
+    └── persistence/    — pickle codec + signed envelope + version registry
+
+Every class and helper that used to be defined here is still importable
+from this module's namespace (``from analyzer.ml_predictor import MLConfig``
+and friends) — the re-exports below guarantee that, and the pickle-
+unpickler whitelist covers both the legacy and new module paths so
+saved models from before the refactor keep loading.
+
+The remaining 800 LOC of ``MLPredictor.train`` is the central training
+orchestration (phase-1 build, phase-2 feature-selection retrain,
+phase-B precision-recovery retrain, bootstrap CI, OOT validation,
+calibration, skill gate). It stays here as a single method for now
+because its branches share many intermediate variables that don't
+belong in the public API of a separate trainer class. A future round
+may split it into explicit Trainer / TrainingResult types.
+
+VotingEnsemble: RF + LightGBM + XGBoost + ElasticNet soft-voting
+(round-3 added ElasticNet as the decorrelated 4th member). ML ONLY
+filters (block/reduce), NEVER initiates trades.
 
 Rollout modes: off → shadow → block
 - shadow: logs predictions, never blocks
-- block: actively blocks signals with low probability
+- block:  actively blocks signals with low probability
 
-32 features (all pre-trade, no forward-looking bias):
-  Technical:  rsi_14, adx, ema_9_vs_21, bb_bandwidth, volume_ratio,
-              macd_histogram, atr_ratio
-  Temporal:   hour_sin, hour_cos, day_sin, day_cos (cyclical encoding)
-  Encoding:   market_regime_encoded, strategy_regime_fit
-  Historical: recent_win_rate_10, hours_since_last_trade,
-              rolling_avg_pnl_pct_20, consecutive_losses,
-              strategy_specific_wr_10
-  Sentiment:  news_sentiment, fear_greed_normalized, trend_alignment,
-              regime_bias
-  Enhanced:   cci, roc, cmf, bb_pct_b, hist_volatility, dmi_spread,
-              stoch_rsi, price_change_5h_norm, momentum_norm, rsi_daily
-
-Upgrade v3:
-  - VotingEnsemble: soft-voting with skill-weighted probabilities
-  - TemporalWeighting: recent trades contribute more to training (exp decay)
-  - AdaptiveFeatureSelector: auto-drops features with importance < 1%
-  - IsotonicCalibration: P(win|score=x) == x empirically
-  - NumPy batch feature extraction: 8-15x speedup vs per-trade loop
-
-Upgrade v4:
-  - strategy_encoded → strategy_regime_fit: continuous score [-1,1] (how well
-    strategy fits current regime) — removes categorical lookup bias
-  - strategy_specific_wr_10: per-strategy rolling win rate (last 10 same-strategy trades)
+32 features (all pre-trade, no forward-looking bias) — canonical list
+in ``analyzer.ml.domain.constants.FEATURE_NAMES``.
 
 Skill score = 0.30*precision + 0.10*recall + 0.35*roc_auc + 0.25*profit_factor
-(precision weighted 3x recall — filter-mode: false positives > false negatives)
+(precision weighted 3x recall — filter-mode: false positives > false negatives).
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import pickle
 import time
 import warnings
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -52,7 +56,6 @@ from typing import Any, Optional
 import numpy as np
 
 from core.models import StrategyTrade
-from monitoring.event_log import emit_component_error
 
 logger = logging.getLogger(__name__)
 
@@ -85,50 +88,16 @@ from analyzer.ml.domain.constants import (  # noqa: E402
 )
 
 
-_PICKLE_ALLOWED_PREFIXES: tuple[str, ...] = (
-    "numpy", "sklearn", "scipy", "pandas",
-    "lightgbm", "xgboost",
-    "analyzer.ml_ensemble", "analyzer.ml_predictor",
-    "analyzer.ml_walk_forward", "analyzer.ml_stacking",
-    "analyzer.ml_regime_router", "analyzer.ml_bootstrap",
-    # Round-10 refactor: domain / features / persistence moved into a
-    # package layout. The broad ``analyzer.ml`` prefix covers all the
-    # submodules under it (``analyzer.ml.domain.config``,
-    # ``analyzer.ml.domain.metrics``, ...) so new-format pickles can
-    # restore dataclasses from their new module paths.
-    "analyzer.ml",
-    "collections", "builtins",  # dicts/lists/tuples live here
+# Round-10 Step 6: pickle codec moved to ``analyzer.ml.persistence.codec``.
+# These module-level names stay as aliases so the existing restricted-
+# unpickler tests in ``test_ml_predictor.py`` (which reach into
+# ``analyzer.ml_predictor._RestrictedUnpickler`` directly) continue
+# working without edits.
+from analyzer.ml.persistence.codec import (  # noqa: E402
+    RestrictedUnpickler as _RestrictedUnpickler,
+    PICKLE_ALLOWED_PREFIXES as _PICKLE_ALLOWED_PREFIXES,
+    restricted_loads as _restricted_loads,
 )
-
-
-class _RestrictedUnpickler(pickle.Unpickler):
-    """Pickle unpickler that only reconstructs classes from a whitelist.
-
-    The SHA-256 checksum protects against bit-rot and naive corruption but
-    *not* against a forged artifact: a crafted pickle can construct
-    `os.system`, `subprocess.Popen`, or arbitrary `__reduce__`-enabled
-    callables and execute them the moment `pickle.load` runs. This class
-    caps the blast radius by only allowing classes from known ML/data
-    packages. Unknown modules raise UnpicklingError instead.
-
-    Not a silver bullet — whitelisted packages can still have gadget classes
-    — but it eliminates trivial exec-via-unpickle vectors for a local
-    single-user bot without breaking legitimate model loads.
-    """
-
-    def find_class(self, module: str, name: str) -> Any:
-        for prefix in _PICKLE_ALLOWED_PREFIXES:
-            if module == prefix or module.startswith(prefix + "."):
-                return super().find_class(module, name)
-        raise pickle.UnpicklingError(
-            f"refusing to load class {module}.{name}: module not in pickle whitelist"
-        )
-
-
-def _restricted_loads(payload: bytes) -> Any:
-    """Unpickle bytes through the restricted unpickler above."""
-    import io
-    return _RestrictedUnpickler(io.BytesIO(payload)).load()
 
 
 # NOTE: MLConfig / MLMetrics / MLPrediction / LivePerformanceTracker and the
@@ -1240,157 +1209,33 @@ class MLPredictor:
         n_folds: int = 5,
         anchored: bool = False,
     ) -> Optional[Any]:
-        """Run walk-forward validation to estimate skill stability across time.
+        """Round-10 Step 8 compatibility wrapper.
 
-        This is a DIAGNOSTIC pass that complements ``train()`` — it doesn't
-        deploy a model, it reports how much variance the single-split
-        skill metric hides. The returned ``WFReport`` is also stashed on
-        ``self._wf_report`` so the dashboard can render it.
-
-        If ``MLConfig.use_stacking`` is on, we additionally generate OOF
-        member probabilities and fit a StackingHead. The head gets attached
-        to ``self._ensemble`` so subsequent ``predict()`` calls combine
-        member votes through the learnt meta instead of the fixed weights.
-
-        Requires ≥ ``n_folds * min_trades_per_fold`` samples. If the
-        current trade history is too short, logs a warning and returns None.
-
-        Args:
-            trades:   Full chronologically-ordered trade list.
-            n_folds:  Number of walk-forward folds (default 5).
-            anchored: True = expanding training window (each fold starts at t=0).
-                      False = rolling window (older trades drop off).
-
-        Returns:
-            WFReport on success, None on underspecified data.
+        Real implementation in
+        :func:`analyzer.ml.training.walk_forward_runner.run_walk_forward`.
+        The façade supplies the builder / extractor callables and
+        receives ``(report, stacking_attach_result)`` back; it then
+        updates its own ``_wf_report`` and ``_calibrated_threshold``
+        fields to match the result.
         """
-        if not self._cfg.use_walk_forward and not self._cfg.use_stacking:
-            logger.debug("train_walk_forward: both flags off — noop")
-            return None
-        if len(trades) < self._cfg.min_trades:
-            logger.warning(
-                "train_walk_forward: need ≥ %d trades, have %d — skipping WF",
-                self._cfg.min_trades, len(trades),
-            )
-            return None
+        from analyzer.ml.training.walk_forward_runner import run_walk_forward
 
-        try:
-            from analyzer.ml_walk_forward import MLWalkForwardValidator
-        except ImportError as exc:
-            logger.warning("train_walk_forward: cannot import validator: %s", exc)
-            return None
-
-        X = self.extract_features_batch(trades)
-        y = np.array([1 if t.is_win else 0 for t in trades], dtype=np.int64)
-
-        # Per-fold trainer: fits each ensemble member on the fold's train
-        # slice and returns the ensemble's test-set probability. We reuse
-        # the ensemble builder methods so hyperparameters stay in sync
-        # with the deployment path.
-        #
-        # Per-member test probabilities are always collected and returned
-        # via the "member_probas" key so a single WF pass produces both
-        # the stability report AND the OOF data the stacking head needs —
-        # no second run, no zip-alignment hazards between run and splits.
-        def _fold_trainer(X_tr, y_tr, X_te, y_te):
-            from sklearn.preprocessing import StandardScaler
-            from sklearn.metrics import precision_score
-
-            scaler = StandardScaler()
-            X_tr_s = scaler.fit_transform(X_tr)
-            X_te_s = scaler.transform(X_te)
-
-            from analyzer.ml_ensemble import VotingEnsemble
-            fold_ens = VotingEnsemble()
-
-            n_neg = int(np.sum(y_tr == 0))
-            n_pos = int(np.sum(y_tr == 1))
-            spw = n_neg / n_pos if n_pos > 0 else 1.0
-
-            member_probas: dict[str, np.ndarray] = {}
-            for builder, tag in (
-                (lambda: self._build_rf(), "rf"),
-                (lambda: self._build_lgbm(scale_pos_weight=spw), "lgbm"),
-                (lambda: self._build_xgb(scale_pos_weight=spw), "xgb"),
-                (lambda: self._build_elastic_net(), "lr_en"),
-            ):
-                mdl = builder()
-                if mdl is None:
-                    continue
-                try:
-                    mdl.fit(X_tr_s, y_tr)
-                except Exception:
-                    continue
-                # Capture the member's OOF probability now, once — the meta
-                # stacking fit uses exactly this vector downstream.
-                try:
-                    member_probas[tag] = mdl.predict_proba(X_te_s)[:, 1]
-                except Exception:
-                    continue
-                # Weight by validation precision as a cheap skill proxy in-fold.
-                try:
-                    v_pred = mdl.predict(X_te_s)
-                    w = max(0.01, precision_score(y_te, v_pred, zero_division=0))
-                except Exception:
-                    w = 0.1
-                fold_ens.add_member(mdl, tag, w)
-
-            if not fold_ens.is_ready:
-                return {
-                    "test_proba": np.full(len(y_te), 0.5),
-                    "threshold": 0.5,
-                    "train_precision": 0.0,
-                    "member_probas": {},
-                }
-
-            test_proba = fold_ens.predict_proba(X_te_s)
-            train_pred = (fold_ens.predict_proba(X_tr_s) >= 0.5).astype(int)
-            try:
-                train_prec = precision_score(y_tr, train_pred, zero_division=0)
-            except Exception:
-                train_prec = 0.0
-
-            return {
-                "test_proba": test_proba,
-                "threshold": 0.5,
-                "train_precision": float(train_prec),
-                "member_probas": member_probas,
-            }
-
-        wf = MLWalkForwardValidator(
+        report, stacking = run_walk_forward(
+            cfg=self._cfg,
+            trades=trades,
+            extract_features_batch_fn=self.extract_features_batch,
+            build_rf_fn=lambda: self._build_rf(),
+            build_lgbm_fn=lambda spw: self._build_lgbm(scale_pos_weight=spw),
+            build_xgb_fn=lambda spw: self._build_xgb(scale_pos_weight=spw),
+            build_elastic_net_fn=lambda: self._build_elastic_net(),
+            ensemble=self._ensemble,
             n_folds=n_folds,
-            test_fraction=0.15,
             anchored=anchored,
-            min_train_size=100,
-            min_test_size=30,
         )
-
-        # Run WF once — per-member OOF is collected on this pass via the
-        # member_probas key, so stacking can fit directly off the result
-        # without a second (expensive, potentially mis-aligned) run.
-        report = wf.run(X, y, _fold_trainer)
-        self._wf_report = report
-
-        if self._cfg.use_stacking and self._ensemble is not None and self._ensemble.is_ready:
-            # Pass per-sample PnL so the post-stacking threshold re-tune uses
-            # the same profit-factor objective as the train()-time tuning
-            # (M-1 fix: without this the two thresholds optimize different
-            # metrics and stacking-on vs stacking-off produce non-comparable
-            # decision boundaries).
-            pnl_arr = np.array([t.pnl_usd for t in trades], dtype=np.float64)
-            # C4-m4 / MA5-2 guardrail: pnl_arr MUST be index-aligned to X / y
-            # so the downstream ``clean_pnl[k] = pnl[idx]`` lands in the right
-            # row. A future refactor that filters trades in one path but not
-            # the other would silently mis-index. Use a real ValueError rather
-            # than `assert` — asserts are stripped under ``python -O``, which
-            # would remove the guard exactly in the kind of optimised build
-            # most likely to run in production.
-            if not (len(pnl_arr) == len(X) == len(y)):
-                raise ValueError(
-                    f"pnl_arr / X / y length drift: {len(pnl_arr)} vs {len(X)} vs {len(y)}"
-                )
-            self._fit_stacking_head_from_report(report, X=X, y=y, pnl=pnl_arr)
-
+        if report is not None:
+            self._wf_report = report
+        if stacking.attached and stacking.new_threshold is not None:
+            self._calibrated_threshold = stacking.new_threshold
         return report
 
     def _fit_stacking_head_from_report(
@@ -1447,99 +1292,48 @@ class MLPredictor:
         self,
         trades: list[StrategyTrade],
     ) -> Optional[Any]:
-        """Fit a global model then train per-regime specialists on top.
+        """Round-10 Step 8 compatibility wrapper.
 
-        The global model (from ``self.train(trades)``) is required — it
-        serves as the fallback for under-represented regimes and for
-        unseen/``unknown`` states. After the global model is in place we
-        partition the trade history by ``market_regime`` and train a fresh
-        ``MLPredictor`` per bucket using the regular ``train()`` path; each
-        resulting model becomes a :class:`RegimeModel` inside the router.
-
-        Returns the :class:`RegimeRouter` (also stashed on
-        ``self._regime_router``), or None if prerequisites aren't met.
+        Real implementation in
+        :func:`analyzer.ml.training.regime_trainer.train_regime_routing`.
+        The façade supplies a ``train_global_fn`` that runs ``.train()``
+        on itself, a ``get_global_snapshot_fn`` that packages its
+        post-train state as a :class:`RegimeModel`, and a factory that
+        builds fresh MLPredictor instances for the specialists. On
+        success it stashes the router in ``self._regime_router`` so
+        ``predict()`` can route through it.
         """
-        if not self._cfg.use_regime_routing:
-            logger.debug("train_with_regime_routing: flag off — noop")
-            return None
+        from analyzer.ml.training.regime_trainer import train_regime_routing
 
-        # 1. Global model first
-        global_metrics = self.train(trades)
-        if global_metrics is None or not self.is_ready:
-            logger.warning("regime routing: global model failed — aborting")
-            return None
+        def _train_global(t):
+            m = self.train(t)
+            return m if (m is not None and self.is_ready) else None
 
-        try:
-            from analyzer.ml_regime_router import RegimeRouter, RegimeModel
-        except ImportError as exc:
-            logger.warning("regime routing: cannot import router: %s", exc)
-            return None
-
-        # Snapshot the global as a RegimeModel for fallback
-        global_model = RegimeModel(
-            regime="__global__",
-            ensemble=self._ensemble,
-            scaler=self._scaler,
-            selector=self._feature_selector,
-            threshold=self._calibrated_threshold,
-            skill_score=self._metrics.skill_score if self._metrics else 0.0,
-            n_train=self._metrics.train_samples if self._metrics else 0,
-            metrics_summary={
-                "precision": self._metrics.precision if self._metrics else 0.0,
-                "roc_auc": self._metrics.roc_auc if self._metrics else 0.5,
-            },
-        )
-
-        # J-3 sanity check: per-regime training needs at least ~80 samples
-        # (50 train + 15 val + 15 test, see MLPredictor.train). If the
-        # operator configured min_trades_per_regime lower than that, every
-        # specialist will silently fail to_train and the whole router will
-        # collapse back to the global model. Log the situation upfront so
-        # the "regime routing on but no specialists" pattern is visible.
-        _effective_min = min(self._cfg.min_trades, self._cfg.min_trades_per_regime)
-        if _effective_min < 80:
-            logger.warning(
-                "regime routing: effective min_trades=%d is below the ~80 required by "
-                "train()'s 70/15/15 split. Most specialists will fall back to global.",
-                _effective_min,
-            )
-
-        def _regime_trainer(subset: list[StrategyTrade], regime: str) -> Optional[RegimeModel]:
-            # Fresh predictor per regime so its feature selector / scaler /
-            # ensemble don't collide with the global one. We deliberately
-            # copy the config but force regime/stacking flags OFF inside
-            # the sub-train to avoid recursion.
-            sub_cfg = MLConfig(**{**self._cfg.__dict__})
-            sub_cfg.use_regime_routing = False
-            sub_cfg.use_stacking = False
-            sub_cfg.use_walk_forward = False
-            sub_cfg.min_trades = min(self._cfg.min_trades, self._cfg.min_trades_per_regime)
-            sub_predictor = MLPredictor(sub_cfg)
-            m = sub_predictor.train(subset)
-            if m is None or not sub_predictor.is_ready:
-                logger.info(
-                    "regime routing [%s]: specialist training returned %s — falling back to global",
-                    regime, "no metrics" if m is None else "not-ready predictor",
-                )
-                return None
+        def _global_snapshot():
+            from analyzer.ml_regime_router import RegimeModel
             return RegimeModel(
-                regime=regime,
-                ensemble=sub_predictor._ensemble,
-                scaler=sub_predictor._scaler,
-                selector=sub_predictor._feature_selector,
-                threshold=sub_predictor._calibrated_threshold,
-                skill_score=m.skill_score,
-                n_train=m.train_samples,
-                metrics_summary={"precision": m.precision, "roc_auc": m.roc_auc},
+                regime="__global__",
+                ensemble=self._ensemble,
+                scaler=self._scaler,
+                selector=self._feature_selector,
+                threshold=self._calibrated_threshold,
+                skill_score=self._metrics.skill_score if self._metrics else 0.0,
+                n_train=self._metrics.train_samples if self._metrics else 0,
+                metrics_summary={
+                    "precision": self._metrics.precision if self._metrics else 0.0,
+                    "roc_auc": self._metrics.roc_auc if self._metrics else 0.5,
+                },
             )
 
-        router = RegimeRouter(min_trades_per_regime=self._cfg.min_trades_per_regime)
-        router.train(trades, _regime_trainer, global_model=global_model)
-        self._regime_router = router
-        logger.info(
-            "regime routing: router ready with %d specialists + global fallback",
-            len(router.trained_regimes),
+        router = train_regime_routing(
+            cfg=self._cfg,
+            trades=trades,
+            train_global_fn=_train_global,
+            get_global_snapshot_fn=_global_snapshot,
+            predictor_factory=MLPredictor,
         )
+        if router is not None:
+            self._regime_router = router
         return router
 
     def predict(
@@ -1592,210 +1386,121 @@ class MLPredictor:
     _DEFAULT_MODELS_DIR = Path(__file__).resolve().parent.parent / "data" / "ml_models"
 
     def save_to_file(self, model_path: str | Path) -> bool:
-        """Save trained model, ensemble, scaler and metrics to pickle file (atomic write).
+        """Round-10 Step 6 compatibility wrapper.
 
-        v3: persists VotingEnsemble and AdaptiveFeatureSelector alongside legacy model
-        so the system survives restarts without full retraining.
-
-        Round-8 §6.1 (security): if the caller ever propagates a user-
-        controlled path into this function, a `../../../etc/important`
-        payload could turn this into an arbitrary-file-write primitive.
-        Today the runtime always passes a hardcoded path under
-        ``data/ml_models/``, but we harden the entry point pre-emptively so
-        any future dashboard/Telegram exposure can't weaponise it.
-
-        The check refuses any path whose raw parts contain ``..`` segments.
-        Clean absolute paths (including test ``tmp_path`` directories) pass
-        through unchanged. Callers that genuinely need to write above a
-        parent directory must normalise the path before calling.
+        Builds the payload dict from ``self``'s trained state, delegates
+        the signed-envelope write to
+        :func:`analyzer.ml.persistence.codec.save_signed_payload_with_checksum`,
+        and on success appends to the registry via
+        :func:`analyzer.ml.persistence.registry.append_registry_entry`.
         """
         if not self.is_ready:
             logger.warning("ML save skipped: model not ready")
             return False
 
+        from analyzer.ml.persistence.codec import save_signed_payload_with_checksum
+        from analyzer.ml.persistence.registry import append_registry_entry
+
         path = Path(model_path)
-        # The narrow threat model here is "attacker controls part of
-        # model_path and uses ``..`` to escape the intended directory".
-        # Refusing any Path whose raw parts contain ``..`` kills that vector
-        # without being hostile to legitimate callers (tests using
-        # ``tmp_path`` or migration scripts writing to absolute paths).
-        # Callers that genuinely need to write above a parent directory can
-        # normalise the path before calling — an explicit absolute path
-        # without ``..`` segments always passes this check.
-        if ".." in path.parts:
-            logger.error(
-                "ML save refused: path contains '..' traversal segment (%s). "
-                "Normalise the path before calling save_to_file.",
-                path,
-            )
-            return False
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            metrics_dict = {}
-            if self._metrics:
-                metrics_dict = {
-                    "precision": self._metrics.precision,
-                    "recall": self._metrics.recall,
-                    "roc_auc": self._metrics.roc_auc,
-                    "accuracy": self._metrics.accuracy,
-                    "skill_score": self._metrics.skill_score,
-                    "train_samples": self._metrics.train_samples,
-                    "test_samples": self._metrics.test_samples,
-                    "feature_importances": self._metrics.feature_importances,
-                    # Statistical confidence
-                    "precision_ci_95": list(self._metrics.precision_ci_95),
-                    "auc_ci_95": list(self._metrics.auc_ci_95),
-                    # Baseline comparison
-                    "baseline_win_rate": self._metrics.baseline_win_rate,
-                    "precision_lift": self._metrics.precision_lift,
-                    "auc_lift": self._metrics.auc_lift,
-                    # Out-of-time robustness
-                    "oot_auc": self._metrics.oot_auc,
-                    # Calibration diagnostics — visible after restart
-                    "brier_score": self._metrics.brier_score,
-                    "ece": self._metrics.ece,
-                    "mean_proba": self._metrics.mean_proba,
-                    "median_proba": self._metrics.median_proba,
-                    "proba_p10": self._metrics.proba_p10,
-                    "proba_p90": self._metrics.proba_p90,
-                    "calibration_method": self._metrics.calibration_method,
-                }
-            data = {
-                # v3: full ensemble (primary predictor)
-                "ensemble": self._ensemble,
-                "feature_selector": self._feature_selector,
-                "calibrated_threshold": self._calibrated_threshold,
-                # Legacy: single best model (fallback)
-                "model": self._model,
-                "scaler": self._scaler,
-                "version": self._model_version,
-                "metrics": metrics_dict,
-                "saved_at": int(time.time()),
-                "format": "v3",
-                # Reproducibility: snapshot the ML stack this model was trained
-                # against. Checked on load; mismatches are warned but not fatal.
-                "package_versions": _capture_package_versions(),
-                "schema_version": 5,  # bumped: adds rollout_mode persistence
-                # Round-8 §4.4: rollout_mode persisted so the auto-promote
-                # decision (shadow → block when live metrics validate the
-                # model) survives a bot restart. Load path reconciles with
-                # env preference: operator setting ``rollout_mode=off`` via
-                # env still kills ML regardless of what the pickle says.
-                "rollout_mode": self._rollout_mode,
-                # Phase-1/2/4/5 artifacts — persisted so the dashboard's ML
-                # Robustness page keeps working across restarts. StackingHead
-                # itself is already pickled as part of the ensemble (attached
-                # via set_stacking_head), so we don't need a separate slot
-                # for it. Large artifacts like the full OOF array inside
-                # WFReport survive; if disk size becomes an issue we can
-                # strip oof_probas from fold_results on save.
-                "wf_report": self._wf_report,
-                "regime_router": self._regime_router,
-                "bootstrap_ci": self._bootstrap_ci,
-                "member_error_correlation": self._member_error_correlation,
-            }
-            tmp_path = path.with_suffix(".tmp")
-            payload = pickle.dumps(data)
-            # C-3: Integrity checksum to detect corruption/tampering
-            checksum = hashlib.sha256(payload).hexdigest()
-            with tmp_path.open("wb") as f:
-                pickle.dump({"payload": payload, "checksum": checksum, "format": "v3_signed"}, f)
-            tmp_path.replace(path)
-            n_members = self._ensemble.member_count() if self._ensemble else 0
-            logger.info(
-                "ML model saved to %s (version=%s, ensemble_members=%d)",
-                path, self._model_version, n_members,
-            )
-
-            # MLOps 10/10: Append to model version registry for audit trail
-            self._append_to_registry(path, checksum, n_members)
-
-            return True
-        except Exception as exc:
-            logger.warning("ML model save failed to %s: %s", path, exc)
-            return False
-
-    def _append_to_registry(self, model_path: Path, checksum: str, n_members: int) -> None:
-        """Append model metadata to a JSON registry file for version tracking."""
-        import json
-        registry_path = model_path.parent / "model_registry.json"
-        entry = {
-            "version": self._model_version,
-            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "saved_ts": int(time.time()),
-            "checksum_sha256": checksum,
-            "ensemble_members": n_members,
-            "calibrated_threshold": round(self._calibrated_threshold, 4),
-            "metrics": {},
-        }
+        metrics_dict: dict[str, Any] = {}
         if self._metrics:
-            entry["metrics"] = {
-                "precision": round(self._metrics.precision, 4),
-                "recall": round(self._metrics.recall, 4),
-                "roc_auc": round(self._metrics.roc_auc, 4),
-                "accuracy": round(self._metrics.accuracy, 4),
-                "skill_score": round(self._metrics.skill_score, 4),
+            metrics_dict = {
+                "precision": self._metrics.precision,
+                "recall": self._metrics.recall,
+                "roc_auc": self._metrics.roc_auc,
+                "accuracy": self._metrics.accuracy,
+                "skill_score": self._metrics.skill_score,
                 "train_samples": self._metrics.train_samples,
                 "test_samples": self._metrics.test_samples,
-                "precision_ci_95": [round(v, 4) for v in self._metrics.precision_ci_95],
-                "auc_ci_95": [round(v, 4) for v in self._metrics.auc_ci_95],
-                "baseline_win_rate": round(self._metrics.baseline_win_rate, 4),
-                "precision_lift": round(self._metrics.precision_lift, 4),
-                "auc_lift": round(self._metrics.auc_lift, 4),
-                "oot_auc": round(self._metrics.oot_auc, 4) if self._metrics.oot_auc is not None else None,
+                "feature_importances": self._metrics.feature_importances,
+                "precision_ci_95": list(self._metrics.precision_ci_95),
+                "auc_ci_95": list(self._metrics.auc_ci_95),
+                "baseline_win_rate": self._metrics.baseline_win_rate,
+                "precision_lift": self._metrics.precision_lift,
+                "auc_lift": self._metrics.auc_lift,
+                "oot_auc": self._metrics.oot_auc,
+                "brier_score": self._metrics.brier_score,
+                "ece": self._metrics.ece,
+                "mean_proba": self._metrics.mean_proba,
+                "median_proba": self._metrics.median_proba,
+                "proba_p10": self._metrics.proba_p10,
+                "proba_p90": self._metrics.proba_p90,
+                "calibration_method": self._metrics.calibration_method,
             }
-        try:
-            registry: list = []
-            if registry_path.exists():
-                with registry_path.open("r", encoding="utf-8") as f:
-                    registry = json.load(f)
-            registry.append(entry)
-            # Keep last 50 entries to avoid unbounded growth
-            registry = registry[-50:]
-            with registry_path.open("w", encoding="utf-8") as f:
-                json.dump(registry, f, indent=2, ensure_ascii=False)
-            logger.info("ML registry updated: %s (%d entries)", registry_path, len(registry))
-        except Exception as exc:
-            logger.debug("ML registry write failed: %s", exc)
+        data = {
+            # v3: full ensemble (primary predictor)
+            "ensemble": self._ensemble,
+            "feature_selector": self._feature_selector,
+            "calibrated_threshold": self._calibrated_threshold,
+            # Legacy single-model fallback
+            "model": self._model,
+            "scaler": self._scaler,
+            "version": self._model_version,
+            "metrics": metrics_dict,
+            "saved_at": int(time.time()),
+            "format": "v3",
+            "package_versions": _capture_package_versions(),
+            "schema_version": 5,  # bumped round 8 §4.4 (rollout_mode persisted)
+            "rollout_mode": self._rollout_mode,
+            # Phase-1/2/4/5 artifacts — dashboard reads these after restart
+            "wf_report": self._wf_report,
+            "regime_router": self._regime_router,
+            "bootstrap_ci": self._bootstrap_ci,
+            "member_error_correlation": self._member_error_correlation,
+        }
+        ok, checksum = save_signed_payload_with_checksum(path, data)
+        if not ok:
+            return False
+
+        n_members = self._ensemble.member_count() if self._ensemble else 0
+        logger.info(
+            "ML model saved to %s (version=%s, ensemble_members=%d)",
+            path, self._model_version, n_members,
+        )
+        append_registry_entry(
+            model_path=path,
+            model_version=self._model_version,
+            checksum=checksum or "",
+            n_members=n_members,
+            calibrated_threshold=self._calibrated_threshold,
+            metrics=self._metrics,
+        )
+        return True
+
+    def _append_to_registry(self, model_path: Path, checksum: str, n_members: int) -> None:
+        """Deprecated compatibility wrapper — delegates to the registry
+        module. Kept so any residual external caller / test continues
+        to resolve the method name."""
+        from analyzer.ml.persistence.registry import append_registry_entry
+        append_registry_entry(
+            model_path=model_path,
+            model_version=self._model_version,
+            checksum=checksum,
+            n_members=n_members,
+            calibrated_threshold=self._calibrated_threshold,
+            metrics=self._metrics,
+        )
 
     def load_from_file(self, model_path: str | Path) -> bool:
-        """Load trained ensemble + model, scaler and metrics from pickle file.
+        """Round-10 Step 6 compatibility wrapper.
 
-        v3: restores VotingEnsemble, AdaptiveFeatureSelector, and calibrated_threshold.
-        Falls back gracefully to legacy single-model format for backwards compat.
+        Uses :func:`analyzer.ml.persistence.codec.load_signed_payload` to
+        verify the envelope + checksum and return the inner data dict,
+        then restores MLPredictor state from it. Any read / checksum /
+        unpickle failure → returns False and logs at ERROR (codec logs
+        its own diagnostic).
         """
+        from analyzer.ml.persistence.codec import load_signed_payload
+
         path = Path(model_path)
-        if not path.exists():
-            logger.warning("ML load skipped: file not found %s", path)
+        data = load_signed_payload(path)
+        if data is None:
             return False
         try:
-            with path.open("rb") as f:
-                # Outer envelope is trusted-format-only (a plain dict with
-                # payload+checksum). We still use restricted loading for
-                # legacy unsigned files, since those go straight to the user.
-                raw = _restricted_loads(f.read())
-
-            # C-3: Verify integrity checksum if present
-            if isinstance(raw, dict) and raw.get("format") == "v3_signed":
-                payload = raw["payload"]
-                expected = raw.get("checksum", "")
-                actual = hashlib.sha256(payload).hexdigest()
-                if expected and actual != expected:
-                    logger.error(
-                        "ML load ABORTED: checksum mismatch (expected=%s, got=%s). "
-                        "File may be corrupted or tampered.",
-                        expected[:12], actual[:12],
-                    )
-                    return False
-                # Restricted inner unpickle: only whitelisted ML/data modules.
-                data = _restricted_loads(payload)
-            else:
-                # Legacy unsigned format
-                data = raw
-
             # Warn on package-version divergence so operators know a model
-            # trained against older sklearn/lgbm/xgb could behave differently
-            # under the current install (tree split ordering, isotonic impl).
+            # trained against older sklearn/lgbm/xgb could behave
+            # differently under the current install (tree-split ordering,
+            # isotonic impl).
             saved_versions = data.get("package_versions") if isinstance(data, dict) else None
             if saved_versions:
                 current = _capture_package_versions()
