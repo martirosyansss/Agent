@@ -295,7 +295,10 @@ class Dashboard:
                           "/api/ml/status", "/api/ml/walk-forward",
                           "/api/ml/regime-performance", "/api/ml/bootstrap-ci",
                           "/api/ml/member-correlation",
-                          "/api/ml/training-progress"}
+                          "/api/ml/training-progress",
+                          "/api/ml/registry/runs", "/api/ml/registry/versions",
+                          "/api/ml/registry/production",
+                          "/api/ml/feature-drift"}
 
             async def dispatch(self, request: Request, call_next):
                 from starlette.responses import RedirectResponse
@@ -1042,6 +1045,140 @@ class Dashboard:
                 "correlations": {k: round(v, 4) for k, v in corr.items()},
                 "warn_threshold": 0.85,
             })
+
+        # ── SQL ML registry (MLflow-style) ────────────────────────────────
+        # Three endpoints expose the new ml_runs / ml_model_versions tables
+        # so the dashboard can render the model history without scraping
+        # JSON files. They DO NOT replace the legacy /api/ml/status — that
+        # one shows the in-memory predictor state; these show persisted
+        # lineage. Both views are useful, complementary.
+
+        @app.get("/api/ml/registry/runs")
+        async def ml_registry_runs(name: str = "auto_retrain", limit: int = 50):
+            """Recent training runs for ``name`` (default: auto_retrain)."""
+            try:
+                from analyzer.ml.registry import MLRegistry
+                from pathlib import Path
+                db_path = Path(__file__).resolve().parent.parent / "data" / "sentinel.db"
+                registry = MLRegistry(db_path)
+                runs = registry.list_runs(name=name, limit=limit)
+                return JSONResponse(content={
+                    "available": True,
+                    "name": name,
+                    "n_runs": len(runs),
+                    "runs": [{
+                        "run_id": r.run_id,
+                        "started_at": r.started_at,
+                        "finished_at": r.finished_at,
+                        "status": r.status,
+                        "params": r.params,
+                        "metrics": r.metrics,
+                        "tags": r.tags,
+                        "error": r.error,
+                    } for r in runs],
+                })
+            except Exception as exc:
+                return JSONResponse(content={
+                    "available": False, "error": str(exc),
+                }, status_code=500)
+
+        @app.get("/api/ml/registry/versions")
+        async def ml_registry_versions(name: str = "ensemble_unified", stage: str = ""):
+            """Registered model versions for ``name``, optionally filtered
+            by lifecycle stage (none|staging|production|archived)."""
+            try:
+                from analyzer.ml.registry import MLRegistry
+                from pathlib import Path
+                db_path = Path(__file__).resolve().parent.parent / "data" / "sentinel.db"
+                registry = MLRegistry(db_path)
+                versions = registry.list_versions(name=name, stage=stage or None)
+                return JSONResponse(content={
+                    "available": True,
+                    "name": name,
+                    "stage_filter": stage or None,
+                    "n_versions": len(versions),
+                    "versions": [{
+                        "version": v.version,
+                        "run_id": v.run_id,
+                        "stage": v.stage,
+                        "artifact_path": v.artifact_path,
+                        "description": v.description,
+                        "created_at": v.created_at,
+                        "promoted_at": v.promoted_at,
+                        "metrics": v.metrics,
+                        "tags": v.tags,
+                    } for v in versions],
+                })
+            except Exception as exc:
+                return JSONResponse(content={
+                    "available": False, "error": str(exc),
+                }, status_code=500)
+
+        @app.get("/api/ml/registry/production")
+        async def ml_registry_production(name: str = "ensemble_unified"):
+            """Currently-active production version of ``name``, or None."""
+            try:
+                from analyzer.ml.registry import MLRegistry
+                from pathlib import Path
+                db_path = Path(__file__).resolve().parent.parent / "data" / "sentinel.db"
+                registry = MLRegistry(db_path)
+                prod = registry.get_production(name)
+                if prod is None:
+                    return JSONResponse(content={
+                        "available": True, "name": name, "production": None,
+                    })
+                return JSONResponse(content={
+                    "available": True, "name": name,
+                    "production": {
+                        "version": prod.version,
+                        "run_id": prod.run_id,
+                        "artifact_path": prod.artifact_path,
+                        "promoted_at": prod.promoted_at,
+                        "metrics": prod.metrics,
+                        "description": prod.description,
+                    },
+                })
+            except Exception as exc:
+                return JSONResponse(content={
+                    "available": False, "error": str(exc),
+                }, status_code=500)
+
+        @app.get("/api/ml/feature-drift")
+        async def ml_feature_drift():
+            """PSI feature-drift summary from the live predictor's monitor.
+
+            Returns ``status`` ∈ {ok, minor_drift, major_drift,
+            insufficient_data, unmonitored} and the per-feature PSI report.
+            """
+            ml = self._state_provider() if self._state_provider else {}
+            predictor = ml.get("ml_predictor") if ml else None
+            if predictor is None:
+                return JSONResponse(content={"available": False, "reason": "not initialized"})
+            monitor = getattr(predictor, "_feature_drift_monitor", None)
+            if monitor is None:
+                return JSONResponse(content={"available": False, "reason": "monitor not fit yet"})
+            try:
+                summary = monitor.summary()
+                reports = monitor.report()
+                return JSONResponse(content={
+                    "available": True,
+                    "summary": summary,
+                    "per_feature": [{
+                        "feature": r.feature,
+                        "psi": round(r.psi, 4),
+                        "severity": r.severity,
+                        "n_reference": r.n_reference,
+                        "n_live": r.n_live,
+                    } for r in reports],
+                    "thresholds": {
+                        "no_shift": 0.10,
+                        "minor_shift": 0.20,
+                    },
+                })
+            except Exception as exc:
+                return JSONResponse(content={
+                    "available": False, "error": str(exc),
+                }, status_code=500)
 
         # 10-second TTL cache shared across requests. The endpoint is auto-
         # refreshed every 30s by each open dashboard tab — without a cache,

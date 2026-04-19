@@ -17,6 +17,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 from loguru import logger
@@ -86,6 +87,7 @@ from config import load_settings, Settings  # noqa: E402
 from core.absolute_limits import FORBIDDEN_API_PERMISSIONS  # noqa: E402
 from core.constants import (  # noqa: E402
     APP_NAME,
+    EVENT_EXECUTION_DEGRADED,
     EVENT_NEW_CANDLE,
     EVENT_NEW_SIGNAL,
     EVENT_NEW_TRADE,
@@ -1024,7 +1026,16 @@ async def run() -> None:
                             _matched_key = _k
                             break
                     if _matched_key is not None:
-                        _entry_prob, _entry_px = _ml_prob_at_entry.pop(_matched_key, (0.5, 0.0))
+                        # _ml_prob_at_entry stores either (prob, entry_px) or
+                        # (prob, entry_px, challenger_prob) depending on
+                        # whether A/B is wired. Unpack defensively to keep
+                        # both shapes working without a flag day.
+                        _stash = _ml_prob_at_entry.pop(_matched_key, (0.5, 0.0))
+                        if len(_stash) == 3:
+                            _entry_prob, _entry_px, _challenger_prob = _stash
+                        else:
+                            _entry_prob, _entry_px = _stash
+                            _challenger_prob = None
                         # Use realized PnL as source of truth (works for both LONG and SHORT)
                         _actual_win = closed.realized_pnl > 0
                         # Record to per-symbol model if available, and always to unified
@@ -1033,6 +1044,40 @@ async def run() -> None:
                             _sym_ml.record_outcome(_entry_prob, _actual_win)
                         if _ml_predictor:
                             _ml_predictor.record_outcome(_entry_prob, _actual_win)
+
+                        # A/B Champion-Challenger: feed paired observations
+                        # into the comparator. McNemar's test in evaluate()
+                        # decides when the challenger has earned promotion;
+                        # we just collect ground-truth here. Threshold for
+                        # binary "would have entered" matches the calibrated
+                        # decision threshold of each model.
+                        if (_ml_ab_comparator is not None
+                                and _challenger_prob is not None
+                                and _ml_predictor is not None
+                                and _ml_challenger is not None):
+                            try:
+                                _champ_thr = _ml_predictor._calibrated_threshold
+                                _chall_thr = _ml_challenger._calibrated_threshold
+                                _ml_ab_comparator.record(
+                                    champion_pred=(_entry_prob >= _champ_thr),
+                                    challenger_pred=(_challenger_prob >= _chall_thr),
+                                    actual_win=_actual_win,
+                                )
+                                # When we hit a meaningful sample size, log
+                                # the verdict so operators know whether the
+                                # challenger is winning. McNemar handles small-N
+                                # gracefully; the log is a daily diagnostic.
+                                if _ml_ab_comparator.n_pairs % 25 == 0:
+                                    _verdict = _ml_ab_comparator.evaluate()
+                                    if _verdict is not None:
+                                        log.info(
+                                            "ML A/B: n={} verdict={} lift={:+.3f} p={:.4f} ({})",
+                                            _verdict.n_pairs, _verdict.verdict,
+                                            _verdict.precision_lift, _verdict.mcnemar_p_value,
+                                            _verdict.reason,
+                                        )
+                            except Exception as _ab_err:
+                                log.debug("A/B comparator record failed: {}", _ab_err)
 
                         # Drift detection → Telegram/alert bus. Before this
                         # change drift was only logged; operators missed it.
@@ -1109,8 +1154,28 @@ async def run() -> None:
             if risk_state_machine:
                 await risk_state_machine.update(position_manager.realized_pnl_today)
 
+        async def _on_execution_degraded(payload):
+            """Executor lost safety invariants (unprotected fill, orphan).
+
+            Halts trading so no new exposure is added until an operator
+            inspects and resumes. Event content is already written to
+            events.jsonl by the executor.
+            """
+            nonlocal trading_paused
+            trading_paused = True
+            try:
+                _sym = (payload or {}).get("symbol", "?")
+                _reason = (payload or {}).get("reason", "unknown")
+            except Exception:
+                _sym, _reason = "?", "unknown"
+            log.critical(
+                "TRADING HALTED by execution_degraded: symbol={} reason={} — operator action required",
+                _sym, _reason,
+            )
+
         bus.subscribe(EVENT_ORDER_FILLED, _on_order_filled)
         bus.subscribe(EVENT_NEW_TRADE, _on_market_trade)
+        bus.subscribe(EVENT_EXECUTION_DEGRADED, _on_execution_degraded)
         log.info("[Module] Position & Risk runtime initialized")
     except Exception as e:
         log.warning("[Module] Position/Risk runtime failed: {}", e)
@@ -1303,6 +1368,38 @@ async def run() -> None:
 
         log.info("[Module] ML Predictors: {} per-symbol + unified fallback (mode={})",
                  len(_ml_predictors), _ml_predictor.rollout_mode)
+
+        # ── A/B challenger (optional) ─────────────────────────────────
+        # When ``data/ml_models/ml_predictor_challenger.pkl`` exists, load
+        # it as a side-by-side challenger. Every entry signal then gets
+        # scored by BOTH the production champion and the challenger; the
+        # outcome is fed into a ChampionChallengerComparator so McNemar's
+        # test can decide whether to promote. Absent the challenger pkl
+        # the comparator stays None and the hot path is unchanged.
+        _ml_challenger = None
+        _ml_ab_comparator = None
+        _challenger_path = _ml_models_dir / "ml_predictor_challenger.pkl"
+        if _challenger_path.exists() and _ml_predictor and _ml_predictor.is_ready:
+            try:
+                _ml_challenger = MLPredictor(config=_ml_cfg)
+                _ml_challenger.rollout_mode = "shadow"  # challenger is always shadow-only
+                if _ml_challenger.load_from_file(_challenger_path):
+                    from analyzer.ml.ab import ChampionChallengerComparator
+                    _ml_ab_comparator = ChampionChallengerComparator(
+                        champion_id=_ml_predictor._model_version,
+                        challenger_id=_ml_challenger._model_version,
+                        window=500, min_samples=50,
+                    )
+                    log.info(
+                        "[Module] A/B challenger loaded: champion={}, challenger={}",
+                        _ml_predictor._model_version, _ml_challenger._model_version,
+                    )
+                else:
+                    _ml_challenger = None
+            except Exception as _ab_err:
+                log.warning("[Module] A/B challenger load failed: {}", _ab_err)
+                _ml_challenger = None
+                _ml_ab_comparator = None
     except ImportError as e:
         log.error("[Module] ML Predictor disabled — missing dependency: {}", e)
         _ml_predictor = None
@@ -1352,6 +1449,33 @@ async def run() -> None:
 
     async def _run_ml_training() -> bool:
         """Load trades from DB, train per-symbol + unified ML models, save to disk."""
+        # Open MLRegistry run for full-pipeline traceability. Every retrain
+        # now appears in the SQL registry timeline alongside per-symbol model
+        # versions, with parameters, metrics, and any failure mode captured.
+        # This replaces ad-hoc JSON writes with a queryable history that the
+        # dashboard reads via /api/ml/registry endpoints.
+        _retrain_run_id: Optional[str] = None
+        _registry: Any = None
+        try:
+            from analyzer.ml.registry import MLRegistry
+            _registry = MLRegistry(BASE_DIR / "data" / "sentinel.db")
+            _retrain_run = _registry.start_run(
+                "auto_retrain",
+                params={
+                    "symbols": list(settings.trading_symbols or []),
+                    "use_walk_forward": getattr(_ml_predictor._cfg, "use_walk_forward", False)
+                                         if _ml_predictor else False,
+                    "use_regime_routing": getattr(_ml_predictor._cfg, "use_regime_routing", False)
+                                           if _ml_predictor else False,
+                    "use_stacking": getattr(_ml_predictor._cfg, "use_stacking", False)
+                                     if _ml_predictor else False,
+                },
+                tags={"trigger": "scheduled", "kind": "training"},
+            )
+            _retrain_run_id = _retrain_run.run_id
+        except Exception as _reg_err:
+            log.warning("ML registry start_run failed (non-fatal): {}", _reg_err)
+
         _ml_progress_set(
             active=True,
             phase="starting",
@@ -1650,9 +1774,64 @@ async def run() -> None:
                 ok=any_saved,
                 metrics=final_metrics,
             )
+
+            # Register new model version in MLRegistry + atomic promote.
+            # All metrics persisted to ml_runs.metrics_json; the model row
+            # in ml_model_versions tags this run as the artifact source.
+            # Failure here is non-fatal — the pickle on disk is still
+            # the source of truth for the predict() path.
+            if _registry is not None and _retrain_run_id is not None and any_saved:
+                try:
+                    if final_metrics is not None:
+                        _registry.log_metrics(_retrain_run_id, {
+                            **final_metrics,
+                            "ece": float(_ml_predictor.metrics.ece) if _ml_predictor.metrics else 0.0,
+                            "brier_score": float(_ml_predictor.metrics.brier_score) if _ml_predictor.metrics else 0.0,
+                        })
+                    _registry.log_artifact(
+                        _retrain_run_id, "unified_pkl",
+                        str(_ml_model_path_unified.resolve()),
+                    )
+                    _registry.finish_run(_retrain_run_id, status="finished")
+
+                    mv = _registry.register_model(
+                        name="ensemble_unified",
+                        run_id=_retrain_run_id,
+                        artifact_path=str(_ml_model_path_unified.resolve()),
+                        description=f"Auto-retrain at {int(time.time())}, "
+                                    f"skill={final_metrics.get('skill_score') if final_metrics else 0:.3f}",
+                        metrics=final_metrics or {},
+                        tags={"source": "auto_retrain"},
+                    )
+                    from analyzer.ml.registry import STAGE_PRODUCTION
+                    _registry.transition_stage("ensemble_unified", mv.version, STAGE_PRODUCTION)
+                    log.info(
+                        "ML registry: registered ensemble_unified v{} → production "
+                        "(prev versions auto-archived)",
+                        mv.version,
+                    )
+                except Exception as _reg_err:
+                    log.warning("ML registry post-train update failed: {}", _reg_err)
+            elif _registry is not None and _retrain_run_id is not None:
+                # Training failed or skill regression — record failure status.
+                try:
+                    _registry.finish_run(
+                        _retrain_run_id,
+                        status="failed",
+                        error="no_model_saved (skill regression or training error)",
+                    )
+                except Exception:
+                    pass
+
             return any_saved
         except Exception as exc:
             log.error("ML auto-retrain error: {}", exc)
+            if _registry is not None and _retrain_run_id is not None:
+                try:
+                    _registry.finish_run(_retrain_run_id, status="failed",
+                                          error=str(exc) or type(exc).__name__)
+                except Exception:
+                    pass
             try:
                 from monitoring.event_log import emit_component_error
                 emit_component_error(
@@ -2166,10 +2345,33 @@ async def run() -> None:
                     _ml_pred = _active_ml.predict(_ml_features)
                     log.info("ML prediction: {} prob={:.2f} decision={} mode={}",
                              strat_name, _ml_pred.probability, _ml_pred.decision, _ml_pred.rollout_mode)
+
+                    # A/B challenger: when configured, score the same input
+                    # with the challenger model and stash both probabilities.
+                    # Cheap (one extra inference) and only fires when the
+                    # operator dropped a challenger pkl into ml_models/.
+                    _challenger_prob: Optional[float] = None
+                    if _ml_challenger is not None and _ml_challenger.is_ready:
+                        try:
+                            _ch_pred = _ml_challenger.predict(_ml_features)
+                            _challenger_prob = float(_ch_pred.probability)
+                        except Exception as _ch_err:
+                            log.debug("A/B challenger predict failed: {}", _ch_err)
+
                     # Track ML probability at entry so we can record outcome on close.
-                    # Store (prob, entry_price) tuple — used in _on_order_filled SELL path.
+                    # When A/B is on, store (champ_prob, entry_price, challenger_prob);
+                    # otherwise (champ_prob, entry_price). The 3-tuple shape is
+                    # detected on the SELL path so existing 2-tuple consumers
+                    # keep working.
                     if signal.direction.value == "BUY":
-                        _ml_prob_at_entry[(symbol, strat_name)] = (_ml_pred.probability, features.close)
+                        if _challenger_prob is not None:
+                            _ml_prob_at_entry[(symbol, strat_name)] = (
+                                _ml_pred.probability, features.close, _challenger_prob,
+                            )
+                        else:
+                            _ml_prob_at_entry[(symbol, strat_name)] = (
+                                _ml_pred.probability, features.close,
+                            )
                     # Propagate the probability onto the downstream strat_results entry so
                     # the dashboard can show the *actual* live ML output, not only blocks.
                     _last_ml_prob_for_strategy = float(_ml_pred.probability)
@@ -2377,6 +2579,7 @@ async def run() -> None:
         executor, then finalises the position. Emits a ``guard_tripped``
         event so the transition is reconstructable from events.jsonl.
         """
+        nonlocal trading_paused
         if trading_paused or not executor:
             return
         if not position_manager.has_position(pos.symbol):
@@ -2395,35 +2598,73 @@ async def run() -> None:
             take_profit_price=pos.take_profit_price,
             close_pct=100.0,
         )
-        try:
-            order = await executor.execute_order(
-                signal=signal,
-                quantity=pos.quantity,
-                current_price=features.close,
-            )
-            if order:
-                closed = await position_manager.close_position(order)
-                if closed:
-                    emit_guard_tripped(
-                        guard=guard_name,
-                        name=guard_name,
-                        reason=reason,
-                        severity="warning",
-                        symbol=pos.symbol,
-                        strategy=pos.strategy_name,
-                        exit_price=float(features.close),
-                        pnl=float(closed.realized_pnl),
-                    )
-                    log.warning(
-                        "{} FORCED EXIT {} @ {:.4f} — {} (pnl={:.2f})",
-                        guard_name.upper(), pos.symbol, features.close, reason, closed.realized_pnl,
-                    )
-        except Exception as e:
-            log.error("{} force-exit failed for {}: {}", guard_name, pos.symbol, e)
+        # Close is safety-critical: one retry with short backoff, then halt
+        # trading so the position is visible to the operator instead of
+        # silently lingering open on the exchange.
+        order = None
+        last_exc: Optional[BaseException] = None
+        for _attempt in (1, 2):
+            try:
+                order = await executor.execute_order(
+                    signal=signal,
+                    quantity=pos.quantity,
+                    current_price=features.close,
+                )
+                if order:
+                    break
+                last_exc = None
+            except Exception as e:  # noqa: BLE001 — retry path
+                last_exc = e
+                log.warning("{} force-exit attempt {} failed for {}: {}",
+                            guard_name, _attempt, pos.symbol, e)
+            if _attempt == 1:
+                await asyncio.sleep(1.0)
+
+        if order:
+            closed = await position_manager.close_position(order)
+            if closed:
+                emit_guard_tripped(
+                    guard=guard_name,
+                    name=guard_name,
+                    reason=reason,
+                    severity="warning",
+                    symbol=pos.symbol,
+                    strategy=pos.strategy_name,
+                    exit_price=float(features.close),
+                    pnl=float(closed.realized_pnl),
+                )
+                log.warning(
+                    "{} FORCED EXIT {} @ {:.4f} — {} (pnl={:.2f})",
+                    guard_name.upper(), pos.symbol, features.close, reason, closed.realized_pnl,
+                )
+            return
+
+        # Close failed twice: surface it to events.jsonl and pause trading.
+        from monitoring.event_log import emit_component_error as _emit_cerr
+        _emit_cerr(
+            "main.force_exit",
+            f"{guard_name} force-exit failed for {pos.symbol} after retry",
+            exc=last_exc,
+            severity="critical",
+            symbol=pos.symbol,
+            strategy=pos.strategy_name,
+            reason=reason,
+            guard=guard_name,
+        )
+        trading_paused = True
+        log.critical(
+            "TRADING HALTED: {} force-exit failed twice for {} — position stays open, operator action required",
+            guard_name, pos.symbol,
+        )
 
     # SL/TP проверка на каждый тик
     async def _check_sl_tp(trade):
         """Проверить stop-loss / take-profit на каждый маркет-трейд."""
+        # `nonlocal` must precede every use of the name in the function
+        # body — Python raises SyntaxError otherwise. The halt-on-failed-
+        # close branch later in this function assigns `trading_paused = True`,
+        # so the declaration belongs at the very top.
+        nonlocal trading_paused
         if trading_paused or not position_manager or not executor:
             return
 
@@ -2477,37 +2718,61 @@ async def run() -> None:
             close_pct=_close_pct,
         )
 
-        try:
-            # Final check right before execution
-            if not position_manager.has_position(symbol):
-                return
-            order = await executor.execute_order(
-                signal=signal,
-                quantity=_qty,
-                current_price=trade.price,
+        # Final check right before execution
+        if not position_manager.has_position(symbol):
+            return
+
+        # SL/TP close is safety-critical — one retry, then halt + event.
+        # `nonlocal trading_paused` already declared at the top of _check_sl_tp.
+        order = None
+        last_exc: Optional[BaseException] = None
+        for _attempt in (1, 2):
+            try:
+                order = await executor.execute_order(
+                    signal=signal,
+                    quantity=_qty,
+                    current_price=trade.price,
+                )
+                if order:
+                    break
+                last_exc = None
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                log.warning("SL/TP close attempt {} failed for {}: {}", _attempt, symbol, e)
+            if _attempt == 1:
+                await asyncio.sleep(1.0)
+
+        if not order:
+            from monitoring.event_log import emit_component_error as _emit_cerr
+            _emit_cerr(
+                "main.sl_tp_close",
+                f"SL/TP close failed for {symbol} after retry (trigger={trigger})",
+                exc=last_exc,
+                severity="critical",
+                symbol=symbol,
+                strategy=_strategy,
+                trigger=trigger,
             )
-            if order and _is_partial:
-                # Execute partial close
-                closed_pos = await position_manager.partial_close_position(order, _close_pct)
-                # Only advance state if the position is still open after partial close
-                # (partial_close_position returns None or force-closed dust => skip).
-                if closed_pos and position_manager.has_position(symbol):
-                    # Advance tp_stage to the index of the next unmet
-                    # rung; move SL to breakeven on the first partial
-                    # only; arm the trailing configured on the stage
-                    # we just closed (``trailing_after``).
-                    _trailing = _stage_info.trailing_after if _stage_info else None
-                    await position_manager.apply_tp_stage_transition(
-                        symbol,
-                        stage=_stage_num,
-                        move_to_breakeven=(_stage_num == 1),
-                        trailing=_trailing,
-                    )
-                log.info("Partial close {} {}: {}% @ {:.2f}", trigger, symbol, _close_pct, trade.price)
-            elif order:
-                log.info("{} {} @ {:.2f} — {}", trigger, symbol, trade.price, reason)
-        except Exception as e:
-            log.error("SL/TP execution error: {}", e)
+            trading_paused = True
+            log.critical(
+                "TRADING HALTED: SL/TP close failed twice for {} (trigger={}) — position stays open",
+                symbol, trigger,
+            )
+            return
+
+        if _is_partial:
+            closed_pos = await position_manager.partial_close_position(order, _close_pct)
+            if closed_pos and position_manager.has_position(symbol):
+                _trailing = _stage_info.trailing_after if _stage_info else None
+                await position_manager.apply_tp_stage_transition(
+                    symbol,
+                    stage=_stage_num,
+                    move_to_breakeven=(_stage_num == 1),
+                    trailing=_trailing,
+                )
+            log.info("Partial close {} {}: {}% @ {:.2f}", trigger, symbol, _close_pct, trade.price)
+        else:
+            log.info("{} {} @ {:.2f} — {}", trigger, symbol, trade.price, reason)
 
     # Импорт Signal для SL/TP
     from core.models import Signal
@@ -3143,17 +3408,33 @@ async def run() -> None:
             take_profit_price=pos.take_profit_price,
             close_pct=100.0,
         )
-        try:
-            order = await executor.execute_order(
-                signal=signal,
-                quantity=pos.quantity,
-                current_price=pos.current_price,
-            )
-        except Exception as exc:
-            log.error("Manual close failed for {}: {}", symbol, exc)
-            return {"ok": False, "error": str(exc)}
+        order = None
+        last_exc: Optional[BaseException] = None
+        for _attempt in (1, 2):
+            try:
+                order = await executor.execute_order(
+                    signal=signal,
+                    quantity=pos.quantity,
+                    current_price=pos.current_price,
+                )
+                if order:
+                    break
+                last_exc = None
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                log.warning("Manual close attempt {} failed for {}: {}", _attempt, symbol, exc)
+            if _attempt == 1:
+                await asyncio.sleep(1.0)
         if not order:
-            return {"ok": False, "error": "executor rejected the order"}
+            from monitoring.event_log import emit_component_error as _emit_cerr
+            _emit_cerr(
+                "main.manual_close",
+                f"manual close failed for {symbol} after retry",
+                exc=last_exc,
+                severity="error",
+                symbol=symbol,
+            )
+            return {"ok": False, "error": str(last_exc) if last_exc else "executor rejected the order"}
         log.warning("Manual close submitted: {} qty={:.6f} @ {:.2f}",
                     symbol, pos.quantity, pos.current_price)
         return {"ok": True, "symbol": symbol, "price": pos.current_price,
@@ -3296,10 +3577,47 @@ async def run() -> None:
                 async with _ml_retrain_lock:
                     if _ml_predictor:
                         now = time.time()
+                        # Determine retrain trigger reason. Three signals:
+                        #   1. Model never trained (cold start) → train.
+                        #   2. Schedule says model is stale (`needs_retrain`).
+                        #   3. PSI feature-drift monitor reports `major_drift`
+                        #      (live distribution materially diverged from
+                        #      training reference). This catches regime shifts
+                        #      faster than waiting for live-precision drop —
+                        #      drift in inputs precedes drift in outcomes.
+                        psi_drift_triggered = False
+                        psi_summary = None
+                        if (_ml_predictor.is_ready
+                                and getattr(_ml_predictor, "_feature_drift_monitor", None) is not None):
+                            try:
+                                psi_summary = _ml_predictor._feature_drift_monitor.summary()
+                                psi_drift_triggered = psi_summary.get("status") == "major_drift"
+                            except Exception as _psi_err:
+                                log.debug("PSI summary fetch failed: {}", _psi_err)
+
                         if not _ml_predictor.is_ready:
                             log.info("ML auto-retrain: no model loaded — triggering initial training")
                             await _run_ml_training()
                             last_retrain_ts = now
+                        elif psi_drift_triggered:
+                            elapsed = now - last_retrain_ts
+                            if elapsed < MIN_RETRAIN_INTERVAL_SEC:
+                                log.warning(
+                                    "ML auto-retrain: PSI MAJOR DRIFT detected (max_psi={:.3f}, "
+                                    "drifting features={}) — but cooldown active ({:.1f}h remaining)",
+                                    psi_summary.get("max_psi", 0.0),
+                                    psi_summary.get("drifting", []),
+                                    (MIN_RETRAIN_INTERVAL_SEC - elapsed) / 3600,
+                                )
+                            else:
+                                log.warning(
+                                    "ML auto-retrain: PSI MAJOR DRIFT — retraining "
+                                    "(max_psi={:.3f}, drifting={})",
+                                    psi_summary.get("max_psi", 0.0),
+                                    psi_summary.get("drifting", []),
+                                )
+                                await _run_ml_training()
+                                last_retrain_ts = now
                         elif _ml_predictor.needs_retrain():
                             elapsed = now - last_retrain_ts
                             if elapsed < MIN_RETRAIN_INTERVAL_SEC:
