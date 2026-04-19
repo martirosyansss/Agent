@@ -436,14 +436,23 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
 
     # v3: Adaptive Feature Selector — analyse importances across all members
     combined_importances: dict[str, float] = {}
+    # Per-member dicts kept separately so we can also report stability —
+    # RF, LGBM and XGB disagree often enough that seeing the spread is
+    # more honest than the simple mean below.
+    per_member_importances: list[dict[str, float]] = []
     for candidate, tag in [(rf, "rf"), (lgbm, "lgbm"), (xgb, "xgb")]:
         if candidate is None:
             continue
         raw_imp = getattr(candidate, 'feature_importances_', None)
         if raw_imp is not None:
+            member_imp: dict[str, float] = {}
             for i, name in enumerate(FEATURE_NAMES):
                 if i < len(raw_imp):
-                    combined_importances[name] = combined_importances.get(name, 0.0) + float(raw_imp[i])
+                    v = float(raw_imp[i])
+                    combined_importances[name] = combined_importances.get(name, 0.0) + v
+                    member_imp[name] = v
+            if member_imp:
+                per_member_importances.append(member_imp)
 
     # Normalize to get average importance across models
     n_models = sum(1 for c in [rf, lgbm, xgb] if c is not None)
@@ -973,6 +982,28 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
     # result doesn't slip through the gate. Computed on the same
     # predicted-positive PnL slice so a non-trivial PSR means the *subset
     # the model would trade* has robust skill.
+    # --- Feature-importance stability across ensemble members ---
+    # Captures the spread between RF/LGBM/XGB on which features matter.
+    # Stored on the metrics as a dashboard-ready dict; logged at INFO
+    # level with a one-line summary ("stable" when mean Spearman ≥ 0.7).
+    _fi_stability_report: dict = {}
+    try:
+        from analyzer.ml.domain.feature_importance_stability import compute_stability
+        if len(per_member_importances) >= 2:
+            _fi_stat = compute_stability(per_member_importances)
+            _fi_stability_report = _fi_stat.to_dashboard()
+            logger.info(
+                "Feature-importance stability across %d members: rank-Spearman=%.3f "
+                "(%s); top-by-mean: %s",
+                _fi_stat.n_runs, _fi_stat.mean_rank_spearman,
+                "stable" if _fi_stat.mean_rank_spearman >= 0.7
+                else "moderate" if _fi_stat.mean_rank_spearman >= 0.4
+                else "UNSTABLE",
+                [s.name for s in _fi_stat.sorted_by_mean()[:5]],
+            )
+    except Exception as exc:
+        logger.warning("Feature-importance stability computation failed: %s", exc)
+
     psr_result = None
     try:
         from analyzer.ml.domain.psr import probabilistic_sharpe_ratio
@@ -1105,6 +1136,7 @@ def run_training(predictor: Any, trades: list[StrategyTrade]) -> Optional[Any]:
         # correction was applied. Not sample size; that lives elsewhere.
         psr_n_trials=(len(getattr(ensemble, "members", []) or []) or 1) if psr_result is not None else 1,
         psr_gate_passed=bool(psr_result.gate_passed) if psr_result is not None else False,
+        feature_importance_stability=_fi_stability_report,
     )
 
     # Gate check — reject if below quality thresholds

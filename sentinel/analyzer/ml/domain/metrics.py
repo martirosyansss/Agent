@@ -105,6 +105,14 @@ class MLMetrics:
     dsr: Optional[float] = None
     psr_n_trials: int = 1             # reported N used in DSR deflation
     psr_gate_passed: bool = False     # PSR ≥ 0.95 AND (DSR ≥ 0.95 or DSR is None)
+    # Feature-importance stability across ensemble members. Captures how
+    # much the RF / LGBM / XGB members disagree on which features matter;
+    # ``mean_rank_spearman`` near 1.0 means they agree, near 0.0 means
+    # each model is picking up a different signal and the ``importances``
+    # column above is a fragile average. Dict shape matches
+    # ``ImportanceStabilityReport.to_dashboard()``; empty when only one
+    # member contributed importances.
+    feature_importance_stability: dict = field(default_factory=dict)
 
 
 @dataclass
