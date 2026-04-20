@@ -29,6 +29,14 @@ venv/
 .venv/
 ENV/
 
+# Secrets — never commit
+.env
+.env.*
+*.env.bak*
+
+# Temporary tool outputs
+.tmp_*.json
+
 # Databases
 *.db
 *.sqlite3

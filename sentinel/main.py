@@ -697,6 +697,51 @@ async def run() -> None:
             except Exception as _restore_err:
                 log.warning("Failed to restore positions from DB: {}", _restore_err)
 
+        # Startup reconciliation: cross-check DB-restored positions against
+        # live exchange state. Flags two drift classes:
+        #   1. DB has OPEN position but exchange has no protective OCO →
+        #      entry filled before crash, protection never placed / got
+        #      cancelled. Operator must re-attach or close manually.
+        #   2. Exchange has an open order for a symbol we don't track →
+        #      orphan from a prior run. Not auto-cancelled (might be manual
+        #      user order); surfaced for review.
+        if executor and hasattr(executor, "reconcile_with_exchange"):
+            try:
+                tracked_syms = {p.symbol for p in position_manager.open_positions}
+                all_syms = list(set(settings.trading_symbols or []) | tracked_syms)
+                recon = await executor.reconcile_with_exchange(all_syms)
+                from monitoring.event_log import emit_component_error as _emit_cerr
+                for sym, info in (recon or {}).items():
+                    has_pos = sym in tracked_syms
+                    has_oco = info.get("has_protective_oco", False)
+                    n_open = len(info.get("open_orders", []) or [])
+                    if has_pos and not has_oco:
+                        _emit_cerr(
+                            "main.reconcile",
+                            f"DB position {sym} restored but no protective OCO on exchange",
+                            severity="critical",
+                            symbol=sym,
+                            open_orders=n_open,
+                        )
+                        log.critical(
+                            "RECONCILE: {} has restored DB position but NO protective OCO on exchange",
+                            sym,
+                        )
+                    elif not has_pos and n_open > 0:
+                        _emit_cerr(
+                            "main.reconcile",
+                            f"exchange has {n_open} open order(s) for {sym} but no tracked position",
+                            severity="warning",
+                            symbol=sym,
+                            open_orders=n_open,
+                        )
+                        log.warning(
+                            "RECONCILE: {} — {} open order(s) on exchange but no tracked position",
+                            sym, n_open,
+                        )
+            except Exception as _recon_err:
+                log.warning("Startup reconciliation raised: {}", _recon_err)
+
         risk_state_machine = RiskStateMachine(
             event_bus=bus,
             max_daily_loss=settings.max_daily_loss_usd,
@@ -834,50 +879,71 @@ async def run() -> None:
         _ml_prob_at_entry: dict[tuple, tuple] = {}
 
         async def _on_order_filled(order):
+            nonlocal trading_paused
             if not position_manager:
                 return
 
-            # Persist order to DB — critical for trade audit trail
-            if repo:
-                try:
-                    await asyncio.to_thread(repo.insert_order, order)
-                except Exception as _db_err:
-                    log.critical("Order DB write FAILED: {} — halting trading", _db_err)
-                    nonlocal trading_paused
-                    trading_paused = True
-                    return
-
             if order.side == Direction.BUY:
                 opened = await position_manager.open_position(order)
+                # Persist order + position atomically so a crash between the
+                # two writes cannot produce half-state. On DB failure we halt
+                # trading: in-memory position exists, exchange has the fill —
+                # operator must inspect before new trades are opened.
+                if opened and repo:
+                    try:
+                        order_id, position_id = await asyncio.to_thread(
+                            repo.insert_order_and_position, order, opened,
+                        )
+                        opened.db_id = position_id
+                        log.info("Order+Position persisted atomically: {} order_id={} pos_id={}",
+                                 opened.symbol, order_id, position_id)
+                    except Exception as _db_err:
+                        log.critical(
+                            "Atomic order+position DB write FAILED for {}: {} — halting trading",
+                            order.symbol, _db_err,
+                        )
+                        from monitoring.event_log import emit_component_error as _emit_cerr
+                        _emit_cerr(
+                            "main.on_order_filled",
+                            f"atomic DB write failed for {order.symbol}",
+                            exc=_db_err,
+                            severity="critical",
+                            symbol=order.symbol,
+                        )
+                        trading_paused = True
+                        return
+                elif repo and not opened:
+                    # Position did not open (duplicate / invalid fill / insufficient
+                    # funds): still persist the order alone for audit trail.
+                    try:
+                        await asyncio.to_thread(repo.insert_order, order)
+                    except Exception as _db_err:
+                        log.error("Order-only DB write failed for {}: {}", order.symbol, _db_err)
+
                 if opened and risk_sentinel:
                     risk_sentinel.record_trade(order.commission, increment_trade=True)
-                # Setup trailing stop for strategies that support it
                 if opened and order.strategy_name == "ema_crossover_rsi":
                     await position_manager.set_trailing_stop(order.symbol, 2.5, 1.5)
                 elif opened and order.strategy_name == "bollinger_breakout":
                     await position_manager.set_trailing_stop(order.symbol, 3.0, 2.0)
-                # Setup multi-stage TP levels (TP1→50% close+breakeven, TP2→30%, TP3→trailing)
                 if opened:
                     await position_manager.setup_tp_levels(order.symbol)
-                # Arm Chandelier Exit (ATR ratchet) using entry-time ATR.
-                # Parallel to the fixed-% trailing — whichever stop is
-                # tighter at trigger time wins. ATR is refreshed on each
-                # new candle via update_chandelier_atr() in _on_new_candle.
                 if opened and order.features is not None and order.features.atr > 0:
                     await position_manager.setup_chandelier(
                         order.symbol,
                         atr=order.features.atr,
                         strategy_name=order.strategy_name,
                     )
-                # Persist opened position to DB
-                if opened and repo:
-                    try:
-                        db_id = await asyncio.to_thread(repo.insert_position, opened)
-                        opened.db_id = db_id
-                        log.info("Position persisted to DB: {} id={}", opened.symbol, db_id)
-                    except Exception as _db_err:
-                        log.error("Position DB write FAILED for {}: {}", order.symbol, _db_err)
             elif order.side == Direction.SELL:
+                # Audit trail for the SELL order itself. Kept separate from the
+                # atomic BUY path because close_position + repo.close_position
+                # handles the position-side write below.
+                if repo:
+                    try:
+                        await asyncio.to_thread(repo.insert_order, order)
+                    except Exception as _db_err:
+                        log.error("SELL order DB write failed for {}: {}", order.symbol, _db_err)
+
                 # Capture position data BEFORE close (close deletes from dict)
                 _pos_before = position_manager.get_position(order.symbol)
                 _entry_px_pos = _pos_before.entry_price if _pos_before else 0.0
@@ -2465,9 +2531,9 @@ async def run() -> None:
                             await asyncio.to_thread(repo.insert_decision_audit, _trace_dict)
                         except Exception as _da_err:
                             log.debug("decision_audit insert failed: {}", _da_err)
-                    from monitoring.event_log import get_event_log
+                    from monitoring.event_log import EventType, get_event_log
                     get_event_log().emit(
-                        "signal_decision",
+                        EventType.SIGNAL_DECISION,
                         **_trace_dict,
                     )
                 except Exception as _trace_emit_err:
@@ -2702,6 +2768,61 @@ async def run() -> None:
         _strategy = pos.strategy_name or "sl_tp"
         _sl = pos.stop_loss_price
         _tp = pos.take_profit_price
+
+        # Guard against partial slices below the exchange min-notional. A
+        # dust-sized tp_partial used to hit executor → None → retry → HALT
+        # (see risk/tp_splits.evaluate_partial_notional docstring).
+        if _is_partial:
+            from risk.tp_splits import (
+                PartialNotionalDecision,
+                evaluate_partial_notional,
+            )
+            from monitoring.event_log import emit_guard_tripped as _emit_guard
+            _min_notional = float(getattr(executor, "MIN_ORDER_USD", 10.0))
+            _decision = evaluate_partial_notional(
+                remaining_qty=pos.quantity,
+                close_pct=_close_pct,
+                price=trade.price,
+                min_notional_usd=_min_notional,
+            )
+            _slice_usd = round(_qty * trade.price, 2)
+            _full_usd = round(pos.quantity * trade.price, 2)
+            if _decision is PartialNotionalDecision.ESCALATE:
+                log.warning(
+                    "Partial {} slice ${:.2f} < ${:.2f} min-notional — escalating to full close ({})",
+                    trigger, _slice_usd, _min_notional, symbol,
+                )
+                _emit_guard(
+                    guard="sl_tp_close",
+                    name="partial_escalated_to_full",
+                    reason=f"partial ${_slice_usd:.2f} < ${_min_notional:.2f} min — closing 100%",
+                    severity="info",
+                    symbol=symbol,
+                    strategy=_strategy,
+                    trigger=trigger,
+                    partial_notional_usd=_slice_usd,
+                    full_notional_usd=_full_usd,
+                )
+                _is_partial = False
+                _close_pct = 100.0
+                _qty = pos.quantity
+            elif _decision is PartialNotionalDecision.SKIP:
+                log.warning(
+                    "Partial {} slice ${:.2f} and full position ${:.2f} both < ${:.2f} min-notional — skipping trigger ({})",
+                    trigger, _slice_usd, _full_usd, _min_notional, symbol,
+                )
+                _emit_guard(
+                    guard="sl_tp_close",
+                    name="partial_skipped_dust",
+                    reason=f"partial ${_slice_usd:.2f} and full ${_full_usd:.2f} below min — trigger skipped",
+                    severity="warning",
+                    symbol=symbol,
+                    strategy=_strategy,
+                    trigger=trigger,
+                    partial_notional_usd=_slice_usd,
+                    full_notional_usd=_full_usd,
+                )
+                return
 
         direction = Direction.SELL
         reason = f"SL/TP triggered: {trigger}" + (f" ({_close_pct:.0f}%)" if _is_partial else "")
@@ -3377,8 +3498,59 @@ async def run() -> None:
         if risk_state_machine:
             risk_state_machine.reset()
 
+    # Kill Switch: wired to the dashboard / telegram kill buttons. Runs the
+    # three-step shutdown protocol (cancel open orders → close positions →
+    # halt trading) before triggering the process shutdown signal.
+    from risk.kill_switch import KillSwitch as _KillSwitch
+    kill_switch = _KillSwitch(bus)
+
+    async def _kill_cancel_all_orders() -> None:
+        if not executor:
+            return
+        syms = list(settings.trading_symbols or [])
+        if position_manager:
+            syms = list(set(syms) | {p.symbol for p in position_manager.open_positions})
+        await executor.cancel_all_open_orders(syms)
+
+    async def _kill_close_all_positions() -> None:
+        if not position_manager:
+            return
+        # Snapshot the symbols first — close_position mutates the dict.
+        syms = [p.symbol for p in position_manager.open_positions]
+        for _sym in syms:
+            try:
+                result = await _handle_manual_close(_sym)
+                if not result.get("ok"):
+                    log.error("Kill: close {} failed — {}", _sym, result.get("error"))
+            except Exception as _close_err:
+                log.error("Kill: close {} raised: {}", _sym, _close_err)
+                from monitoring.event_log import emit_component_error as _emit_cerr
+                _emit_cerr(
+                    "main.kill_close",
+                    f"kill-switch close failed for {_sym}",
+                    exc=_close_err, severity="critical", symbol=_sym,
+                )
+
+    async def _kill_stop_trading() -> None:
+        nonlocal trading_paused
+        trading_paused = True
+
+    kill_switch.on_cancel_all_orders = _kill_cancel_all_orders
+    kill_switch.on_close_all_positions = _kill_close_all_positions
+    kill_switch.on_stop_trading = _kill_stop_trading
+
     async def _handle_kill():
-        log.warning("KILL requested — shutting down")
+        log.warning("KILL requested — running kill-switch protocol")
+        try:
+            await kill_switch.activate("Manual kill")
+        except Exception as _k_err:
+            log.critical("Kill switch activation raised: {}", _k_err)
+            from monitoring.event_log import emit_component_error as _emit_cerr
+            _emit_cerr(
+                "main.handle_kill",
+                f"kill-switch activate raised: {_k_err}",
+                exc=_k_err, severity="critical",
+            )
         shutdown.trigger()
 
     async def _handle_manual_close(symbol: str) -> dict:

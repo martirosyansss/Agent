@@ -502,6 +502,40 @@ def adaptive_min_confidence(
     return max(0.50, min(base + adj, 0.90))
 
 
+def _emit_strategy_decision(strategy: object, features: FeatureVector, signal: Optional[Signal]) -> None:
+    """Emit ``strategy_decision`` event with the strategy's pre-risk verdict.
+
+    Skips HOLDs (signal is None) — every tick produces a HOLD for most
+    strategies and emitting them would drown out the log. Dashboard's
+    "Strategy Decisions" view reads these to show what the strategy
+    *wanted to do* before risk gates filtered it.
+
+    Failure-tolerant: telemetry must never break the strategy pipeline.
+    """
+    if signal is None:
+        return
+    try:
+        from monitoring.event_log import EventType, get_event_log
+        from risk.decision_tracer import feature_snapshot_dict
+
+        name = getattr(strategy, "NAME", "") or type(strategy).__name__
+        get_event_log().emit(
+            EventType.STRATEGY_DECISION,
+            strategy=name,
+            symbol=getattr(features, "symbol", "") or "",
+            direction=getattr(signal.direction, "value", str(signal.direction)),
+            confidence=round(float(signal.confidence), 4),
+            reason=getattr(signal, "reason", "") or "",
+            signal_id=getattr(signal, "signal_id", "") or "",
+            suggested_quantity=getattr(signal, "suggested_quantity", 0.0),
+            stop_loss=getattr(signal, "stop_loss_price", 0.0),
+            take_profit=getattr(signal, "take_profit_price", 0.0),
+            feature_snapshot=feature_snapshot_dict(features),
+        )
+    except Exception:
+        pass
+
+
 class BaseStrategy(ABC):
     """Абстрактный базовый класс для торговых стратегий."""
 
@@ -509,7 +543,9 @@ class BaseStrategy(ABC):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        # Wrap generate_signal with per-symbol lock for thread-safety
+        # Wrap generate_signal with per-symbol lock for thread-safety AND
+        # post-call strategy_decision emit — the dashboard needs to see the
+        # raw strategy verdict (reason + features) BEFORE risk gates filter it.
         original = cls.__dict__.get("generate_signal")
         if original is not None:
             def _locked_generate(self, features, has_open_position=False, entry_price=None, _orig=original):
@@ -517,7 +553,9 @@ class BaseStrategy(ABC):
                     self._symbol_locks = {}
                 lock = self._symbol_locks.setdefault(features.symbol, threading.Lock())
                 with lock:
-                    return _orig(self, features, has_open_position, entry_price)
+                    sig = _orig(self, features, has_open_position, entry_price)
+                _emit_strategy_decision(self, features, sig)
+                return sig
             cls.generate_signal = _locked_generate  # type: ignore[assignment]
 
     def __init__(self):

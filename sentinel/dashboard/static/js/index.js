@@ -193,33 +193,20 @@
         toastTimer = setTimeout(function() { t.className = 'toast'; }, 3500);
     }
 
-    /* ── Chart ───────────────────────────────── */
-    /* Canvas pnlChart отсутствует на страницах, отличных от index.html */
-    var _pnlCanvas = document.getElementById('pnlChart');
-    var ctx = _pnlCanvas ? _pnlCanvas.getContext('2d') : null;
-
-    var gradientUp = ctx ? ctx.createLinearGradient(0, 0, 0, 340) : null;
-    if (gradientUp) {
-        gradientUp.addColorStop(0, 'rgba(99, 102, 241, 0.30)');
-        gradientUp.addColorStop(0.5, 'rgba(99, 102, 241, 0.08)');
-        gradientUp.addColorStop(1, 'rgba(99, 102, 241, 0.0)');
-    }
-
-    var gradientGreen = ctx ? ctx.createLinearGradient(0, 0, 0, 340) : null;
-    if (gradientGreen) {
-        gradientGreen.addColorStop(0, 'rgba(34, 197, 94, 0.25)');
-        gradientGreen.addColorStop(0.5, 'rgba(34, 197, 94, 0.06)');
-        gradientGreen.addColorStop(1, 'rgba(34, 197, 94, 0.0)');
-    }
-
-    var chartSeriesMode = 'pnl';
+    /* ── Market Chart (TradingView Lightweight Charts) ───────────────────
+       Pro-grade candlesticks + volume subpane + EMA overlays + SL/TP price
+       lines + live updates + historical navigation. Runs only on index.html;
+       bails out silently on other pages (container div absent). */
+    var chartSeriesMode = 'market';
     var activeInterval = '1h';
-    var chartType = 'candle';     /* 'line' or 'candle' */
-    var activeSymbol = 'BTCUSDT'; /* selected trading pair */
-    var _indicatorsPerSymbol = {}; /* cached per-symbol indicators from WS */
-    var _tradingSymbols = [];     /* available symbols from backend */
-    var _forceMarketChart = false; /* true when user clicked interval/type button */
-    var _posTradeFilter = '';     /* '' = all symbols, or 'BTCUSDT' etc. */
+    var chartType = 'candle';     /* 'candle' or 'line' */
+    var _chartEndTs = 0;          /* 0 = live tail; >0 = historical window end (ms) */
+    var activeSymbol = 'BTCUSDT';
+    var _indicatorsPerSymbol = {};
+    var _tradingSymbols = [];
+    var _posTradeFilter = '';
+    var _openPositions = [];
+    var _userHasZoomed = false;   /* set on user pan/zoom, cleared on reset */
 
     /* Symbol color mapping for visual distinction */
     var _symbolColors = {
@@ -243,456 +230,164 @@
             '<span class="sym-badge-dot" style="background:' + c.dot + ';"></span>' + escapeHtml(short) + '</span>';
     }
 
-    /* ── Crosshair plugin (X + Y dashed lines with Y-axis price label) ── */
-    var crosshairPlugin = {
-        id: 'crosshair',
-        afterDraw: function(chart) {
-            if (!chart.tooltip || !chart.tooltip._active || !chart.tooltip._active.length) return;
-            var activePoint = chart.tooltip._active[0];
-            var chartArea = chart.chartArea;
-            var ctx2 = chart.ctx;
-            var x = activePoint.element.x;
+    /* LWC chart + series handles (null on non-dashboard pages) */
+    var lwcChart = null;
+    var candleSeries = null;
+    var lineSeries = null;    /* activated when chartType='line' */
+    var volumeSeries = null;
+    var ema9Series = null;
+    var ema21Series = null;
+    var _positionPriceLines = []; /* handles returned by createPriceLine for SL/TP/entry */
+    var _lastCandles = [];    /* full candle set from backend (for tooltip + price hero) */
 
-            var yVal = null;
-            if (chartSeriesMode === 'market' && window._chartOhlcData) {
-                var ohlc = window._chartOhlcData[activePoint.index];
-                if (ohlc) yVal = ohlc.c;
-            }
-            if (yVal == null) {
-                var ds0Data = chart.data.datasets[0] && chart.data.datasets[0].data;
-                var raw = ds0Data ? ds0Data[activePoint.index] : null;
-                if (typeof raw === 'number') yVal = raw;
-                else if (Array.isArray(raw) && raw.length === 2) yVal = raw[1];
-            }
+    (function initLwcChart() {
+        var container = document.getElementById('lwcChart');
+        if (!container || typeof LightweightCharts === 'undefined') return;
 
-            ctx2.save();
-            ctx2.setLineDash([3, 3]);
-            ctx2.lineWidth = 1;
-            ctx2.strokeStyle = 'rgba(140, 149, 168, 0.45)';
-            /* vertical */
-            ctx2.beginPath();
-            ctx2.moveTo(x, chartArea.top);
-            ctx2.lineTo(x, chartArea.bottom);
-            ctx2.stroke();
-            /* horizontal */
-            if (yVal != null) {
-                var yPx = chart.scales.y.getPixelForValue(yVal);
-                if (yPx >= chartArea.top && yPx <= chartArea.bottom) {
-                    ctx2.beginPath();
-                    ctx2.moveTo(chartArea.left, yPx);
-                    ctx2.lineTo(chartArea.right, yPx);
-                    ctx2.stroke();
-
-                    /* Y-axis price label */
-                    ctx2.setLineDash([]);
-                    var txt = chartSeriesMode === 'market' ? formatUsd(yVal) : ('$' + yVal);
-                    ctx2.font = '600 10px JetBrains Mono, monospace';
-                    var padX = 6, padY = 3;
-                    var w = ctx2.measureText(txt).width + padX * 2;
-                    var h = 18;
-                    var axisX = chart.scales.y.position === 'right' ? chartArea.right : chartArea.left - w;
-                    ctx2.fillStyle = 'rgba(99, 102, 241, 0.95)';
-                    ctx2.fillRect(axisX, yPx - h / 2, w, h);
-                    ctx2.fillStyle = '#ffffff';
-                    ctx2.textBaseline = 'middle';
-                    ctx2.fillText(txt, axisX + padX, yPx);
-                }
-            }
-            ctx2.restore();
-        }
-    };
-
-    /* ── Last-price line plugin (persistent dashed line at latest close) ── */
-    var lastPriceLinePlugin = {
-        id: 'lastPriceLine',
-        afterDatasetsDraw: function(chart) {
-            if (chartSeriesMode !== 'market') return;
-            var ohlc = window._chartOhlcData;
-            if (!ohlc || !ohlc.length) return;
-            var last = ohlc[ohlc.length - 1];
-            if (!last || last.c == null) return;
-            var prev = ohlc.length > 1 ? ohlc[ohlc.length - 2] : null;
-            var up = prev ? last.c >= prev.c : true;
-            var color = up ? '#22c55e' : '#ef4444';
-
-            var chartArea = chart.chartArea;
-            var ctx2 = chart.ctx;
-            var yPx = chart.scales.y.getPixelForValue(last.c);
-            if (yPx < chartArea.top || yPx > chartArea.bottom) return;
-
-            ctx2.save();
-            ctx2.setLineDash([4, 4]);
-            ctx2.lineWidth = 1;
-            ctx2.strokeStyle = color + 'cc';
-            ctx2.beginPath();
-            ctx2.moveTo(chartArea.left, yPx);
-            ctx2.lineTo(chartArea.right, yPx);
-            ctx2.stroke();
-
-            /* price label on right axis */
-            ctx2.setLineDash([]);
-            var txt = formatUsd(last.c);
-            ctx2.font = '700 10px JetBrains Mono, monospace';
-            var padX = 6;
-            var w = ctx2.measureText(txt).width + padX * 2;
-            var h = 18;
-            var axisX = chart.scales.y.position === 'right' ? chartArea.right : chartArea.left - w;
-            ctx2.fillStyle = color;
-            ctx2.fillRect(axisX, yPx - h / 2, w, h);
-            ctx2.fillStyle = '#ffffff';
-            ctx2.textBaseline = 'middle';
-            ctx2.fillText(txt, axisX + padX, yPx);
-            ctx2.restore();
-        }
-    };
-
-    /* ── Open-positions overlay state (entry / SL / TP lines + BUY/SELL marker).
-           Populated by fetchPositions(); read by positionOverlayPlugin below.
-           Filtered by activeSymbol so we only annotate the visible pair. */
-    var _openPositions = [];
-
-    /* ── User-zoom tracking: if the user has interacted with the Chart.js
-           zoom plugin (wheel / pinch / pan), we skip the hard Y-scale reset
-           and don't snap back on the next poll refresh. Cleared on reset. */
-    var _userHasZoomed = false;
-
-    /* ── Positions overlay plugin ── */
-    var positionOverlayPlugin = {
-        id: 'positionOverlay',
-        afterDatasetsDraw: function(chart) {
-            if (chartSeriesMode !== 'market') return;
-            if (!_openPositions || !_openPositions.length) return;
-            var ohlc = window._chartOhlcData;
-            if (!ohlc || !ohlc.length) return;
-
-            var positions = _openPositions.filter(function(p) { return p.symbol === activeSymbol; });
-            if (!positions.length) return;
-
-            var yScale = chart.scales.y;
-            var chartArea = chart.chartArea;
-            var ctx2 = chart.ctx;
-            var lastBarMeta = chart.getDatasetMeta(0).data;
-            var lastX = lastBarMeta.length ? lastBarMeta[lastBarMeta.length - 1].x : chartArea.right;
-
-            ctx2.save();
-
-            positions.forEach(function(pos) {
-                var isBuy = pos.side === 'BUY' || pos.side === 'LONG';
-                var entry = pos.entry_price || 0;
-                var sl = pos.stop_loss_price || 0;
-                var tp = pos.take_profit_price || 0;
-
-                function drawHLine(price, color, label, dashed) {
-                    if (!price) return;
-                    var y = yScale.getPixelForValue(price);
-                    if (y < chartArea.top - 4 || y > chartArea.bottom + 4) return;
-                    ctx2.setLineDash(dashed ? [5, 4] : []);
-                    ctx2.lineWidth = 1.2;
-                    ctx2.strokeStyle = color;
-                    ctx2.beginPath();
-                    ctx2.moveTo(chartArea.left, y);
-                    ctx2.lineTo(chartArea.right, y);
-                    ctx2.stroke();
-                    /* Label chip on left edge */
-                    ctx2.setLineDash([]);
-                    ctx2.font = '600 9px JetBrains Mono, monospace';
-                    var txt = label + ' ' + formatUsd(price);
-                    var padX = 5;
-                    var w = ctx2.measureText(txt).width + padX * 2;
-                    var h = 14;
-                    ctx2.fillStyle = color;
-                    ctx2.fillRect(chartArea.left + 2, y - h / 2, w, h);
-                    ctx2.fillStyle = '#ffffff';
-                    ctx2.textBaseline = 'middle';
-                    ctx2.fillText(txt, chartArea.left + 2 + padX, y);
-                }
-
-                /* SL / TP horizontal dashed lines */
-                drawHLine(sl, 'rgba(239, 68, 68, 0.85)',  'SL', true);
-                drawHLine(tp, 'rgba(34, 197, 94, 0.85)',  'TP', true);
-                /* Entry — solid blue line */
-                drawHLine(entry, 'rgba(99, 102, 241, 0.9)', isBuy ? 'BUY' : 'SELL', false);
-
-                /* Triangle marker at last candle for entry side */
-                if (entry) {
-                    var ey = yScale.getPixelForValue(entry);
-                    if (ey >= chartArea.top && ey <= chartArea.bottom) {
-                        var tipX = lastX + 10;
-                        var baseX = tipX + 10;
-                        ctx2.fillStyle = isBuy ? '#22c55e' : '#ef4444';
-                        ctx2.beginPath();
-                        /* Right-pointing triangle anchored on last candle;
-                           color conveys side (green=BUY / red=SELL). */
-                        ctx2.moveTo(tipX, ey);
-                        ctx2.lineTo(baseX, ey - 5);
-                        ctx2.lineTo(baseX, ey + 5);
-                        ctx2.closePath();
-                        ctx2.fill();
-                    }
-                }
-            });
-
-            ctx2.restore();
-        }
-    };
-
-    /* ── Candlestick wicks plugin ── */
-    var candleWickPlugin = {
-        id: 'candleWick',
-        afterDatasetsDraw: function(chart) {
-            if (chartSeriesMode !== 'market' || chartType !== 'candle') return;
-            var ohlc = window._chartOhlcData;
-            if (!ohlc || !ohlc.length) return;
-            var meta = chart.getDatasetMeta(0);
-            if (!meta || meta.hidden) return;
-            var yScale = chart.scales.y;
-            var ctx2 = chart.ctx;
-            ctx2.save();
-            ctx2.lineWidth = 1.5;
-            for (var i = 0; i < meta.data.length; i++) {
-                var bar = meta.data[i];
-                if (!bar || !ohlc[i]) continue;
-                var c = ohlc[i];
-                var x = bar.x;
-                var yHigh = yScale.getPixelForValue(c.h);
-                var yLow = yScale.getPixelForValue(c.l);
-                var yBody1 = yScale.getPixelForValue(Math.max(c.o, c.c));
-                var yBody2 = yScale.getPixelForValue(Math.min(c.o, c.c));
-                var color = c.c >= c.o ? '#22c55e' : '#ef4444';
-                ctx2.strokeStyle = color;
-                /* upper wick */
-                ctx2.beginPath();
-                ctx2.moveTo(x, yHigh);
-                ctx2.lineTo(x, yBody1);
-                ctx2.stroke();
-                /* lower wick */
-                ctx2.beginPath();
-                ctx2.moveTo(x, yBody2);
-                ctx2.lineTo(x, yLow);
-                ctx2.stroke();
-            }
-            ctx2.restore();
-        }
-    };
-
-    var pnlChart = ctx ? new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [{
-                label: 'PnL ($)',
-                data: [],
-                borderColor: '#818cf8',
-                backgroundColor: gradientUp,
-                fill: true,
-                tension: 0.35,
-                borderWidth: 2.5,
-                pointRadius: 3,
-                pointHitRadius: 12,
-                pointHoverRadius: 6,
-                pointBackgroundColor: 'transparent',
-                pointBorderColor: 'transparent',
-                pointHoverBackgroundColor: '#818cf8',
-                pointHoverBorderColor: '#fff',
-                pointHoverBorderWidth: 2,
+        lwcChart = LightweightCharts.createChart(container, {
+            width: container.clientWidth,
+            height: container.clientHeight || 460,
+            layout: {
+                background: { type: 'solid', color: 'transparent' },
+                textColor: '#8892a8',
+                fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+                fontSize: 10,
             },
-            {
-                label: 'Volume',
-                data: [],
-                type: 'bar',
-                backgroundColor: 'rgba(99, 102, 241, 0.10)',
-                borderColor: 'transparent',
-                borderWidth: 0,
-                yAxisID: 'yVol',
-                order: 2,
-                barPercentage: 0.7,
-                categoryPercentage: 0.9,
-                maxBarThickness: 48,
-                hidden: true,
+            grid: {
+                vertLines: { color: 'rgba(56, 68, 91, 0.18)' },
+                horzLines: { color: 'rgba(56, 68, 91, 0.18)' },
             },
-            {
-                label: 'EMA 9',
-                data: [],
-                type: 'line',
-                borderColor: 'rgba(226, 167, 47, 0.75)',
-                backgroundColor: 'transparent',
-                borderWidth: 1.3,
-                borderDash: [],
-                pointRadius: 0,
-                pointHoverRadius: 4,
-                pointHoverBackgroundColor: '#e2a72f',
-                pointHoverBorderColor: 'rgba(226, 167, 47, 0.3)',
-                pointHoverBorderWidth: 6,
-                tension: 0.35,
-                fill: false,
-                hidden: false,
-                order: 0,
-                spanGaps: true,
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode.Normal,
+                vertLine: { color: 'rgba(140, 149, 168, 0.55)', style: LightweightCharts.LineStyle.Dashed, width: 1, labelBackgroundColor: '#6366f1' },
+                horzLine: { color: 'rgba(140, 149, 168, 0.55)', style: LightweightCharts.LineStyle.Dashed, width: 1, labelBackgroundColor: '#6366f1' },
             },
-            {
-                label: 'EMA 21',
-                data: [],
-                type: 'line',
-                borderColor: 'rgba(192, 132, 252, 0.65)',
-                backgroundColor: 'transparent',
-                borderWidth: 1.3,
-                borderDash: [6, 3],
-                pointRadius: 0,
-                pointHoverRadius: 4,
-                pointHoverBackgroundColor: '#c084fc',
-                pointHoverBorderColor: 'rgba(192, 132, 252, 0.3)',
-                pointHoverBorderWidth: 6,
-                tension: 0.35,
-                fill: false,
-                hidden: false,
-                order: 0,
-                spanGaps: true,
-            }]
-        },
-        plugins: [crosshairPlugin, candleWickPlugin, lastPriceLinePlugin, positionOverlayPlugin],
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode: 'index', intersect: false },
-            /* Skip redraws while hidden (avoids wasted CPU when tab backgrounded) */
-            animation: { duration: 250 },
-            plugins: {
-                /* Chart.js 4 built-in LTTB downsampler: keeps line shape on long series */
-                decimation: {
-                    enabled: true,
-                    algorithm: 'lttb',
-                    samples: 240,
-                },
-                zoom: {
-                    pan: {
-                        enabled: true,
-                        mode: 'x',
-                        onPanStart: function() { _userHasZoomed = true; },
-                    },
-                    zoom: {
-                        wheel: { enabled: true },
-                        pinch: { enabled: true },
-                        mode: 'x',
-                        onZoomStart: function() { _userHasZoomed = true; },
-                    }
-                },
-                legend: { display: false },
-                tooltip: {
-                    backgroundColor: 'rgba(12, 16, 24, 0.96)',
-                    titleColor: '#8c95a8',
-                    bodyColor: '#edf0f7',
-                    borderColor: 'rgba(56, 68, 91, 0.6)',
-                    borderWidth: 1,
-                    padding: { top: 10, right: 14, bottom: 10, left: 14 },
-                    cornerRadius: 8,
-                    displayColors: false,
-                    titleFont: { family: 'Inter', size: 11, weight: '500' },
-                    bodyFont: { family: 'JetBrains Mono', size: 12, weight: '600' },
-                    callbacks: {
-                        title: function(items) {
-                            if (!items.length) return '';
-                            return items[0].label;
-                        },
-                        label: function(c) {
-                            if (c.datasetIndex === 1) return null;
-                            if (c.datasetIndex === 2) {
-                                return c.parsed.y != null ? '\u25CF EMA 9:  ' + formatUsd(c.parsed.y) : null;
-                            }
-                            if (c.datasetIndex === 3) {
-                                return c.parsed.y != null ? '\u25CB EMA 21: ' + formatUsd(c.parsed.y) : null;
-                            }
-                            if (chartSeriesMode === 'market') {
-                                var ohlc = window._chartOhlcData && window._chartOhlcData[c.dataIndex];
-                                if (ohlc) {
-                                    var lines = [
-                                        'O: ' + formatUsd(ohlc.o),
-                                        'H: ' + formatUsd(ohlc.h),
-                                        'L: ' + formatUsd(ohlc.l),
-                                        'C: ' + formatUsd(ohlc.c),
-                                    ];
-                                    if (ohlc.v) lines.push('Vol: ' + formatVol(ohlc.v));
-                                    return lines;
-                                }
-                                return formatUsd(c.parsed.y);
-                            }
-                            return formatPnl(c.parsed.y);
-                        },
-                        labelTextColor: function(c) {
-                            if (c.datasetIndex === 2) return 'rgba(226, 167, 47, 0.9)';
-                            if (c.datasetIndex === 3) return 'rgba(192, 132, 252, 0.85)';
-                            return '#edf0f7';
-                        }
-                    }
-                }
+            rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.28 } },
+            timeScale: {
+                borderVisible: false,
+                timeVisible: true,
+                secondsVisible: false,
+                rightOffset: 6,
+                barSpacing: 8,
             },
-            scales: {
-                x: {
-                    grid: { color: 'rgba(56, 68, 91, 0.18)', drawBorder: false },
-                    ticks: {
-                        color: '#505b6e',
-                        font: { family: 'Inter', size: 10, weight: '500' },
-                        maxRotation: 0,
-                        maxTicksLimit: 12,
-                        autoSkip: true,
-                    },
-                    border: { display: false }
-                },
-                y: {
-                    position: 'right',
-                    grid: { color: 'rgba(56, 68, 91, 0.18)', drawBorder: false },
-                    ticks: {
-                        color: '#5f6a80',
-                        padding: 6,
-                        font: { family: 'JetBrains Mono', size: 10, weight: '500' },
-                        callback: function(v) {
-                            return chartSeriesMode === 'market' ? formatUsd(v) : ('$' + v);
-                        }
-                    },
-                    border: { display: false }
-                },
-                yVol: {
-                    position: 'left',
-                    display: false,
-                    grid: { display: false },
-                    beginAtZero: true,
-                    ticks: { display: false },
-                    afterDataLimits: function(axis) {
-                        if (axis.max) axis.max = axis.max * 5;
-                    }
-                }
+            handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+            handleScale:  { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+            localization: {
+                priceFormatter: function(p) { return formatUsd(p); },
+            },
+        });
+
+        candleSeries = lwcChart.addCandlestickSeries({
+            upColor: '#22c55e', downColor: '#ef4444',
+            borderUpColor: '#22c55e', borderDownColor: '#ef4444',
+            wickUpColor: '#22c55e',   wickDownColor: '#ef4444',
+            priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        });
+
+        /* Volume histogram on a separate pane at the bottom (20% of height) */
+        volumeSeries = lwcChart.addHistogramSeries({
+            priceFormat: { type: 'volume' },
+            priceScaleId: 'volume',
+            color: 'rgba(99, 102, 241, 0.45)',
+        });
+        lwcChart.priceScale('volume').applyOptions({
+            scaleMargins: { top: 0.78, bottom: 0 },
+            borderVisible: false,
+        });
+
+        /* EMA overlays on the price pane */
+        ema9Series = lwcChart.addLineSeries({
+            color: 'rgba(226, 167, 47, 0.85)',
+            lineWidth: 2,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            crosshairMarkerVisible: true,
+        });
+        ema21Series = lwcChart.addLineSeries({
+            color: 'rgba(192, 132, 252, 0.75)',
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            crosshairMarkerVisible: true,
+        });
+
+        /* Track user zoom/pan — disables snap-to-latest on polling refresh */
+        lwcChart.timeScale().subscribeVisibleTimeRangeChange(function() {
+            /* This fires on every refresh too, so we differentiate via a flag
+               that's only set when the mouse/wheel drove the change. */
+        });
+        container.addEventListener('wheel', function() { _userHasZoomed = true; }, { passive: true });
+        container.addEventListener('mousedown', function(e) {
+            if (e.button === 0) _userHasZoomed = true;
+        });
+        container.addEventListener('touchstart', function() { _userHasZoomed = true; }, { passive: true });
+
+        /* Crosshair tooltip — shows O/H/L/C/V + EMA at hover */
+        var tooltipEl = document.getElementById('lwcTooltip');
+        lwcChart.subscribeCrosshairMove(function(param) {
+            if (!tooltipEl) return;
+            if (!param || !param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+                tooltipEl.style.display = 'none';
+                return;
             }
-        }
-    }) : null;
+            var bar = param.seriesData.get(candleSeries);
+            if (!bar) { tooltipEl.style.display = 'none'; return; }
+            var ema9 = param.seriesData.get(ema9Series);
+            var ema21 = param.seriesData.get(ema21Series);
+            var vol = param.seriesData.get(volumeSeries);
+            var tsSec = typeof param.time === 'object' ? param.time.timestamp : param.time;
+            var dt = new Date(tsSec * 1000);
+            var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+            var tsTxt = dt.getFullYear() + '-' + pad(dt.getMonth() + 1) + '-' + pad(dt.getDate()) +
+                        ' ' + pad(dt.getHours()) + ':' + pad(dt.getMinutes());
+            var html = '<div class="lwc-tooltip-ts">' + escapeHtml(tsTxt) + '</div>' +
+                '<div class="lwc-tooltip-row"><span>O</span><span>' + formatUsd(bar.open) + '</span></div>' +
+                '<div class="lwc-tooltip-row"><span>H</span><span>' + formatUsd(bar.high) + '</span></div>' +
+                '<div class="lwc-tooltip-row"><span>L</span><span>' + formatUsd(bar.low) + '</span></div>' +
+                '<div class="lwc-tooltip-row"><span>C</span><span>' + formatUsd(bar.close) + '</span></div>';
+            if (vol && vol.value) html += '<div class="lwc-tooltip-row"><span>Vol</span><span>' + formatVol(vol.value) + '</span></div>';
+            if (ema9 && ema9.value != null) html += '<div class="lwc-tooltip-row" style="color:#e2a72f"><span>EMA 9</span><span>' + formatUsd(ema9.value) + '</span></div>';
+            if (ema21 && ema21.value != null) html += '<div class="lwc-tooltip-row" style="color:#c084fc"><span>EMA 21</span><span>' + formatUsd(ema21.value) + '</span></div>';
+            tooltipEl.innerHTML = html;
+            tooltipEl.style.display = 'block';
+            /* Position tooltip smartly — avoid going off-screen */
+            var cw = container.clientWidth;
+            var tx = param.point.x + 16;
+            if (tx + 170 > cw) tx = param.point.x - 170;
+            var ty = param.point.y + 16;
+            if (ty + 160 > container.clientHeight) ty = param.point.y - 160;
+            tooltipEl.style.left = tx + 'px';
+            tooltipEl.style.top  = Math.max(8, ty) + 'px';
+        });
 
-    /* Explicit exports for inline-safe access from event handlers */
-    window.pnlChart = pnlChart;
+        /* Responsive resize — lightweight-charts doesn't auto-resize on container change */
+        window.addEventListener('resize', function() {
+            if (lwcChart && container) {
+                lwcChart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+            }
+        });
+    })();
 
-    /* Store OHLC data for tooltip */
-    window._chartOhlcData = null;
+    /* ── EMA Legend Toggle (LWC) ── */
+    function _setSeriesVisible(series, visible) {
+        if (!series) return;
+        series.applyOptions({ visible: visible });
+    }
+    (function initLegendToggles() {
+        var l9 = document.getElementById('lwcLegendEma9');
+        var l21 = document.getElementById('lwcLegendEma21');
+        if (l9)  l9.addEventListener('click',  function() { l9.classList.toggle('dim'); _setSeriesVisible(ema9Series, !l9.classList.contains('dim')); });
+        if (l21) l21.addEventListener('click', function() { l21.classList.toggle('dim'); _setSeriesVisible(ema21Series, !l21.classList.contains('dim')); });
+    })();
 
-    /* ── EMA Legend Toggle ── */
-    window.toggleEmaLine = function(dsIndex) {
-        if (!pnlChart) return;
-        var ds = pnlChart.data.datasets[dsIndex];
-        if (!ds) return;
-        ds.hidden = !ds.hidden;
-        var legendId = dsIndex === 2 ? 'legendEma9' : 'legendEma21';
-        var el = document.getElementById(legendId);
-        if (el) el.classList.toggle('dimmed', ds.hidden);
-        pnlChart.update('none');
-    };
-
-    function updateEmaLegend(candles) {
-        var legendRow = document.getElementById('emaLegendRow');
-        var v9El = document.getElementById('legendEma9Val');
-        var v21El = document.getElementById('legendEma21Val');
-        if (!legendRow) return;
-        if (!candles || !candles.length) { legendRow.style.display = 'none'; return; }
-        var last = candles[candles.length - 1];
-        var hasEma = (last.ema9 != null) || (last.ema21 != null);
-        legendRow.style.display = hasEma ? 'flex' : 'none';
-        if (v9El) v9El.textContent = last.ema9 != null ? formatUsd(last.ema9) : '\u2014';
-        if (v21El) v21El.textContent = last.ema21 != null ? formatUsd(last.ema21) : '\u2014';
+    function _updateLegend(sym, interval, last) {
+        var s = document.getElementById('lwcLegendSymbol');
+        if (s) s.textContent = (sym || 'BTCUSDT') + ' · ' + (interval || '1h').toUpperCase();
+        var v9 = document.getElementById('lwcLegendEma9Val');
+        var v21 = document.getElementById('lwcLegendEma21Val');
+        if (v9)  v9.textContent  = (last && last.ema9  != null) ? formatUsd(last.ema9)  : '—';
+        if (v21) v21.textContent = (last && last.ema21 != null) ? formatUsd(last.ema21) : '—';
     }
 
     function setChartTitle(text) {
@@ -751,232 +446,100 @@
         header.style.display = 'flex';
     }
 
-    function renderPnlSeries(labels, values) {
-        if (!pnlChart) return false;
-        var chartNoteEl = document.getElementById('pnlChartNote');
-        var isFlat = values.every(function(v) { return v === values[0]; });
-        chartSeriesMode = 'pnl';
-        window._chartOhlcData = null;
-
-        var ds0 = pnlChart.data.datasets[0];
-        var _prevDs0Type = ds0.type || 'line';
-        var _typeChanged = _prevDs0Type !== 'line';
-        /* Reset to line mode for PnL */
-        ds0.type = 'line';
-        ds0.label = 'PnL ($)';
-        ds0.data = values;
-        ds0.borderColor = '#818cf8';
-        ds0.backgroundColor = gradientUp;
-        ds0.fill = true;
-        ds0.tension = 0.35;
-        ds0.pointRadius = values.length <= 12 ? 3 : 0;
-        ds0.pointHoverRadius = values.length <= 12 ? 6 : 5;
-        ds0.borderWidth = 2.5;
-        ds0.pointBackgroundColor = 'transparent';
-        ds0.pointBorderColor = 'transparent';
-        ds0.pointHoverBackgroundColor = '#818cf8';
-        ds0.pointHoverBorderColor = '#fff';
-        ds0.borderSkipped = undefined;
-        ds0.barPercentage = undefined;
-        ds0.categoryPercentage = undefined;
-        ds0.maxBarThickness = undefined;
-        ds0.order = 0;
-        /* Auto Y scale */
-        delete pnlChart.options.scales.y.min;
-        delete pnlChart.options.scales.y.max;
-
-        pnlChart.data.labels = labels;
-        /* Hide volume bars & EMA lines for PnL mode */
-        pnlChart.data.datasets[1].data = [];
-        pnlChart.data.datasets[1].hidden = true;
-        if (pnlChart.data.datasets[2]) { pnlChart.data.datasets[2].data = []; pnlChart.data.datasets[2].hidden = true; }
-        if (pnlChart.data.datasets[3]) { pnlChart.data.datasets[3].data = []; pnlChart.data.datasets[3].hidden = true; }
-        var _emaLeg = document.getElementById('emaLegendRow');
-        if (_emaLeg) _emaLeg.style.display = 'none';
-        setChartTitle('PnL History');
-        hidePriceHero();
-        if (chartNoteEl) {
-            chartNoteEl.textContent = isFlat
-                ? 'PnL flat at ' + formatPnl(values[0] || 0) + ' · showing market data'
-                : 'Live portfolio snapshots';
-        }
-        if (_typeChanged) {
-            var _meta0 = pnlChart.getDatasetMeta(0);
-            if (_meta0) _meta0.controller = undefined;
-            pnlChart.update();
-        } else {
-            pnlChart.update('none');
-        }
-        return isFlat;
+    /* ── Convert backend candle (t in ms) to LWC bar (time in seconds) ── */
+    function _toLwcBar(c) {
+        return {
+            time: Math.floor(c.t / 1000),
+            open: c.o, high: c.h, low: c.l, close: c.c,
+        };
     }
 
+    /* ── Render market candles into LWC chart.
+       Always operates in "market" mode — PnL fallback was dropped for the
+       pro build (PnL history lives in Equity Curve below). */
     async function renderMarketSeries(interval) {
-        if (!pnlChart) return;
+        if (!lwcChart || !candleSeries) return;
         interval = interval || activeInterval;
-        var r = await fetch('/api/market-chart?interval=' + encodeURIComponent(interval) + '&symbol=' + encodeURIComponent(activeSymbol));
-        var market = await r.json();
+        var url = '/api/market-chart?interval=' + encodeURIComponent(interval) + '&symbol=' + encodeURIComponent(activeSymbol);
+        if (_chartEndTs && _chartEndTs > 0) url += '&end=' + encodeURIComponent(_chartEndTs);
+
+        var market;
+        try {
+            var r = await fetch(url);
+            market = await r.json();
+        } catch (e) {
+            _logError('renderMarketSeries.fetch', e, { url: url });
+            return;
+        }
         var noDataEl = document.getElementById('pnlNoData');
-        var chartNoteEl = document.getElementById('pnlChartNote');
-        var candles = market.candles || [];
+        var candles = (market && market.candles) || [];
 
         if (!candles.length || candles.length < 2) {
             if (noDataEl) noDataEl.style.display = 'flex';
-            setChartTitle('Market Price');
-            if (chartNoteEl) chartNoteEl.textContent = 'Waiting for live market data\u2026';
+            setChartTitle('Market · нет данных');
             hidePriceHero();
             return;
         }
-
         if (noDataEl) noDataEl.style.display = 'none';
         chartSeriesMode = 'market';
-        window._chartOhlcData = candles;
+        _lastCandles = candles;
 
-        var labels = candles.map(function(c) { return c.label || ''; });
-        var closes = candles.map(function(c) { return c.c || 0; });
-        var volumes = candles.map(function(c) { return c.v || 0; });
-        var volColors = candles.map(function(c) {
-            return (c.c >= c.o) ? 'rgba(34, 197, 94, 0.18)' : 'rgba(239, 68, 68, 0.18)';
-        });
-
-        var ds0 = pnlChart.data.datasets[0];
-        var prevDs0Type = ds0.type || 'line';
-        var nextDs0Type = (chartType === 'candle') ? 'bar' : 'line';
-        var typeChanged = prevDs0Type !== nextDs0Type;
-
-        if (chartType === 'candle') {
-            /* Candlestick mode: floating bars from open to close */
-            var bodyData = candles.map(function(c) { return [c.o, c.c]; });
-            var bodyColors = candles.map(function(c) {
-                return c.c >= c.o ? 'rgba(34, 197, 94, 0.85)' : 'rgba(239, 68, 68, 0.85)';
-            });
-            var bodyBorders = candles.map(function(c) {
-                return c.c >= c.o ? '#22c55e' : '#ef4444';
-            });
-
-            ds0.type = 'bar';
-            ds0.data = bodyData;
-            ds0.label = (market.symbol || 'Market') + ' OHLC';
-            ds0.backgroundColor = bodyColors;
-            ds0.borderColor = bodyBorders;
-            ds0.borderWidth = 1;
-            ds0.borderSkipped = false;
-            ds0.barPercentage = 0.6;
-            ds0.categoryPercentage = 0.9;
-            ds0.maxBarThickness = 32;
-            ds0.fill = false;
-            ds0.tension = 0;
-            ds0.pointRadius = 0;
-            ds0.pointHoverRadius = 0;
-            ds0.pointBackgroundColor = 'transparent';
-            ds0.pointBorderColor = 'transparent';
-            ds0.order = 1;
-
-            /* Y scale must cover full high-low range — but honor user zoom.
-               When the user has interacted with zoom/pan, we leave the
-               scale alone so the view doesn't snap back on each refresh. */
-            if (!_userHasZoomed) {
-                var allHighs = candles.map(function(c) { return c.h; });
-                var allLows = candles.map(function(c) { return c.l; });
-                var yMin = Math.min.apply(null, allLows);
-                var yMax = Math.max.apply(null, allHighs);
-                var yPad = (yMax - yMin) * 0.08 || 1;
-                pnlChart.options.scales.y.min = yMin - yPad;
-                pnlChart.options.scales.y.max = yMax + yPad;
+        /* De-duplicate by timestamp (backend sometimes repeats the boundary bar) */
+        var seen = {};
+        var bars = [];
+        var volBars = [];
+        var ema9Pts = [];
+        var ema21Pts = [];
+        for (var i = 0; i < candles.length; i++) {
+            var c = candles[i];
+            var tSec = Math.floor(c.t / 1000);
+            if (seen[tSec]) continue;
+            seen[tSec] = 1;
+            bars.push({ time: tSec, open: c.o, high: c.h, low: c.l, close: c.c });
+            if (c.v && c.v > 0) {
+                volBars.push({
+                    time: tSec, value: c.v,
+                    color: c.c >= c.o ? 'rgba(34, 197, 94, 0.45)' : 'rgba(239, 68, 68, 0.45)',
+                });
             }
+            if (c.ema9 != null) ema9Pts.push({ time: tSec, value: c.ema9 });
+            if (c.ema21 != null) ema21Pts.push({ time: tSec, value: c.ema21 });
+        }
+
+        /* Toggle candle vs line mode */
+        if (chartType === 'line') {
+            if (!lineSeries) {
+                lineSeries = lwcChart.addAreaSeries({
+                    lineColor: '#22c55e',
+                    topColor: 'rgba(34, 197, 94, 0.32)',
+                    bottomColor: 'rgba(34, 197, 94, 0.0)',
+                    lineWidth: 2,
+                });
+            }
+            candleSeries.applyOptions({ visible: false });
+            lineSeries.applyOptions({ visible: true });
+            lineSeries.setData(bars.map(function(b) { return { time: b.time, value: b.close }; }));
         } else {
-            /* Line mode */
-            ds0.type = 'line';
-            ds0.data = closes;
-            ds0.label = (market.symbol || 'Market') + ' Close';
-            ds0.borderColor = '#22c55e';
-            ds0.backgroundColor = gradientGreen;
-            ds0.borderWidth = 2;
-            ds0.fill = true;
-            ds0.tension = 0.35;
-            ds0.pointRadius = candles.length <= 30 ? 2 : 0;
-            ds0.pointHoverRadius = 5;
-            ds0.pointBackgroundColor = 'transparent';
-            ds0.pointBorderColor = 'transparent';
-            ds0.pointHoverBackgroundColor = '#22c55e';
-            ds0.pointHoverBorderColor = '#fff';
-            ds0.borderSkipped = undefined;
-            ds0.barPercentage = undefined;
-            ds0.categoryPercentage = undefined;
-            ds0.maxBarThickness = undefined;
-            ds0.order = 0;
-            /* Auto Y scale for line mode (unless user has zoomed) */
-            if (!_userHasZoomed) {
-                delete pnlChart.options.scales.y.min;
-                delete pnlChart.options.scales.y.max;
-            }
+            candleSeries.applyOptions({ visible: true });
+            if (lineSeries) lineSeries.applyOptions({ visible: false });
+            candleSeries.setData(bars);
         }
 
-        pnlChart.data.labels = labels;
+        volumeSeries.setData(volBars);
+        ema9Series.setData(ema9Pts);
+        ema21Series.setData(ema21Pts);
 
-        /* Volume bars */
-        var hasVolume = volumes.some(function(v) { return v > 0; });
-        pnlChart.data.datasets[1].data = hasVolume ? volumes : [];
-        pnlChart.data.datasets[1].backgroundColor = hasVolume ? volColors : 'rgba(99, 102, 241, 0.10)';
-        pnlChart.data.datasets[1].hidden = !hasVolume;
-
-        /* ── EMA 9 & EMA 21 overlays ── */
-        var ema9Data = candles.map(function(c) { return c.ema9 !== undefined ? c.ema9 : null; });
-        var ema21Data = candles.map(function(c) { return c.ema21 !== undefined ? c.ema21 : null; });
-        var hasEMA9 = ema9Data.some(function(v) { return v !== null; });
-        var hasEMA21 = ema21Data.some(function(v) { return v !== null; });
-
-        var ds2 = pnlChart.data.datasets[2];
-        var ds3 = pnlChart.data.datasets[3];
-        if (ds2) {
-            ds2.data = hasEMA9 ? ema9Data : [];
-            ds2.hidden = !hasEMA9;
-        }
-        if (ds3) {
-            ds3.data = hasEMA21 ? ema21Data : [];
-            ds3.hidden = !hasEMA21;
+        /* Fit view only if user hasn't manually zoomed/panned */
+        if (!_userHasZoomed) {
+            try { lwcChart.timeScale().fitContent(); } catch(_e) {}
         }
 
-        /* Include EMA range in Y scale for candle mode (skip if user zoomed) */
-        if (chartType === 'candle' && !_userHasZoomed && (hasEMA9 || hasEMA21)) {
-            var emaAll = ema9Data.concat(ema21Data).filter(function(v) { return v !== null; });
-            if (emaAll.length) {
-                var emaMin = Math.min.apply(null, emaAll);
-                var emaMax = Math.max.apply(null, emaAll);
-                var curMin = pnlChart.options.scales.y.min;
-                var curMax = pnlChart.options.scales.y.max;
-                if (emaMin < curMin) pnlChart.options.scales.y.min = emaMin - (curMax - curMin) * 0.02;
-                if (emaMax > curMax) pnlChart.options.scales.y.max = emaMax + (curMax - curMin) * 0.02;
-            }
-        }
-
-        /* Sync legend dimmed state & update live values */
-        var el9 = document.getElementById('legendEma9');
-        var el21 = document.getElementById('legendEma21');
-        if (el9 && ds2) el9.classList.toggle('dimmed', ds2.hidden);
-        if (el21 && ds3) el21.classList.toggle('dimmed', ds3.hidden);
-        updateEmaLegend(candles);
-
-        var sym = market.symbol || 'BTCUSDT';
-        var ivl = market.interval || interval;
-        setChartTitle(sym + ' \u00B7 ' + ivl.toUpperCase());
-
+        setChartTitle((market.symbol || activeSymbol) + ' · ' + (market.interval || interval).toUpperCase());
         updatePriceHero(candles);
+        _updateLegend(market.symbol || activeSymbol, market.interval || interval, candles[candles.length - 1]);
 
-        if (chartNoteEl) {
-            var typeLabel = chartType === 'candle' ? 'OHLC' : 'LINE';
-            chartNoteEl.textContent = typeLabel + ' \u00B7 ' + candles.length + ' bars \u00B7 ' + escapeHtml(market.source || 'live');
-        }
-
-        /* If ds0.type changed (line <-> bar), meta.controller is stale — force
-           a full rebuild. chart.update('none') skips controller rebuild, which
-           is why candles sometimes render as lines after a mode switch. */
-        if (typeChanged) {
-            var meta0 = pnlChart.getDatasetMeta(0);
-            if (meta0) meta0.controller = undefined;
-            pnlChart.update();
-        } else {
-            pnlChart.update('none');
-        }
+        /* Re-apply position overlays (price lines move when candles reload) */
+        _applyPositionOverlays();
     }
 
     /* ── Interval Buttons ───────────────────── */
@@ -997,9 +560,8 @@
             btn.classList.add('active');
             btn.setAttribute('aria-checked', 'true');
             activeInterval = interval;
-            _forceMarketChart = true;
             _userHasZoomed = false;
-            if (pnlChart && typeof pnlChart.resetZoom === 'function') pnlChart.resetZoom('none');
+            if (lwcChart) { try { lwcChart.timeScale().fitContent(); } catch(_e) {} }
 
             /* Fetch new data */
             renderMarketSeries(interval);
@@ -1023,9 +585,8 @@
             btn.classList.add('active');
             btn.setAttribute('aria-checked', 'true');
             activeSymbol = sym;
-            _forceMarketChart = true;
             _userHasZoomed = false;
-            if (pnlChart && typeof pnlChart.resetZoom === 'function') pnlChart.resetZoom('none');
+            if (lwcChart) { try { lwcChart.timeScale().fitContent(); } catch(_e) {} }
 
             /* Re-fetch chart for new symbol */
             renderMarketSeries(activeInterval);
@@ -1145,9 +706,8 @@
             btn.classList.add('active');
             btn.setAttribute('aria-checked', 'true');
             chartType = type;
-            _forceMarketChart = true;
             _userHasZoomed = false;
-            if (pnlChart && typeof pnlChart.resetZoom === 'function') pnlChart.resetZoom('none');
+            if (lwcChart) { try { lwcChart.timeScale().fitContent(); } catch(_e) {} }
 
             /* Re-render with new type */
             renderMarketSeries(activeInterval);
@@ -1495,42 +1055,145 @@
         }
     }
 
+    /* ── History navigation ─────────────────────
+       When _chartEndTs > 0 the chart is in historical mode:
+       - live price ticks are suppressed (_liveUpdateLastCandle bails)
+       - the 30s market poll is skipped
+       - the history bar shows a yellow HIST badge and a "→ Сейчас" button
+       Switching interval/symbol/type does NOT reset history — user is still
+       browsing the same window, just at a different zoom. Clicking the live
+       button (or reset-zoom) clears _chartEndTs and resumes live polling. */
+    function _setHistoryEnd(endMs) {
+        _chartEndTs = endMs || 0;
+        var badge = document.getElementById('chartHistBadge');
+        var liveBtn = document.getElementById('chartHistLive');
+        var picker = document.getElementById('chartHistPicker');
+        if (_chartEndTs > 0) {
+            if (badge) { badge.textContent = 'HIST'; badge.className = 'chart-hist-badge chart-hist-badge-hist'; }
+            if (liveBtn) liveBtn.hidden = false;
+            if (picker) {
+                try {
+                    var d = new Date(_chartEndTs);
+                    /* datetime-local wants YYYY-MM-DDTHH:MM in *local* time */
+                    var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+                    picker.value = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+                                   'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+                } catch(_e) { /* ignore */ }
+            }
+        } else {
+            if (badge) { badge.textContent = 'LIVE'; badge.className = 'chart-hist-badge chart-hist-badge-live'; }
+            if (liveBtn) liveBtn.hidden = true;
+            if (picker) picker.value = '';
+        }
+        _userHasZoomed = false;
+        if (lwcChart) { try { lwcChart.timeScale().fitContent(); } catch(_e) {} }
+        renderMarketSeries(activeInterval);
+    }
+
+    (function initHistoryBar() {
+        var bar = document.getElementById('chartHistoryBar');
+        if (!bar) return;
+
+        bar.addEventListener('click', function(e) {
+            var btn = e.target.closest('.chart-hist-btn');
+            if (!btn) return;
+            if (btn.id === 'chartHistLive') { _setHistoryEnd(0); return; }
+            var jump = btn.getAttribute('data-hist-jump');
+            if (!jump) return;
+            /* Anchor: when already in history mode, step further back from
+               the current end; otherwise step back from now. */
+            var anchor = _chartEndTs > 0 ? _chartEndTs : Date.now();
+            var deltaMs = 0;
+            if (jump === '-1h')       deltaMs = 60 * 60 * 1000;
+            else if (jump === '-1d')  deltaMs = 24 * 60 * 60 * 1000;
+            else if (jump === '-1w')  deltaMs = 7 * 24 * 60 * 60 * 1000;
+            else if (jump === '-1mo') deltaMs = 30 * 24 * 60 * 60 * 1000;
+            if (deltaMs) _setHistoryEnd(anchor - deltaMs);
+        });
+
+        var picker = document.getElementById('chartHistPicker');
+        if (picker) {
+            picker.addEventListener('change', function() {
+                if (!picker.value) { _setHistoryEnd(0); return; }
+                var ts = Date.parse(picker.value);
+                if (!isNaN(ts)) _setHistoryEnd(ts);
+            });
+        }
+    })();
+
     /* ── Live-update last candle with fresh WS price (flicks between polls).
        Updates close and extends high/low if breached. X-axis labels stay
        the same (labeled by /api/market-chart), so this is visual-only until
        the next 30s poll rebuilds data with a new bar boundary. */
     function _liveUpdateLastCandle(price) {
-        if (!pnlChart || chartSeriesMode !== 'market') return;
-        var ohlc = window._chartOhlcData;
-        if (!ohlc || !ohlc.length) return;
-        var last = ohlc[ohlc.length - 1];
+        if (!candleSeries || chartSeriesMode !== 'market') return;
+        if (_chartEndTs > 0) return;    /* frozen historical view — don't corrupt */
+        if (!_lastCandles || !_lastCandles.length) return;
+        var last = _lastCandles[_lastCandles.length - 1];
         if (!last) return;
 
         last.c = price;
         if (price > last.h) last.h = price;
         if (price < last.l) last.l = price;
 
-        var ds0 = pnlChart.data.datasets[0];
-        var idx = ds0.data.length - 1;
-        if (idx < 0) return;
-        if (chartType === 'candle') {
-            /* Update the floating [open, close] bar for last candle */
-            ds0.data[idx] = [last.o, last.c];
-            var up = last.c >= last.o;
-            if (Array.isArray(ds0.backgroundColor)) {
-                ds0.backgroundColor[idx] = up ? 'rgba(34, 197, 94, 0.85)' : 'rgba(239, 68, 68, 0.85)';
+        var bar = {
+            time: Math.floor(last.t / 1000),
+            open: last.o, high: last.h, low: last.l, close: last.c,
+        };
+        try {
+            if (chartType === 'line' && lineSeries) {
+                lineSeries.update({ time: bar.time, value: bar.close });
+            } else {
+                candleSeries.update(bar);
             }
-            if (Array.isArray(ds0.borderColor)) {
-                ds0.borderColor[idx] = up ? '#22c55e' : '#ef4444';
-            }
-        } else {
-            ds0.data[idx] = last.c;
+        } catch (e) {
+            /* LWC throws if time < last bar time — can happen across DST or when
+               the poll refreshes to a newer bar between ticks. Silent skip. */
         }
 
-        /* Price hero + last-price label reflect live value immediately */
-        updatePriceHero(ohlc);
+        updatePriceHero(_lastCandles);
+    }
 
-        pnlChart.update('none');
+    /* ── Apply open-position SL/TP/Entry as LWC priceLines.
+       Attaches to whichever series is currently visible (candleSeries in
+       candle mode, lineSeries in line mode) — a hidden series hides its
+       price lines too. Called by renderMarketSeries after setData and by
+       fetchPositions. Removes any previous lines first for consistency. */
+    function _applyPositionOverlays() {
+        var activeSeries = (chartType === 'line' && lineSeries) ? lineSeries : candleSeries;
+        if (!activeSeries) return;
+
+        /* Clear stale lines from BOTH series so switching types doesn't leave ghosts */
+        for (var i = 0; i < _positionPriceLines.length; i++) {
+            var entry = _positionPriceLines[i];
+            try { entry.series.removePriceLine(entry.line); } catch(_e) {}
+        }
+        _positionPriceLines = [];
+
+        if (!_openPositions || !_openPositions.length) return;
+        var positions = _openPositions.filter(function(p) { return p.symbol === activeSymbol; });
+
+        positions.forEach(function(pos) {
+            var isBuy = pos.side === 'BUY' || pos.side === 'LONG';
+            var ep = pos.entry_price || 0;
+            var sl = pos.stop_loss_price || 0;
+            var tp = pos.take_profit_price || 0;
+
+            function addLine(price, color, title, style) {
+                if (!price) return;
+                try {
+                    var pl = activeSeries.createPriceLine({
+                        price: price, color: color, lineWidth: 1,
+                        lineStyle: style != null ? style : LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true, title: title,
+                    });
+                    _positionPriceLines.push({ series: activeSeries, line: pl });
+                } catch(_e) { /* ignore — price far outside visible range */ }
+            }
+            addLine(sl, '#ef4444', 'SL', LightweightCharts.LineStyle.Dashed);
+            addLine(tp, '#22c55e', 'TP', LightweightCharts.LineStyle.Dashed);
+            addLine(ep, '#6366f1', isBuy ? 'BUY' : 'SELL', LightweightCharts.LineStyle.Solid);
+        });
     }
 
     /* ──────────────────────────────────────────────────────────
@@ -1699,6 +1362,19 @@
                         + '<span class="mo-ml-dot"></span>из лога</span>';
                 }
 
+                var blockPct = Math.round(blockThr * 100);
+                var thrLabel, thrTitle;
+                if (isBlocked) {
+                    thrLabel = 'блок < ' + blockPct + '%';
+                    thrTitle = 'Ниже ' + blockPct + '% ML блокирует сделку';
+                } else if (mlRec.prob >= 0.65) {
+                    thrLabel = 'сильный ≥ 65%';
+                    thrTitle = 'Порог сильного сигнала — 65%. Порог блока — ' + blockPct + '%';
+                } else {
+                    thrLabel = 'порог ' + blockPct + '%';
+                    thrTitle = 'Порог блокировки сделки — ' + blockPct + '%';
+                }
+
                 mlHtml = ''
                     + '<div class="mo-ml ' + verdictClass + '">'
                     +   '<div class="mo-ml-head">'
@@ -1709,7 +1385,7 @@
                     +   '<div class="mo-ml-bar"><div class="mo-ml-bar-fill" style="width:' + Math.min(100, Math.max(0, pct)) + '%; background:' + barColor + ';"></div></div>'
                     +   '<div class="mo-ml-sub">'
                     +     '<span class="mo-ml-badge ' + verdictClass + '">' + verdictText + '</span>'
-                    +     '<span class="mo-ml-sep">порог ' + Math.round(blockThr * 100) + '%</span>'
+                    +     '<span class="mo-ml-sep" title="' + thrTitle + '">' + thrLabel + '</span>'
                     +     ageHtml
                     +   '</div>'
                     + '</div>';
@@ -2772,9 +2448,9 @@
         try {
             var r = await fetch('/api/positions');
             var allPositions = await r.json();
-            /* Cache full list (unfiltered) for chart overlay plugin */
+            /* Cache full list (unfiltered) for chart overlay + re-apply price lines */
             _openPositions = Array.isArray(allPositions) ? allPositions : [];
-            if (window.pnlChart) { try { window.pnlChart.update('none'); } catch(_e) {} }
+            _applyPositionOverlays();
             /* Apply symbol filter */
             var data = _posTradeFilter ? allPositions.filter(function(p) { return p.symbol === _posTradeFilter; }) : allPositions;
             var container = document.getElementById('positions-container');
@@ -2865,27 +2541,12 @@
         }
     }
 
+    /* PnL-history fallback removed in pro build — the main chart is always the
+       market chart. PnL is visible on Equity Curve below. This shim preserves
+       the call-site but just renders the current market window. */
     async function fetchPnlHistory() {
         try {
-            /* If user explicitly switched to market chart, keep it */
-            if (_forceMarketChart) {
-                await renderMarketSeries(activeInterval);
-                return;
-            }
-            var r = await fetch('/api/pnl-history');
-            var data = await r.json();
-            var noDataEl = document.getElementById('pnlNoData');
-            if (!data.length || data.length < 2) {
-                await renderMarketSeries(activeInterval);
-                return;
-            }
-            if (noDataEl) noDataEl.style.display = 'none';
-            var labels = data.map(function(d) { return d.label || d.date || ''; });
-            var values = data.map(function(d) { return d.pnl != null ? d.pnl : (d.value || 0); });
-            var isFlat = renderPnlSeries(labels, values);
-            if (isFlat) {
-                await renderMarketSeries(activeInterval);
-            }
+            await renderMarketSeries(activeInterval);
         } catch(e) {
             _logError('fetchPnlHistory', e);
         }
@@ -3367,7 +3028,13 @@
     _schedule(_statusFallbackTick,      POLL_INTERVALS_MS.status_fallback);
     _schedule(fetchPositions,           POLL_INTERVALS_MS.positions);
     _schedule(fetchTrades,              POLL_INTERVALS_MS.trades);
-    _schedule(() => renderMarketSeries(activeInterval), POLL_INTERVALS_MS.chart);
+    _schedule(function() {
+        /* Skip poll while user is browsing historical window — refreshing
+           would be a no-op (same frozen data) and would snap zoom / reset
+           pan state needlessly. */
+        if (_chartEndTs > 0) return;
+        renderMarketSeries(activeInterval);
+    }, POLL_INTERVALS_MS.chart);
     _schedule(fetchEquityCurve,         POLL_INTERVALS_MS.equity);
     _schedule(fetchStrategyPerformance, POLL_INTERVALS_MS.perf);
     _schedule(fetchNews,                POLL_INTERVALS_MS.news);
@@ -3399,10 +3066,8 @@
         var resetBtn = document.getElementById('chartResetZoomBtn');
         if (resetBtn) {
             resetBtn.addEventListener('click', function() {
-                if (window.pnlChart && typeof window.pnlChart.resetZoom === 'function') {
-                    window.pnlChart.resetZoom();
-                    _userHasZoomed = false;
-                }
+                if (lwcChart) { try { lwcChart.timeScale().fitContent(); } catch(_e) {} }
+                _userHasZoomed = false;
             });
         }
         /* Logout button in header */
@@ -3419,53 +3084,11 @@
             });
         }
 
-        /* EMA legend toggles — replaces inline onclick="toggleEmaLine(N)" */
-        var emaRow = document.getElementById('emaLegendRow');
-        if (emaRow) {
-            emaRow.addEventListener('click', function(ev) {
-                var item = ev.target.closest('[data-ema-toggle]');
-                if (!item) return;
-                var idx = parseInt(item.getAttribute('data-ema-toggle'), 10);
-                if (!isNaN(idx) && typeof window.toggleEmaLine === 'function') {
-                    window.toggleEmaLine(idx);
-                }
-            });
-        }
+        /* Chart legend toggles are wired in initLegendToggles() above. */
     })();
 
-    /* ══════════════════════════════════════════
-       Mobile hamburger sidebar (<768px)
-       ══════════════════════════════════════════ */
-    (function initMobileSidebar() {
-        var toggle = document.getElementById('mobile-menu-toggle');
-        var sidebar = document.getElementById('sidebar');
-        var backdrop = document.getElementById('mobile-sidebar-backdrop');
-        if (!toggle || !sidebar || !backdrop) return;
-
-        function openMenu() {
-            sidebar.classList.add('open');
-            backdrop.classList.add('active');
-            toggle.setAttribute('aria-expanded', 'true');
-            var firstLink = sidebar.querySelector('.sidebar-link');
-            if (firstLink) firstLink.focus();
-        }
-        function closeMenu() {
-            sidebar.classList.remove('open');
-            backdrop.classList.remove('active');
-            toggle.setAttribute('aria-expanded', 'false');
-        }
-        toggle.addEventListener('click', function() {
-            sidebar.classList.contains('open') ? closeMenu() : openMenu();
-        });
-        backdrop.addEventListener('click', closeMenu);
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape' && sidebar.classList.contains('open')) closeMenu();
-        });
-        /* Auto-close on link click (navigates away anyway) */
-        sidebar.querySelectorAll('.sidebar-link').forEach(function(link) {
-            link.addEventListener('click', closeMenu);
-        });
-    })();
+    /* Sidebar rendering and mobile-menu wiring live in /static/js/sidebar.js
+       (loaded standalone on every page). */
 
     /* ══════════════════════════════════════════
        Keyboard nav for role=radiogroup bars

@@ -27,11 +27,12 @@ Design notes:
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from monitoring.event_log import EventType, get_event_log
+from monitoring.event_log import emit_guard_tripped
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,11 @@ class DrawdownBreaker:
         self._weekly = _WindowState(name="weekly")
         self._monthly = _WindowState(name="monthly")
         self._trip_history: list[dict] = []  # for postmortem / dashboard
+        # update() is invoked from candle-close (under _trade_decision_lock)
+        # AND from the per-trade tick handler (without it). Without a mutex
+        # the two paths race on peak_equity / is_tripped and can lose a
+        # trip flag or drop a peak update. Guard the whole state block.
+        self._lock = threading.Lock()
 
     # ──────────────────────────────────────────────
     # Public API
@@ -136,89 +142,102 @@ class DrawdownBreaker:
         d_id, w_id, m_id = _utc_period_ids(now)
 
         trip_reason: Optional[str] = None
-        for state, period_id, threshold in (
-            (self._daily, d_id, self._thresholds.daily_pct),
-            (self._weekly, w_id, self._thresholds.weekly_pct),
-            (self._monthly, m_id, self._thresholds.monthly_pct),
-        ):
-            # Period rollover: reset peak and tripped flag.
-            if state.period_id != period_id:
-                state.period_id = period_id
-                state.peak_equity = current_equity
-                state.is_tripped = False
-                state.tripped_at_equity = 0.0
-                state.tripped_at_period = ""
-
-            state.current_equity = current_equity
-            if current_equity > state.peak_equity:
-                state.peak_equity = current_equity
-
-            # Hysteresis: auto-reset if recovered close enough to peak.
-            if state.is_tripped:
-                recovery_band = state.peak_equity * (1.0 - threshold * HYSTERESIS_RATIO)
-                if current_equity >= recovery_band:
-                    logger.info(
-                        "DD-BREAKER %s reset via hysteresis: equity=%.2f recovered above %.2f (peak=%.2f)",
-                        state.name, current_equity, recovery_band, state.peak_equity,
-                    )
+        # Queue trip emissions so we don't hold the lock while calling into
+        # the event bus (which takes its own locks — nested locking risk).
+        pending_trips: list[dict] = []
+        with self._lock:
+            for state, period_id, threshold in (
+                (self._daily, d_id, self._thresholds.daily_pct),
+                (self._weekly, w_id, self._thresholds.weekly_pct),
+                (self._monthly, m_id, self._thresholds.monthly_pct),
+            ):
+                if state.period_id != period_id:
+                    state.period_id = period_id
+                    state.peak_equity = current_equity
                     state.is_tripped = False
-                continue
+                    state.tripped_at_equity = 0.0
+                    state.tripped_at_period = ""
 
-            # Trip check.
-            if state.drawdown_pct >= threshold:
-                state.is_tripped = True
-                state.tripped_at_equity = current_equity
-                state.tripped_at_period = period_id
-                reason = (
-                    f"{state.name} DD {state.drawdown_pct * 100:.2f}% >= "
-                    f"{threshold * 100:.1f}% (peak {state.peak_equity:.2f} → {current_equity:.2f})"
-                )
-                self._trip_history.append({
-                    "ts": now,
-                    "window": state.name,
-                    "period": period_id,
-                    "peak": state.peak_equity,
-                    "equity": current_equity,
-                    "dd_pct": state.drawdown_pct * 100,
-                })
-                logger.critical("DD-BREAKER TRIPPED: %s", reason)
-                try:
-                    get_event_log().emit(
-                        EventType.GUARD_TRIPPED,
-                        guard="drawdown_breaker",
-                        window=state.name,
-                        period=period_id,
-                        peak_equity=round(state.peak_equity, 2),
-                        current_equity=round(current_equity, 2),
-                        dd_pct=round(state.drawdown_pct * 100, 2),
-                        threshold_pct=round(threshold * 100, 2),
+                state.current_equity = current_equity
+                if current_equity > state.peak_equity:
+                    state.peak_equity = current_equity
+
+                if state.is_tripped:
+                    recovery_band = state.peak_equity * (1.0 - threshold * HYSTERESIS_RATIO)
+                    if current_equity >= recovery_band:
+                        logger.info(
+                            "DD-BREAKER %s reset via hysteresis: equity=%.2f recovered above %.2f (peak=%.2f)",
+                            state.name, current_equity, recovery_band, state.peak_equity,
+                        )
+                        state.is_tripped = False
+                    continue
+
+                if state.drawdown_pct >= threshold:
+                    state.is_tripped = True
+                    state.tripped_at_equity = current_equity
+                    state.tripped_at_period = period_id
+                    reason = (
+                        f"{state.name} DD {state.drawdown_pct * 100:.2f}% >= "
+                        f"{threshold * 100:.1f}% (peak {state.peak_equity:.2f} → {current_equity:.2f})"
                     )
-                except Exception:
-                    pass
-                if trip_reason is None:
-                    trip_reason = reason
+                    self._trip_history.append({
+                        "ts": now,
+                        "window": state.name,
+                        "period": period_id,
+                        "peak": state.peak_equity,
+                        "equity": current_equity,
+                        "dd_pct": state.drawdown_pct * 100,
+                    })
+                    pending_trips.append({
+                        "name": state.name,
+                        "period": period_id,
+                        "peak": state.peak_equity,
+                        "equity": current_equity,
+                        "dd_pct": state.drawdown_pct * 100,
+                        "threshold_pct": threshold * 100,
+                        "reason": reason,
+                    })
+                    if trip_reason is None:
+                        trip_reason = reason
 
+        for t in pending_trips:
+            logger.critical("DD-BREAKER TRIPPED: %s", t["reason"])
+            try:
+                emit_guard_tripped(
+                    guard="drawdown_breaker",
+                    name=t["name"],
+                    period=t["period"],
+                    peak_equity=round(t["peak"], 2),
+                    current_equity=round(t["equity"], 2),
+                    dd_pct=round(t["dd_pct"], 2),
+                    threshold_pct=round(t["threshold_pct"], 2),
+                )
+            except Exception:
+                pass
         return trip_reason
 
     def allows_new_entry(self) -> bool:
         """True if no window is tripped. Call before approving any BUY signal."""
-        return not (self._daily.is_tripped or self._weekly.is_tripped or self._monthly.is_tripped)
+        with self._lock:
+            return not (self._daily.is_tripped or self._weekly.is_tripped or self._monthly.is_tripped)
 
     def active_trips(self) -> list[str]:
         """Names of currently-tripped windows (for diagnostics)."""
-        return [s.name for s in (self._daily, self._weekly, self._monthly) if s.is_tripped]
+        with self._lock:
+            return [s.name for s in (self._daily, self._weekly, self._monthly) if s.is_tripped]
 
     def force_reset(self, window: Optional[str] = None) -> None:
         """Manual reset (operator action). Without arg resets all windows."""
-        targets = (
-            (self._daily, self._weekly, self._monthly)
-            if window is None
-            else tuple(s for s in (self._daily, self._weekly, self._monthly) if s.name == window)
-        )
-        for state in targets:
-            state.is_tripped = False
-            state.tripped_at_equity = 0.0
-            state.tripped_at_period = ""
+        with self._lock:
+            targets = (
+                (self._daily, self._weekly, self._monthly)
+                if window is None
+                else tuple(s for s in (self._daily, self._weekly, self._monthly) if s.name == window)
+            )
+            for state in targets:
+                state.is_tripped = False
+                state.tripped_at_equity = 0.0
+                state.tripped_at_period = ""
         logger.warning("DD-BREAKER manual reset: %s", window or "all windows")
 
     def export_state(self) -> dict:
@@ -239,12 +258,13 @@ class DrawdownBreaker:
                 "tripped_at_equity": s.tripped_at_equity,
                 "tripped_at_period": s.tripped_at_period,
             }
-        return {
-            "daily": _w(self._daily),
-            "weekly": _w(self._weekly),
-            "monthly": _w(self._monthly),
-            "trip_history": list(self._trip_history),
-        }
+        with self._lock:
+            return {
+                "daily": _w(self._daily),
+                "weekly": _w(self._weekly),
+                "monthly": _w(self._monthly),
+                "trip_history": list(self._trip_history),
+            }
 
     def restore_state(self, blob: dict) -> None:
         """Restore state previously produced by ``export_state``.
@@ -254,47 +274,52 @@ class DrawdownBreaker:
         reset any window whose period_id no longer matches current time.
         """
         try:
-            for name, state in (
-                ("daily", self._daily),
-                ("weekly", self._weekly),
-                ("monthly", self._monthly),
-            ):
-                w = blob.get(name) or {}
-                state.period_id = str(w.get("period_id", ""))
-                state.peak_equity = float(w.get("peak_equity", 0.0))
-                state.current_equity = float(w.get("current_equity", 0.0))
-                state.is_tripped = bool(w.get("is_tripped", False))
-                state.tripped_at_equity = float(w.get("tripped_at_equity", 0.0))
-                state.tripped_at_period = str(w.get("tripped_at_period", ""))
-            hist = blob.get("trip_history")
-            if isinstance(hist, list):
-                self._trip_history = list(hist)
+            with self._lock:
+                for name, state in (
+                    ("daily", self._daily),
+                    ("weekly", self._weekly),
+                    ("monthly", self._monthly),
+                ):
+                    w = blob.get(name) or {}
+                    state.period_id = str(w.get("period_id", ""))
+                    state.peak_equity = float(w.get("peak_equity", 0.0))
+                    state.current_equity = float(w.get("current_equity", 0.0))
+                    state.is_tripped = bool(w.get("is_tripped", False))
+                    state.tripped_at_equity = float(w.get("tripped_at_equity", 0.0))
+                    state.tripped_at_period = str(w.get("tripped_at_period", ""))
+                hist = blob.get("trip_history")
+                if isinstance(hist, list):
+                    self._trip_history = list(hist)
+                _d_t, _w_t, _m_t = self._daily.is_tripped, self._weekly.is_tripped, self._monthly.is_tripped
             logger.info(
                 "DD-BREAKER state restored: daily_tripped=%s weekly_tripped=%s monthly_tripped=%s",
-                self._daily.is_tripped, self._weekly.is_tripped, self._monthly.is_tripped,
+                _d_t, _w_t, _m_t,
             )
         except Exception as exc:
             logger.warning("DD-BREAKER restore_state failed (%s) — starting fresh", exc)
 
     def snapshot(self) -> dict:
         """Diagnostic snapshot for dashboard / Telegram."""
-        return {
-            "allows_entry": self.allows_new_entry(),
-            "active_trips": self.active_trips(),
-            "windows": {
-                s.name: {
-                    "period": s.period_id,
-                    "peak": round(s.peak_equity, 2),
-                    "current": round(s.current_equity, 2),
-                    "dd_pct": round(s.drawdown_pct * 100, 2),
-                    "is_tripped": s.is_tripped,
-                }
-                for s in (self._daily, self._weekly, self._monthly)
-            },
-            "thresholds": {
-                "daily_pct": self._thresholds.daily_pct * 100,
-                "weekly_pct": self._thresholds.weekly_pct * 100,
-                "monthly_pct": self._thresholds.monthly_pct * 100,
-            },
-            "trip_history_last_5": self._trip_history[-5:],
-        }
+        with self._lock:
+            allows = not (self._daily.is_tripped or self._weekly.is_tripped or self._monthly.is_tripped)
+            active = [s.name for s in (self._daily, self._weekly, self._monthly) if s.is_tripped]
+            return {
+                "allows_entry": allows,
+                "active_trips": active,
+                "windows": {
+                    s.name: {
+                        "period": s.period_id,
+                        "peak": round(s.peak_equity, 2),
+                        "current": round(s.current_equity, 2),
+                        "dd_pct": round(s.drawdown_pct * 100, 2),
+                        "is_tripped": s.is_tripped,
+                    }
+                    for s in (self._daily, self._weekly, self._monthly)
+                },
+                "thresholds": {
+                    "daily_pct": self._thresholds.daily_pct * 100,
+                    "weekly_pct": self._thresholds.weekly_pct * 100,
+                    "monthly_pct": self._thresholds.monthly_pct * 100,
+                },
+                "trip_history_last_5": self._trip_history[-5:],
+            }

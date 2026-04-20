@@ -44,3 +44,15 @@ class BaseExecutor(ABC):
         if quantity <= 0 or price <= 0:
             return 0.0
         return quantity * price * self.commission_pct / 100
+
+    async def cancel_all_open_orders(self, symbols: list[str]) -> int:
+        """Cancel all protective/pending orders for the given symbols.
+
+        Default no-op suits paper trading. Live executor overrides with a
+        real Binance call. Returns the number of cancellations attempted.
+        """
+        return 0
+
+    async def reconcile_with_exchange(self, symbols: list[str]) -> dict:
+        """Return exchange state snapshot for each symbol. No-op for paper."""
+        return {}

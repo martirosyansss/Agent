@@ -57,10 +57,103 @@ def test_emit_rejection_canonical_shape(_fresh_event_log: EventLog) -> None:
     assert record["symbol"] == "BTCUSDT"
     assert record["direction"] == "BUY"
     assert record["volume_ratio"] == 0.20
+    # Every event carries the schema version — downstream consumers can
+    # branch on this when the format changes in a non-additive way.
+    assert record["schema_version"] >= 1
     # Record is appended to the recent-buffer as well.
     recent = _fresh_event_log.recent_events(type_filter=EventType.SIGNAL_REJECTED)
     assert len(recent) == 1
     assert recent[0]["gate"] == "liquidity_gate"
+
+
+def test_trace_id_propagates_via_context_var(_fresh_event_log: EventLog) -> None:
+    """A trace_context block stamps every event emitted inside it with
+    the same trace_id — so signal → risk → fill → close-out can be
+    reconstructed by ``GROUP BY trace_id`` in the dashboard."""
+    from monitoring.event_log import get_trace_id, trace_context
+
+    assert get_trace_id() is None  # outside context: no implicit id
+    with trace_context() as tid:
+        assert tid == get_trace_id()
+        emit_rejection(gate="g", reason="r")
+        emit_component_error("c", "r", exc=ValueError())
+    assert get_trace_id() is None  # context restored on exit
+
+    events = _fresh_event_log.recent_events()
+    # Both events emitted inside the context carry the same trace_id.
+    assert {e.get("trace_id") for e in events} == {tid}
+
+
+def test_explicit_trace_id_overrides_context(_fresh_event_log: EventLog) -> None:
+    from monitoring.event_log import trace_context
+    with trace_context("ctx-id"):
+        rec = emit_rejection(gate="g", reason="r", trace_id="explicit-id")
+    assert rec["trace_id"] == "explicit-id"
+
+
+def test_subscriber_receives_emits(_fresh_event_log: EventLog) -> None:
+    """The subscribe() API delivers each emitted record to registered
+    callbacks. Backbone for Telegram alerter, log shipper, /metrics counters."""
+    received: list[dict] = []
+    unsubscribe = _fresh_event_log.subscribe(lambda r: received.append(r))
+    emit_rejection(gate="g1", reason="r1")
+    emit_component_error("c1", "r2", exc=ValueError())
+    assert len(received) == 2
+    types = {r["type"] for r in received}
+    assert EventType.SIGNAL_REJECTED in types
+    assert EventType.COMPONENT_ERROR in types
+
+    # Unsubscribe stops further deliveries.
+    unsubscribe()
+    emit_rejection(gate="g2", reason="r3")
+    assert len(received) == 2  # unchanged
+
+
+def test_multi_process_safe_writes_serialise(tmp_path) -> None:
+    """With ``multi_process_safe=True`` two EventLog instances writing to
+    the same file produce well-formed JSONL — no interleaved bytes mid-line.
+    Simulates two processes (we use threads here for portability — the
+    file-lock is the same code path)."""
+    import threading as _threading
+    log_path = tmp_path / "events.jsonl"
+    log_a = EventLog(path=log_path, multi_process_safe=True)
+    log_b = EventLog(path=log_path, multi_process_safe=True)
+
+    def writer(log, tag, n):
+        for i in range(n):
+            log.emit("test_event", tag=tag, idx=i, payload="x" * 200)
+
+    t1 = _threading.Thread(target=writer, args=(log_a, "A", 50))
+    t2 = _threading.Thread(target=writer, args=(log_b, "B", 50))
+    t1.start(); t2.start()
+    t1.join(); t2.join()
+
+    # Every line in events.jsonl must be valid JSON. If file-locking
+    # failed, we'd see truncated/interleaved lines that fail to parse.
+    import json as _json
+    lines = log_path.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 100
+    for line in lines:
+        rec = _json.loads(line)
+        assert rec["type"] == "test_event"
+
+
+def test_subscriber_exception_does_not_break_emit(_fresh_event_log: EventLog) -> None:
+    """A misbehaving subscriber must not block the EventLog. The
+    emit() call still returns the record and other subscribers fire."""
+    good_calls: list[dict] = []
+
+    def bad(_record: dict) -> None:
+        raise RuntimeError("subscriber broken")
+
+    def good(record: dict) -> None:
+        good_calls.append(record)
+
+    _fresh_event_log.subscribe(bad)
+    _fresh_event_log.subscribe(good)
+    rec = emit_rejection(gate="g", reason="r")
+    assert rec["type"] == EventType.SIGNAL_REJECTED
+    assert len(good_calls) == 1
 
 
 def test_emit_rejection_omits_none_optional_fields(_fresh_event_log: EventLog) -> None:

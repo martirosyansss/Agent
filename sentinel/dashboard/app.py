@@ -129,6 +129,13 @@ class Dashboard:
         self._app = None
         self._server = None
         self._ws_clients: list[Any] = []
+        # Unsubscribe handle for the event_log bridge (set in start(), cleared
+        # in stop()) so the bridge doesn't leak across restarts.
+        self._events_unsub: Optional[Callable[[], None]] = None
+        # Event loop captured at start() time — required to schedule broadcasts
+        # from the EventLog subscriber callback, which runs on whatever thread
+        # emitted the event (often the trading loop, not the dashboard loop).
+        self._broadcast_loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Callbacks для управления (устанавливаются из main.py)
         self.on_stop: Optional[Callable[[], Coroutine]] = None
@@ -1520,6 +1527,145 @@ class Dashboard:
             from fastapi.responses import PlainTextResponse
             return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
+        @app.get("/api/strategy/recent-decisions")
+        async def strategy_recent_decisions(limit: int = 50, window_hours: float = 6.0):
+            """Recent strategy outputs with full reasoning — live view for the dashboard.
+
+            Returns one row per signal the strategy produced, correlated with the
+            risk pipeline's verdict (if it ran). Each row carries:
+
+            - strategy name, symbol, direction, confidence
+            - the strategy's own ``reason`` (why it fired)
+            - ``feature_snapshot`` — the indicator values at decision time
+            - ``risk_outcome`` — approved / rejected / pending (risk evaluation lagging)
+            - ``gates`` — every risk gate's verdict with reason + latency, so the
+              UI can show "strategy wanted X, gate Y blocked it with Z reason".
+
+            Source of truth: ``logs/events.jsonl``. We read the tail and merge
+            ``strategy_decision`` events with matching ``signal_decision`` events
+            by ``signal_id``. When no match exists, the row still shows what the
+            strategy wanted — risk just hasn't evaluated it yet.
+            """
+            limit = max(1, min(int(limit), 500))
+            window_hours = max(0.25, min(float(window_hours), 168.0))
+
+            import os as _os
+            env_path = _os.environ.get("SENTINEL_EVENTS_LOG_PATH", "").strip()
+            if env_path:
+                events_path = pathlib.Path(env_path).resolve()
+            else:
+                events_path = (
+                    pathlib.Path(__file__).parent.parent / "logs" / "events.jsonl"
+                ).resolve()
+
+            now_ms = int(time.time() * 1000)
+            cutoff_ms = now_ms - int(window_hours * 3600 * 1000)
+
+            # Tail-read — bounded by ``max_scan`` so a huge archive doesn't block
+            # the request. 5× the requested ``limit`` is enough to absorb any
+            # interleaving of unrelated events in the tail without missing hits.
+            max_scan = max(2000, limit * 20)
+
+            def _read_tail(path: pathlib.Path, n_lines: int) -> list[dict]:
+                if not path.exists() or not path.is_file():
+                    return []
+                try:
+                    size = path.stat().st_size
+                    if size == 0:
+                        return []
+                    block = 64 * 1024
+                    data = b""
+                    pos = size
+                    with path.open("rb") as fh:
+                        while pos > 0 and data.count(b"\n") <= n_lines:
+                            read_size = min(block, pos)
+                            pos -= read_size
+                            fh.seek(pos)
+                            data = fh.read(read_size) + data
+                    text = data.decode("utf-8", errors="replace")
+                    out: list[dict] = []
+                    for ln in text.splitlines()[-n_lines:]:
+                        ln = ln.strip()
+                        if not ln:
+                            continue
+                        try:
+                            out.append(json.loads(ln))
+                        except (ValueError, TypeError):
+                            continue
+                    return out
+                except OSError as exc:
+                    logger.warning("recent-decisions read_tail failed: %s", exc)
+                    return []
+
+            events = _read_tail(events_path, max_scan)
+            events = [e for e in events if int(e.get("ts", 0)) >= cutoff_ms]
+
+            # Merge strategy_decision (pre-risk verdict + reason) with
+            # signal_decision (risk pipeline audit) on signal_id. Keyed by
+            # signal_id so the most-recent pair wins on duplicates.
+            strategy_by_id: dict[str, dict] = {}
+            decision_by_id: dict[str, dict] = {}
+            for ev in events:
+                t = ev.get("type")
+                sid = str(ev.get("signal_id") or "")
+                if not sid:
+                    continue
+                if t == "strategy_decision":
+                    strategy_by_id[sid] = ev
+                elif t == "signal_decision":
+                    decision_by_id[sid] = ev
+
+            merged: list[dict] = []
+            all_ids = set(strategy_by_id) | set(decision_by_id)
+            for sid in all_ids:
+                strat_ev = strategy_by_id.get(sid)
+                dec_ev = decision_by_id.get(sid)
+                # Timestamp: prefer the earlier strategy_decision ts (that's when
+                # the decision was actually made). Fall back to signal_decision.
+                ts = (strat_ev or dec_ev or {}).get("ts", 0)
+                if strat_ev and dec_ev:
+                    ts = min(strat_ev.get("ts", ts), dec_ev.get("ts", ts))
+                row = {
+                    "ts": ts,
+                    "signal_id": sid,
+                    "symbol": (strat_ev or dec_ev).get("symbol", ""),
+                    "strategy": (strat_ev or dec_ev).get("strategy", ""),
+                    "direction": (strat_ev or dec_ev).get("direction", ""),
+                    "confidence": (strat_ev or dec_ev).get("confidence", 0.0),
+                }
+                if strat_ev is not None:
+                    row["strategy_reason"] = strat_ev.get("reason", "")
+                    row["suggested_quantity"] = strat_ev.get("suggested_quantity", 0.0)
+                    row["stop_loss"] = strat_ev.get("stop_loss", 0.0)
+                    row["take_profit"] = strat_ev.get("take_profit", 0.0)
+                    row["feature_snapshot"] = strat_ev.get("feature_snapshot", {})
+                else:
+                    row["strategy_reason"] = ""
+                if dec_ev is not None:
+                    row["risk_outcome"] = dec_ev.get("final_outcome", "")
+                    row["risk_final_reason"] = dec_ev.get("final_reason", "")
+                    row["gates"] = dec_ev.get("gates", [])
+                    # Risk's feature snapshot is richer (taken at evaluate_with_trace
+                    # time) — prefer it over the strategy's pre-risk snapshot.
+                    if dec_ev.get("feature_snapshot"):
+                        row["feature_snapshot"] = dec_ev["feature_snapshot"]
+                else:
+                    row["risk_outcome"] = "pending"
+                    row["risk_final_reason"] = ""
+                    row["gates"] = []
+                merged.append(row)
+
+            merged.sort(key=lambda r: r.get("ts", 0), reverse=True)
+            merged = merged[:limit]
+
+            return JSONResponse(content={
+                "decisions": merged,
+                "events_scanned": len(events),
+                "events_path_exists": events_path.exists(),
+                "window_hours": window_hours,
+                "server_ts": now_ms,
+            })
+
         @app.get("/api/config")
         async def config_snapshot():
             return JSONResponse(content=self._build_config_payload())
@@ -1787,8 +1933,48 @@ class Dashboard:
         logger.info("Dashboard starting on http://localhost:%d", self._port)
         asyncio.create_task(self._server.serve())
 
+        # Live event bridge: forward strategy_decision / signal_decision events
+        # to WS clients so the "Strategy Decisions" tab updates in real time
+        # without polling. The EventLog subscriber runs on whichever thread
+        # emits — we schedule the broadcast on this loop via run_coroutine_threadsafe.
+        self._broadcast_loop = asyncio.get_running_loop()
+        try:
+            from monitoring.event_log import get_event_log
+            self._events_unsub = get_event_log().subscribe(self._on_event_log_record)
+        except Exception as exc:
+            logger.warning("Dashboard event_log bridge setup failed: %s", exc)
+
+    def _on_event_log_record(self, record: dict) -> None:
+        """EventLog subscriber — forwards decision events to WS clients.
+
+        Runs inside the EventLog lock (on arbitrary threads), so we must
+        return quickly: schedule the async broadcast on the dashboard's
+        loop and exit. Any errors are swallowed — telemetry fan-out must
+        not break the main pipeline.
+        """
+        try:
+            ev_type = record.get("type")
+            if ev_type not in ("strategy_decision", "signal_decision"):
+                return
+            loop = self._broadcast_loop
+            if loop is None or loop.is_closed():
+                return
+            asyncio.run_coroutine_threadsafe(
+                self.broadcast("decision_event", record),
+                loop,
+            )
+        except Exception:
+            pass
+
     async def stop(self) -> None:
         """Остановка dashboard."""
+        if self._events_unsub is not None:
+            try:
+                self._events_unsub()
+            except Exception:
+                pass
+            self._events_unsub = None
+        self._broadcast_loop = None
         if self._server:
             self._server.should_exit = True
             logger.info("Dashboard stopped")

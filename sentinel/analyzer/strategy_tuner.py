@@ -141,6 +141,56 @@ class StrategyTuner:
 
         return self._run_study("mean_reversion", objective)
 
+    def tune_grid(
+        self,
+        candles_1h: list[Candle],
+        candles_4h: list[Candle],
+        candles_1d: list[Candle],
+        symbol: str,
+    ) -> TuneResult:
+        """Tune Grid Trading strategy."""
+        from strategy.grid_trading import GridTrading, GridConfig
+
+        def objective(trial: optuna.Trial) -> float:
+            cfg = GridConfig(
+                num_grids=trial.suggest_int("num_grids", 4, 12),
+                min_profit_pct=trial.suggest_float("min_profit_pct", 0.5, 3.0, step=0.1),
+                max_loss_pct=trial.suggest_float("max_loss_pct", 2.0, 8.0, step=0.5),
+                trailing_activate_pct=trial.suggest_float("trailing_activate_pct", 0.5, 3.0, step=0.1),
+                trailing_stop_pct=trial.suggest_float("trailing_stop_pct", 0.2, 1.5, step=0.1),
+                max_hold_hours=trial.suggest_int("max_hold_hours", 12, 96),
+                min_confidence=trial.suggest_float("min_confidence", 0.55, 0.85, step=0.05),
+                min_volume_ratio=trial.suggest_float("min_volume_ratio", 0.5, 1.5, step=0.1),
+                rebuild_vol_change_pct=trial.suggest_float("rebuild_vol_change_pct", 25, 100, step=5),
+            )
+            return self._evaluate(GridTrading(config=cfg), candles_1h, candles_4h, candles_1d, symbol)
+
+        return self._run_study("grid_trading", objective)
+
+    def tune_dca(
+        self,
+        candles_1h: list[Candle],
+        candles_4h: list[Candle],
+        candles_1d: list[Candle],
+        symbol: str,
+    ) -> TuneResult:
+        """Tune DCA Bot strategy."""
+        from strategy.dca_bot import DCABot, DCAConfig
+
+        def objective(trial: optuna.Trial) -> float:
+            cfg = DCAConfig(
+                interval_hours=trial.suggest_int("interval_hours", 6, 72),
+                max_daily_buys=trial.suggest_int("max_daily_buys", 1, 5),
+                stop_drawdown_pct=trial.suggest_float("stop_drawdown_pct", 8.0, 25.0, step=1.0),
+                take_profit_pct=trial.suggest_float("take_profit_pct", 4.0, 15.0, step=0.5),
+                trailing_activate_pct=trial.suggest_float("trailing_activate_pct", 2.0, 8.0, step=0.5),
+                trailing_stop_pct=trial.suggest_float("trailing_stop_pct", 1.0, 5.0, step=0.5),
+                min_confidence=trial.suggest_float("min_confidence", 0.55, 0.85, step=0.05),
+            )
+            return self._evaluate(DCABot(config=cfg), candles_1h, candles_4h, candles_1d, symbol)
+
+        return self._run_study("dca_bot", objective)
+
     def tune_macd_divergence(
         self,
         candles_1h: list[Candle],

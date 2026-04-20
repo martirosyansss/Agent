@@ -128,8 +128,12 @@ class MeanReversion(BaseStrategy):
             return None
         if features.ema_50 > 0 and features.close < features.ema_50 and features.adx > 30:
             return None
+        # Falling-knife guard: -20 был слишком лаксовый — пропускал кейсы вроде
+        # ETH 20.04 (RSI=22, dmi=-12, цена ниже bb_lower). При сильном
+        # перевесе −DI капитуляция продолжается, mean-reversion entry =
+        # ловля ножа.
         dmi_spread = getattr(features, 'dmi_spread', None)
-        if dmi_spread is not None and dmi_spread < -20:
+        if dmi_spread is not None and dmi_spread < -10:
             return None
 
         # RSI divergence check: if RSI keeps making lower lows without any bounce,

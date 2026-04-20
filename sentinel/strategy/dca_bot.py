@@ -172,7 +172,14 @@ class DCABot(BaseStrategy):
             return None
 
         multiplier = self._get_dip_multiplier(features)
-        news_delta, news_reason = news_confidence_adjustment(features, direction="buy")
+        # DCA — averaging-into-dips (контртрендовая по духу). Sizing-блок
+        # ниже уже работает контртрендово: bullish news ⇒ 0.7×, bearish ⇒
+        # 1.3×. Confidence должен следовать той же логике, иначе бычья
+        # новость одновременно повышает уверенность входа и режет размер
+        # сделки — внутреннее противоречие.
+        news_delta, news_reason = news_confidence_adjustment(
+            features, direction="buy", strategy_type="mean_reversion",
+        )
         dca_confidence = 0.80 + news_delta
 
         regime = getattr(features, 'market_regime', 'unknown')

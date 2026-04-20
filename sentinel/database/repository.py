@@ -123,15 +123,29 @@ class Repository:
         interval: str,
         limit: int = 500,
         since_ts: int = 0,
+        before_ts: int = 0,
     ) -> list[dict]:
         """Получить свечи, отсортированные по времени (старые → новые).
         Возвращает последние `limit` свечей (не первые), отсортированные ASC.
+
+        `since_ts` — нижняя граница (timestamp >= since_ts), по умолчанию без ограничения.
+        `before_ts` — верхняя граница для исторической пагинации: если > 0, берутся
+        последние `limit` свечей ≤ before_ts. Используется UI dashboard'а для
+        скролла назад во времени (date-picker / «← день, неделя, месяц»).
         """
-        rows = self._db.fetchall(
-            "SELECT * FROM (SELECT * FROM candles WHERE symbol = ? AND interval = ? "
-            "AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC",
-            (symbol, interval, since_ts, limit),
-        )
+        if before_ts and before_ts > 0:
+            rows = self._db.fetchall(
+                "SELECT * FROM (SELECT * FROM candles WHERE symbol = ? AND interval = ? "
+                "AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT ?) "
+                "ORDER BY timestamp ASC",
+                (symbol, interval, since_ts, before_ts, limit),
+            )
+        else:
+            rows = self._db.fetchall(
+                "SELECT * FROM (SELECT * FROM candles WHERE symbol = ? AND interval = ? "
+                "AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC",
+                (symbol, interval, since_ts, limit),
+            )
         return [dict(r) for r in rows]
 
     def get_latest_candle(self, symbol: str, interval: str) -> dict | None:
@@ -228,6 +242,63 @@ class Repository:
     # ==================================================================
     # POSITIONS
     # ==================================================================
+
+    def insert_order_and_position(self, o: Order, p: Position) -> tuple[int, int]:
+        """Insert order + open position atomically.
+
+        Uses a single SQLite transaction (no intermediate commit) so a crash
+        or exception between the two writes cannot leave the database with
+        an order but no matching position. On error, rolls back both.
+        Returns ``(order_id, position_id)``.
+        """
+        conn = self._db.conn
+        with self._db._lock:  # noqa: SLF001 — atomic multi-stmt block
+            try:
+                order_cur = conn.execute(
+                    "INSERT INTO orders (timestamp, symbol, side, order_type, quantity, price, "
+                    "status, exchange_order_id, fill_price, fill_quantity, commission, is_paper) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        o.timestamp, o.symbol, o.side.value, o.order_type.value,
+                        o.quantity, o.price, o.status.value, o.exchange_order_id,
+                        o.fill_price, o.fill_quantity, o.commission, int(o.is_paper),
+                    ),
+                )
+                order_id = order_cur.lastrowid
+
+                existing = conn.execute(
+                    "SELECT id FROM positions WHERE symbol = ? AND status = 'OPEN'",
+                    (p.symbol,),
+                ).fetchone()
+                if existing:
+                    log.warning(
+                        "Duplicate OPEN position for {} — marking stale id={}",
+                        p.symbol, existing["id"],
+                    )
+                    conn.execute(
+                        "UPDATE positions SET status = 'STALE' WHERE id = ?",
+                        (existing["id"],),
+                    )
+
+                pos_cur = conn.execute(
+                    "INSERT INTO positions (position_id, symbol, side, entry_price, quantity, "
+                    "current_price, unrealized_pnl, realized_pnl, stop_loss_price, take_profit_price, "
+                    "strategy_name, signal_id, signal_reason, status, opened_at, is_paper) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        p.position_id, p.symbol, p.side, p.entry_price, p.quantity,
+                        p.current_price, p.unrealized_pnl, p.realized_pnl,
+                        p.stop_loss_price, p.take_profit_price,
+                        p.strategy_name, p.signal_id, p.signal_reason,
+                        p.status.value, p.opened_at, int(p.is_paper),
+                    ),
+                )
+                position_id = pos_cur.lastrowid
+                conn.commit()
+                return order_id, position_id
+            except Exception:
+                conn.rollback()
+                raise
 
     def insert_position(self, p: Position) -> int:
         # Guard: prevent duplicate OPEN positions for the same symbol

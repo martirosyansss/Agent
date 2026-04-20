@@ -37,7 +37,7 @@ from typing import Optional
 import aiohttp
 import feedparser
 
-from monitoring.event_log import emit_component_error, traced_component
+from monitoring.event_log import traced_component
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +210,17 @@ class NewsCollector:
     COINGECKO_TRENDING_URL = "https://api.coingecko.com/api/v3/search/trending"
     GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
     OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+    # Free-tier OpenRouter models tried in order. If upstream rate-limits the
+    # first one (llama-3.3 has been flaky on its free tier), we fall through to
+    # the next provider. Keeping the list short avoids N serial calls per batch
+    # when everything is genuinely down.
+    OPENROUTER_FALLBACK_MODELS: tuple[str, ...] = (
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "minimax/minimax-m2.5:free",
+    )
 
     # Коэффициент доверия источника (0.5 = низкий, 1.0 = высокий)
     SOURCE_TRUST: dict[str, float] = {
@@ -566,17 +577,20 @@ Respond ONLY with a JSON array. No markdown, no text outside JSON."""
         elif groq_rate_limited:
             logger.debug("Groq daily limit active, skipping until %.0f", self._groq_disabled_until)
 
-        # OpenRouter fallback
+        # OpenRouter fallback — try each free model until one responds. Upstream
+        # rate-limits on the primary (llama-3.3) are common, so we keep going
+        # down the list before giving up on this batch.
         if self._openrouter_available:
-            data = await self._call_llm_api(
-                url=self.OPENROUTER_API_URL,
-                api_key=self._openrouter_api_key,
-                model="meta-llama/llama-3.3-70b-instruct:free",
-                user_msg=user_msg,
-                provider="OpenRouter",
-            )
-            if data is not None:
-                return self._apply_llm_results(data, items)
+            for _or_model in self.OPENROUTER_FALLBACK_MODELS:
+                data = await self._call_llm_api(
+                    url=self.OPENROUTER_API_URL,
+                    api_key=self._openrouter_api_key,
+                    model=_or_model,
+                    user_msg=user_msg,
+                    provider=f"OpenRouter[{_or_model}]",
+                )
+                if data is not None:
+                    return self._apply_llm_results(data, items)
 
         # Оба провалились
         self._llm_failures += 1

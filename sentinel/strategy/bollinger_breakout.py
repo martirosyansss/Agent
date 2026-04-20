@@ -142,12 +142,13 @@ class BollingerBreakout(BaseStrategy):
             else:
                 self._bars_inside_bands[sym] = 0
 
-            if self._bars_inside_bands.get(sym, 0) >= 2 and pnl_pct < cfg.take_profit_pct * 0.5:
+            bars_inside = self._bars_inside_bands.get(sym, 0)
+            if bars_inside >= 2 and pnl_pct < cfg.take_profit_pct * 0.5:
                 self._cleanup(sym)
                 return Signal(
                     timestamp=now_ms, symbol=sym, direction=Direction.SELL,
                     confidence=0.72, strategy_name=self.NAME,
-                    reason=f"BB failed breakout: {self._bars_inside_bands.get(sym, 0)} bars inside bands, pnl={pnl_pct:+.1f}%",
+                    reason=f"BB failed breakout: {bars_inside} bars inside bands, pnl={pnl_pct:+.1f}%",
                     features=features,
                 )
 

@@ -17,6 +17,9 @@ EVENT_RISK_STATE_CHANGED = "risk_state_changed"
 EVENT_CIRCUIT_BREAKER_TRIGGERED = "circuit_breaker_triggered"
 EVENT_HEARTBEAT = "heartbeat"
 EVENT_EMERGENCY_STOP = "emergency_stop"
+# Raised by executor when an exchange interaction leaves the system in a
+# degraded state (unprotected fill, orphan recovery). Main halts trading.
+EVENT_EXECUTION_DEGRADED = "execution_degraded"
 
 # === Таймфреймы ===
 TIMEFRAME_1M = "1m"

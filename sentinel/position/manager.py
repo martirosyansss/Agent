@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -28,7 +29,11 @@ from core.models import (
     PositionStatus,
     Signal,
 )
-from monitoring.event_log import emit_component_error
+from monitoring.event_log import (
+    emit_component_error,
+    emit_position_closed,
+    emit_position_opened,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +66,13 @@ class PositionManager:
         )
         self._max_open_positions = max_open_positions
         self._lock = asyncio.Lock()  # Protects position open/close operations
+        # Sync lock for read snapshots of _positions. Async _lock is the
+        # writer-side serialiser; this one makes ``list(self._positions.values())``
+        # safe against a concurrent mutation in another thread (e.g. report
+        # generation via ``asyncio.to_thread`` reading positions while the
+        # event loop writes one). Without it, dict iteration can raise
+        # "dictionary changed size during iteration".
+        self._snapshot_lock = threading.Lock()
         self._positions: dict[str, Position] = {}  # symbol → Position
         self._sl_tp: dict[str, tuple[float, float]] = {}  # symbol → (stop_loss, take_profit)
         self._trailing: dict[str, tuple[float, float, float]] = {}  # symbol → (activate_pct, trail_pct, max_price)
@@ -95,11 +107,13 @@ class PositionManager:
 
     @property
     def open_positions(self) -> list[Position]:
-        return list(self._positions.values())
+        with self._snapshot_lock:
+            return list(self._positions.values())
 
     @property
     def open_positions_count(self) -> int:
-        return len(self._positions)
+        with self._snapshot_lock:
+            return len(self._positions)
 
     def has_position(self, symbol: str) -> bool:
         return symbol in self._positions
@@ -109,7 +123,8 @@ class PositionManager:
 
     @property
     def total_unrealized_pnl(self) -> float:
-        return sum(p.unrealized_pnl for p in self._positions.values())
+        with self._snapshot_lock:
+            return sum(p.unrealized_pnl for p in self._positions.values())
 
     @property
     def total_realized_pnl(self) -> float:
@@ -125,7 +140,8 @@ class PositionManager:
 
     @property
     def total_exposure_usd(self) -> float:
-        return sum(p.quantity * p.current_price for p in self._positions.values())
+        with self._snapshot_lock:
+            return sum(p.quantity * p.current_price for p in self._positions.values())
 
     @property
     def balance(self) -> float:
@@ -267,11 +283,24 @@ class PositionManager:
             # Сохранить SL/TP
             self._sl_tp[order.symbol] = (effective_stop_loss, effective_take_profit)
 
-            self._positions[order.symbol] = position
+            with self._snapshot_lock:
+                self._positions[order.symbol] = position
             self._record_equity_snapshot()
             logger.info(
                 "Position opened: %s @ %.2f qty=%.6f SL=%.2f TP=%.2f",
                 order.symbol, fill_price, fill_qty, effective_stop_loss, effective_take_profit,
+            )
+
+            emit_position_opened(
+                order.symbol,
+                entry_price=fill_price,
+                quantity=fill_qty,
+                strategy=order.strategy_name,
+                signal_id=order.signal_id,
+                stop_loss=effective_stop_loss,
+                take_profit=effective_take_profit,
+                is_paper=order.is_paper,
+                exchange_order_id=order.exchange_order_id,
             )
 
             await self._event_bus.emit(EVENT_POSITION_OPENED, position)
@@ -340,7 +369,8 @@ class PositionManager:
                 self._losses_today += 1
 
             # Переместить в закрытые
-            del self._positions[order.symbol]
+            with self._snapshot_lock:
+                del self._positions[order.symbol]
             self._sl_tp.pop(order.symbol, None)
             self._trailing.pop(order.symbol, None)
             self._tp_levels.pop(order.symbol, None)
@@ -351,6 +381,27 @@ class PositionManager:
             logger.info(
                 "Position closed: %s @ %.2f PnL=%.2f",
                 order.symbol, fill_price, realized_pnl,
+            )
+
+            _opened_ts = 0
+            try:
+                _opened_ts = int(position.opened_at) if position.opened_at else 0
+            except (TypeError, ValueError):
+                _opened_ts = 0
+            _closed_ts = int(position.closed_at) if position.closed_at else 0
+            _hold_ms = (_closed_ts - _opened_ts) if _opened_ts and _closed_ts else None
+            emit_position_closed(
+                order.symbol,
+                entry_price=position.entry_price,
+                exit_price=fill_price,
+                quantity=fill_qty,
+                realized_pnl=position.realized_pnl,
+                strategy=position.strategy_name,
+                signal_id=position.signal_id,
+                hold_ms=_hold_ms,
+                exit_reason=order.signal_reason or "",
+                is_paper=order.is_paper,
+                exchange_order_id=order.exchange_order_id,
             )
 
             await self._event_bus.emit(EVENT_POSITION_CLOSED, position)
@@ -749,13 +800,34 @@ class PositionManager:
         position.status = PositionStatus.CLOSED
         position.closed_at = str(int(time.time() * 1000))
         position.close_reason = order.signal_reason or "partial_close_dust"
-        del self._positions[position.symbol]
+        with self._snapshot_lock:
+            del self._positions[position.symbol]
         self._sl_tp.pop(position.symbol, None)
         self._trailing.pop(position.symbol, None)
         self._tp_levels.pop(position.symbol, None)
         self._chandelier.pop(position.symbol, None)
         self._closed_positions.append(position)
         self._record_equity_snapshot()
+        _opened_ts = 0
+        try:
+            _opened_ts = int(position.opened_at) if position.opened_at else 0
+        except (TypeError, ValueError):
+            _opened_ts = 0
+        _closed_ts = int(position.closed_at) if position.closed_at else 0
+        emit_position_closed(
+            position.symbol,
+            entry_price=position.entry_price,
+            exit_price=fill_price,
+            quantity=position.initial_quantity,
+            realized_pnl=position.realized_pnl,
+            strategy=position.strategy_name,
+            signal_id=position.signal_id,
+            hold_ms=(_closed_ts - _opened_ts) if _opened_ts and _closed_ts else None,
+            exit_reason=position.close_reason,
+            is_paper=order.is_paper,
+            exchange_order_id=order.exchange_order_id,
+            partial_dust=True,
+        )
         await self._event_bus.emit(EVENT_POSITION_CLOSED, position)
         return position
 

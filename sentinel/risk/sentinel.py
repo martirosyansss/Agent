@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from core.models import Direction, RiskCheckResult, RiskState, Signal
-from monitoring.event_log import EventType, emit_rejection, get_event_log
+from monitoring.event_log import EventType, emit_rejection, get_event_log, trace_context
 from .decision_tracer import (
     DecisionTrace,
     GateOutcome,
@@ -132,6 +132,45 @@ class RiskSentinel:
     # ──────────────────────────────────────────────
 
     def evaluate_with_trace(
+        self,
+        signal: Signal,
+        daily_pnl: float,
+        open_positions_count: int,
+        total_exposure_pct: float,
+        balance: float,
+        current_market_price: float,
+        open_symbols: Optional[set[str]] = None,
+        price_history: Optional[dict[str, list[float]]] = None,
+        open_positions_exposure: Optional[list["OpenPositionExposure"]] = None,
+        shadow_mode: bool = False,
+        market_data_age_sec: Optional[float] = None,
+    ) -> tuple[RiskCheckResult, DecisionTrace]:
+        """Run all gates and emit canonical observability events.
+
+        The whole evaluation runs inside ``trace_context(signal_id)`` so
+        every event downstream (gate exception → component_error,
+        rejection → signal_rejected, gate-tripped guards) carries the same
+        ``trace_id``, letting the dashboard reconstruct one trade
+        end-to-end with ``GROUP BY trace_id``.
+        """
+        # Reuse signal_id as trace_id when present — keeps identifiers
+        # aligned end-to-end without inventing a parallel id space.
+        with trace_context(signal.signal_id or None):
+            return self._evaluate_with_trace_inner(
+                signal=signal,
+                daily_pnl=daily_pnl,
+                open_positions_count=open_positions_count,
+                total_exposure_pct=total_exposure_pct,
+                balance=balance,
+                current_market_price=current_market_price,
+                open_symbols=open_symbols,
+                price_history=price_history,
+                open_positions_exposure=open_positions_exposure,
+                shadow_mode=shadow_mode,
+                market_data_age_sec=market_data_age_sec,
+            )
+
+    def _evaluate_with_trace_inner(
         self,
         signal: Signal,
         daily_pnl: float,
@@ -417,7 +456,11 @@ class RiskSentinel:
                 signal_id=trace.signal_id,
             )
         except Exception as exc:
-            logger.debug("Canonical decision emit failed: %s", exc)
+            # WARNING level (not debug): if canonical-decision emit ever
+            # breaks, the observability dashboard goes blind for risk
+            # decisions. Operators must see this in errors.log so the
+            # silence isn't itself silent.
+            logger.warning("Canonical decision emit failed: %s", exc)
 
     @property
     def state(self) -> RiskState:

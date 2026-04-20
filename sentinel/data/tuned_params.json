@@ -1,0 +1,58 @@
+{
+  "grid_trading": {
+    "params": {
+      "num_grids": 5,
+      "min_profit_pct": 2.4000000000000004,
+      "max_loss_pct": 3.5,
+      "trailing_activate_pct": 1.0,
+      "trailing_stop_pct": 0.8,
+      "max_hold_hours": 41,
+      "min_confidence": 0.7000000000000001,
+      "min_volume_ratio": 1.0,
+      "rebuild_vol_change_pct": 45.0
+    },
+    "is_score": 2.064456336813607,
+    "oos_psr": 0.15719609442697646,
+    "oos_pf": 0.7654053240029538,
+    "oos_sharpe": -1.9689838439517127,
+    "oos_pnl_pct": -6.415372594494341,
+    "oos_trades": 90,
+    "tuned_at": 1776676659
+  },
+  "dca_bot": {
+    "params": {
+      "interval_hours": 18,
+      "max_daily_buys": 1,
+      "stop_drawdown_pct": 13.0,
+      "take_profit_pct": 10.0,
+      "trailing_activate_pct": 4.5,
+      "trailing_stop_pct": 2.0,
+      "min_confidence": 0.75
+    },
+    "is_score": 4.726707811373631,
+    "oos_psr": 0.37143745428637875,
+    "oos_pf": 0.8713799024501767,
+    "oos_sharpe": -0.9979402356879895,
+    "oos_pnl_pct": -2.7199604438308027,
+    "oos_trades": 30,
+    "tuned_at": 1776676659
+  },
+  "bollinger_breakout": {
+    "params": {
+      "volume_confirm_mult": 2.2,
+      "squeeze_threshold": 0.04,
+      "stop_loss_pct": 1.5,
+      "take_profit_pct": 9.5,
+      "trailing_stop_pct": 2.5,
+      "trailing_activate_pct": 2.0,
+      "min_confidence": 0.65
+    },
+    "is_score": 2.6539586765586294,
+    "oos_psr": 0.00464345101762903,
+    "oos_pf": 0.0,
+    "oos_sharpe": -18.097995029735642,
+    "oos_pnl_pct": -1.3922732905574662,
+    "oos_trades": 5,
+    "tuned_at": 1776676659
+  }
+}

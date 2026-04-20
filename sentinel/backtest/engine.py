@@ -194,6 +194,18 @@ class BacktestEngine:
             if features is None:
                 continue
 
+            # Production parity: main.py sets features.market_regime via
+            # detect_regime() before strategies run. Without this the regime
+            # stays "unknown" and adaptive_min_confidence raises the bar by
+            # +0.05 — grid_trading (base conf 0.80) silently never fires in
+            # backtest. Wire the same detector here.
+            try:
+                from strategy.market_regime import detect_regime
+                _regime = detect_regime(features)
+                features.market_regime = _regime.regime.value
+            except Exception:
+                pass
+
             # Генерация сигнала
             signal = strategy.generate_signal(
                 features,

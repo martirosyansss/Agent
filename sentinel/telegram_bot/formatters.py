@@ -597,6 +597,468 @@ def format_config_summary(settings: dict) -> str:
     return "\n".join(lines)
 
 
+# ──────────────────────────────────────────────
+# Диагностические команды (/diag /why /events /health)
+#
+# Эти форматтеры объясняют операторы "что бот делает прямо сейчас и
+# почему" — читают snapshot state из state_provider и последние записи
+# из EventLog.recent_events(). HTML-экранирование обязательно: поля
+# ``reason`` из ``signal_rejected`` могут содержать угловые скобки
+# (например ``"EMA50<EMA200"``), которые Telegram интерпретирует как
+# теги и режет сообщение.
+# ──────────────────────────────────────────────
+
+
+_SEVERITY_ICON = {
+    "info":     "ℹ️",
+    "warning":  "⚡",
+    "error":    "⚠️",
+    "critical": "🚨",
+}
+
+
+def _age_str(ts_ms: float | int | None, now_ms: float | None = None) -> str:
+    """Human-readable age of an ms timestamp: ``"5s"`` / ``"3m"`` / ``"1h 2m"``.
+    Returns ``"—"`` for missing/invalid."""
+    if not ts_ms:
+        return "—"
+    try:
+        ts = float(ts_ms)
+    except (TypeError, ValueError):
+        return "—"
+    now = now_ms if now_ms is not None else datetime.now(timezone.utc).timestamp() * 1000
+    delta_sec = max(0, int((now - ts) / 1000))
+    if delta_sec < 60:
+        return f"{delta_sec}s"
+    if delta_sec < 3600:
+        return f"{delta_sec // 60}m"
+    hours = delta_sec // 3600
+    mins = (delta_sec % 3600) // 60
+    return f"{hours}h {mins}m" if mins else f"{hours}h"
+
+
+def _ml_verdict_icon(decision: str) -> str:
+    d = str(decision or "").lower()
+    if d == "allow":
+        return "🟢"
+    if d == "reduce":
+        return "🟡"
+    if d == "block":
+        return "🔴"
+    return "⚪"
+
+
+def format_diagnostics(state: dict) -> str:
+    """Полная диагностика: что бот делает прямо сейчас.
+
+    Разделы:
+      1. Режим / пауза / Risk State
+      2. Готовность модулей (WS, свечи, стратегии)
+      3. По каждому символу: когда был последний цикл, ML-вердикт
+      4. Risk-checks (какой гейт зелёный/красный) + circuit breakers
+      5. ML подсистема (enabled / ready / версия модели)
+    """
+    mode = str(state.get("mode", "paper")).upper()
+    risk_state = state.get("risk_state", "NORMAL")
+    trading_paused = bool(state.get("trading_paused", False))
+    uptime = state.get("uptime", "N/A")
+    risk_icon = {"NORMAL": "🟢", "REDUCED": "🟡", "SAFE": "🟠", "STOP": "🔴"}.get(risk_state, "⚪")
+    mode_icon = "📄" if mode == "PAPER" else "💰"
+    trade_icon = "⏸" if trading_paused else "▶️"
+
+    lines = [
+        f"🔍 <b>ДИАГНОСТИКА SENTINEL</b>",
+        f"⏰ {_now_str()}  |  Uptime: {_esc(str(uptime))}",
+        "",
+        f"{mode_icon} Режим: <b>{mode}</b>  |  {risk_icon} Risk: <b>{_esc(str(risk_state))}</b>  |  {trade_icon} "
+        f"{'на паузе' if trading_paused else 'торгует'}",
+    ]
+
+    # 1) Готовность
+    readiness = state.get("readiness") or {}
+    if readiness:
+        pct = readiness.get("pct", 0)
+        ready = readiness.get("ready", False)
+        ready_icon = "✅" if ready else "⏳"
+        lines += [
+            "",
+            f"{ready_icon} <b>Готовность: {pct}%</b>",
+        ]
+        for step in (readiness.get("steps") or []):
+            icon = "✅" if step.get("done") else "⏳"
+            detail = step.get("detail", "")
+            lines.append(f"  {icon} {_esc(step.get('name', '?'))}: {_esc(str(detail))}")
+
+    # 2) Свежесть котировок
+    risk_details = state.get("risk_details") or {}
+    age = risk_details.get("market_data_age_sec", -1)
+    try:
+        age_f = float(age)
+    except (TypeError, ValueError):
+        age_f = -1.0
+    if age_f >= 0:
+        age_icon = "✅" if age_f < 30 else ("⚡" if age_f < 120 else "🚨")
+        lines += ["", f"{age_icon} Котировки: последняя {age_f:.1f}s назад"]
+
+    # 3) Активность по символам
+    last_cycle = state.get("last_cycle_ts_per_symbol") or {}
+    standing = state.get("standing_ml_per_symbol") or {}
+    symbols = state.get("trading_symbols") or sorted(
+        set(last_cycle.keys()) | set(standing.keys())
+    )
+    if symbols:
+        lines += ["", "📈 <b>По символам</b>"]
+        now_ms = datetime.now(timezone.utc).timestamp() * 1000
+        for sym in symbols:
+            sym_line = f"  <b>{_esc(sym)}</b>: цикл {_age_str(last_cycle.get(sym), now_ms)} назад"
+            ml = standing.get(sym) or {}
+            if ml:
+                prob = ml.get("prob")
+                decision = ml.get("decision", "")
+                ref = ml.get("ref_strategy", "")
+                ml_icon = _ml_verdict_icon(decision)
+                try:
+                    prob_s = f"{float(prob):.2f}" if prob is not None else "—"
+                except (TypeError, ValueError):
+                    prob_s = "—"
+                sym_line += f"  |  {ml_icon} ML p={prob_s} → <b>{_esc(str(decision) or '—')}</b>"
+                if ref:
+                    sym_line += f" ({_esc(str(ref))})"
+            lines.append(sym_line)
+
+    # 4) Risk-чекеры
+    checks = (state.get("risk_details") or {}).get("risk_checks") or {}
+    if checks:
+        lines += ["", "🔒 <b>Risk-чеки</b> (✅ пропускает / ⛔ блокирует)"]
+        labels = {
+            "state_ok":        "Risk State ≠ STOP",
+            "daily_loss_ok":   "Дневной убыток в лимите",
+            "positions_ok":    "Есть слот под позицию",
+            "exposure_ok":     "Экспозиция в лимите",
+            "daily_trades_ok": "Сделок за день в лимите",
+            "hourly_trades_ok":"Сделок за час в лимите",
+            "cooldown_ok":     "Кулдаун истёк",
+        }
+        for key, label in labels.items():
+            if key not in checks:
+                continue
+            ok = bool(checks[key])
+            lines.append(f"  {'✅' if ok else '⛔'} {label}")
+
+    cooldown = int(risk_details.get("cooldown_remaining_sec", 0) or 0)
+    if cooldown > 0:
+        lines.append(f"  ⏳ Кулдаун ещё <b>{cooldown}s</b>")
+
+    # 5) Circuit breakers / blocked strategies
+    rd_breakers = (state.get("risk_details") or {})
+    blocked = rd_breakers.get("blocked_strategies") or {}
+    if blocked:
+        lines += ["", "🚧 <b>Заблокированные стратегии</b>"]
+        for strat, info in blocked.items():
+            reason = ""
+            if isinstance(info, dict):
+                reason = info.get("reason") or info.get("until") or ""
+            lines.append(f"  • <code>{_esc(strat)}</code>  {_esc(str(reason))}")
+
+    # 6) ML подсистема
+    ml_status = state.get("ml_status") or {}
+    if ml_status:
+        enabled = ml_status.get("enabled", False)
+        ready = ml_status.get("is_ready", False)
+        ml_mode = ml_status.get("mode", "off")
+        version = ml_status.get("model_version", "")
+        lines += [
+            "",
+            f"🤖 <b>ML</b>: "
+            f"{'✅ enabled' if enabled else '⛔ disabled'}  |  "
+            f"{'ready' if ready else 'not ready'}  |  mode=<code>{_esc(str(ml_mode))}</code>"
+            + (f"  |  v={_esc(str(version))}" if version else ""),
+        ]
+
+    # 7) Активные стратегии
+    activity = state.get("activity") or {}
+    strategies = activity.get("strategies_loaded") or []
+    if strategies:
+        lines += ["", f"⚙️ Загружены: <code>{_esc(', '.join(strategies))}</code>"]
+
+    regime = activity.get("current_regime")
+    if regime:
+        lines.append(f"🌐 Regime: <b>{_esc(str(regime))}</b>")
+
+    return "\n".join(lines)
+
+
+def _group_rejections(events: list[dict]) -> list[tuple[str, int, str]]:
+    """Group signal_rejected events by (gate). Returns ``[(gate, count, sample_reason), ...]``."""
+    buckets: dict[str, dict] = {}
+    for ev in events:
+        if ev.get("type") != "signal_rejected":
+            continue
+        gate = str(ev.get("gate") or "unknown")
+        b = buckets.setdefault(gate, {"count": 0, "reason": ""})
+        b["count"] += 1
+        if not b["reason"] and ev.get("reason"):
+            b["reason"] = str(ev["reason"])
+    return sorted(
+        [(g, b["count"], b["reason"]) for g, b in buckets.items()],
+        key=lambda x: -x[1],
+    )
+
+
+def format_why(
+    state: dict,
+    events: list[dict],
+    symbol: Optional[str] = None,
+) -> str:
+    """Объяснение: почему бот НЕ открывает сделки прямо сейчас.
+
+    Последовательно проверяет блокирующие факторы от самых грубых
+    (kill / pause) к более тонким (rejections по гейтам). Опциональный
+    ``symbol`` фильтрует и события, и ML-вердикт.
+    """
+    header_sym = f" — {_esc(symbol)}" if symbol else ""
+    lines = [
+        f"❓ <b>Почему нет сделок{header_sym}</b>",
+        f"⏰ {_now_str()}",
+    ]
+
+    # Грубые блокировки
+    risk_state = state.get("risk_state", "NORMAL")
+    trading_paused = bool(state.get("trading_paused", False))
+    if risk_state == "STOP":
+        lines += ["", "🔴 <b>Risk State = STOP</b> — торговля полностью остановлена."]
+    elif trading_paused:
+        lines += ["", "⏸ <b>Торговля на паузе</b> (ручная остановка)."]
+    elif risk_state == "SAFE":
+        lines += ["", "🟠 <b>Risk State = SAFE</b> — только выход, новые позиции не открываются."]
+
+    # Risk-чеки: показать красные
+    checks = (state.get("risk_details") or {}).get("risk_checks") or {}
+    red = [k for k, v in checks.items() if not v]
+    if red:
+        labels = {
+            "state_ok":        "Risk State блокирует",
+            "daily_loss_ok":   "Превышен дневной убыток",
+            "positions_ok":    "Все слоты под позиции заняты",
+            "exposure_ok":     "Превышена экспозиция",
+            "daily_trades_ok": "Исчерпан лимит сделок за день",
+            "hourly_trades_ok":"Исчерпан лимит сделок за час",
+            "cooldown_ok":     "Активен кулдаун между сделками",
+        }
+        lines += ["", "⛔ <b>Блокирующие risk-чеки</b>"]
+        for k in red:
+            lines.append(f"  • {labels.get(k, k)}")
+
+    cooldown = int((state.get("risk_details") or {}).get("cooldown_remaining_sec", 0) or 0)
+    if cooldown > 0:
+        lines.append(f"  ⏳ Кулдаун ещё <b>{cooldown}s</b>")
+
+    # ML вердикт для конкретного символа
+    if symbol:
+        standing = (state.get("standing_ml_per_symbol") or {}).get(symbol) or {}
+        if standing:
+            prob = standing.get("prob")
+            decision = standing.get("decision", "")
+            ref = standing.get("ref_strategy", "")
+            try:
+                prob_s = f"{float(prob):.2f}" if prob is not None else "—"
+            except (TypeError, ValueError):
+                prob_s = "—"
+            ml_icon = _ml_verdict_icon(decision)
+            if decision and decision.lower() != "allow":
+                lines += [
+                    "",
+                    f"{ml_icon} <b>ML вердикт: {_esc(str(decision))}</b>  (p={prob_s}"
+                    + (f", ref={_esc(str(ref))}" if ref else "") + ")",
+                ]
+
+    # Фильтр событий
+    filtered = events
+    if symbol:
+        sym_u = symbol.upper()
+        filtered = [e for e in events if str(e.get("symbol", "")).upper() == sym_u]
+
+    rejections = _group_rejections(filtered)
+    if rejections:
+        lines += ["", "🚫 <b>Последние отказы по гейтам</b>"]
+        for gate, count, reason in rejections[:8]:
+            line = f"  • <b>{count}×</b> <code>{_esc(gate)}</code>"
+            if reason:
+                snippet = reason if len(reason) <= 120 else reason[:117] + "..."
+                line += f" — <i>{_esc(snippet)}</i>"
+            lines.append(line)
+    elif not red and risk_state == "NORMAL" and not trading_paused:
+        lines += [
+            "",
+            "✅ <b>Блокировок не найдено.</b>",
+            "Бот ищет сигналы — возможно, ни одна стратегия пока не эмитит их",
+            "(слабый тренд / низкая волатильность / ML-фильтр).",
+        ]
+
+    # Подсказка
+    lines += ["", "<i>Используй /events для сырого лога или /diag для полной картины.</i>"]
+    return "\n".join(lines)
+
+
+def format_events(events: list[dict], limit: int = 15) -> str:
+    """Tail последних событий с иконками — сырой, но читаемый лог."""
+    if not events:
+        return "📜 <b>Событий нет</b> (EventLog пустой)."
+
+    recent = events[-limit:]
+    now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    lines = [f"📜 <b>Последние события ({len(recent)})</b>", ""]
+
+    for ev in reversed(recent):
+        etype = str(ev.get("type", "?"))
+        age = _age_str(ev.get("ts"), now_ms)
+        icon = "•"
+        body = ""
+        if etype == "signal_rejected":
+            icon = "🚫"
+            gate = ev.get("gate", "?")
+            sym = ev.get("symbol", "")
+            reason = str(ev.get("reason", ""))[:100]
+            body = f"<code>{_esc(gate)}</code>"
+            if sym:
+                body += f" {_esc(sym)}"
+            if reason:
+                body += f" — <i>{_esc(reason)}</i>"
+        elif etype == "signal_approved":
+            icon = "✅"
+            body = f"{_esc(ev.get('symbol', '?'))}  {_esc(ev.get('direction', ''))}"
+        elif etype == "signal_generated":
+            icon = "💡"
+            body = f"{_esc(ev.get('symbol', '?'))} <i>{_esc(str(ev.get('strategy', ''))[:40])}</i>"
+        elif etype == "order_filled":
+            icon = "💵"
+            body = f"{_esc(ev.get('symbol', '?'))}  {_esc(ev.get('side', ''))}  qty={ev.get('quantity', '?')}"
+        elif etype == "position_opened":
+            icon = "📈"
+            body = f"{_esc(ev.get('symbol', '?'))}  {_esc(ev.get('side', ''))}"
+        elif etype == "position_closed":
+            icon = "📉"
+            pnl = ev.get("pnl", 0)
+            body = f"{_esc(ev.get('symbol', '?'))}  pnl={fmt_pnl(float(pnl) if pnl else 0)}"
+        elif etype == "guard_tripped":
+            icon = "🛑"
+            body = f"<code>{_esc(ev.get('guard', '?'))}</code>"
+            if ev.get("name"):
+                body += f"/{_esc(ev['name'])}"
+            if ev.get("reason"):
+                body += f" — <i>{_esc(str(ev['reason'])[:80])}</i>"
+        elif etype == "component_error":
+            sev = str(ev.get("severity", "error"))
+            icon = _SEVERITY_ICON.get(sev, "⚠️")
+            body = f"<code>{_esc(ev.get('component', '?'))}</code>"
+            if ev.get("reason"):
+                body += f" — <i>{_esc(str(ev['reason'])[:80])}</i>"
+        elif etype == "regime_change":
+            icon = "🌐"
+            body = f"{_esc(ev.get('from', '?'))} → {_esc(ev.get('to', '?'))}"
+        elif etype == "ml_prediction":
+            icon = "🤖"
+            body = f"{_esc(ev.get('symbol', '?'))} p={ev.get('prob', '?')} → {_esc(ev.get('decision', ''))}"
+        elif etype == "news_critical":
+            icon = "📰"
+            body = _esc(str(ev.get("headline", ""))[:80])
+        elif etype == "strategy_toggled":
+            icon = "⚙️"
+            body = f"{_esc(ev.get('strategy', '?'))} → {'ON' if ev.get('enabled') else 'OFF'}"
+        else:
+            body = _esc(etype)
+
+        lines.append(f"{icon} <b>{age}</b>  {body}")
+
+    return "\n".join(lines)
+
+
+def format_health(state: dict, events: list[dict]) -> str:
+    """Сводка «здоровья»: компоненты, guards, свежесть данных за последний час."""
+    now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    hour_ago = now_ms - 3600 * 1000
+
+    recent_errors = [
+        e for e in events
+        if e.get("type") == "component_error" and float(e.get("ts", 0)) >= hour_ago
+    ]
+    recent_guards = [
+        e for e in events
+        if e.get("type") == "guard_tripped" and float(e.get("ts", 0)) >= hour_ago
+    ]
+
+    # Уникальные компоненты в ошибках
+    comp_counts: dict[str, int] = {}
+    max_sev = "info"
+    sev_rank = {"info": 0, "warning": 1, "error": 2, "critical": 3}
+    for e in recent_errors:
+        c = str(e.get("component", "?"))
+        comp_counts[c] = comp_counts.get(c, 0) + 1
+        sev = str(e.get("severity", "error"))
+        if sev_rank.get(sev, 0) > sev_rank.get(max_sev, 0):
+            max_sev = sev
+
+    guard_counts: dict[str, int] = {}
+    for e in recent_guards:
+        g = str(e.get("guard", "?"))
+        guard_counts[g] = guard_counts.get(g, 0) + 1
+
+    # Общий статус
+    health_icon = "✅"
+    health_word = "HEALTHY"
+    if recent_errors:
+        if max_sev == "critical":
+            health_icon, health_word = "🚨", "CRITICAL"
+        elif max_sev == "error":
+            health_icon, health_word = "⚠️", "DEGRADED"
+        else:
+            health_icon, health_word = "⚡", "WARN"
+
+    risk_details = state.get("risk_details") or {}
+    try:
+        age = float(risk_details.get("market_data_age_sec", -1))
+    except (TypeError, ValueError):
+        age = -1.0
+
+    lines = [
+        f"🩺 <b>ЗДОРОВЬЕ СИСТЕМЫ — {health_icon} {health_word}</b>",
+        f"⏰ {_now_str()}",
+        "",
+    ]
+
+    # Котировки
+    if age < 0:
+        lines.append("📡 Котировки: <b>нет данных</b>")
+    else:
+        quote_icon = "✅" if age < 30 else ("⚡" if age < 120 else "🚨")
+        lines.append(f"📡 Котировки: {quote_icon} <b>{age:.1f}s</b> назад")
+
+    # Component errors
+    if recent_errors:
+        lines += ["", f"⚠️ <b>Ошибки компонентов за час: {len(recent_errors)}</b>"]
+        for comp, cnt in sorted(comp_counts.items(), key=lambda x: -x[1])[:6]:
+            lines.append(f"  • <b>{cnt}×</b> <code>{_esc(comp)}</code>")
+    else:
+        lines += ["", "✅ Ошибок компонентов за час: <b>0</b>"]
+
+    # Guards
+    if recent_guards:
+        lines += ["", f"🛑 <b>Guards сработали за час: {len(recent_guards)}</b>"]
+        for g, cnt in sorted(guard_counts.items(), key=lambda x: -x[1])[:6]:
+            lines.append(f"  • <b>{cnt}×</b> <code>{_esc(g)}</code>")
+    else:
+        lines += ["", "✅ Guards за час: <b>0</b>"]
+
+    # Blocked strategies из state
+    blocked = risk_details.get("blocked_strategies") or {}
+    if blocked:
+        lines += ["", f"🚧 Заблокированных стратегий: <b>{len(blocked)}</b>"]
+        for strat in list(blocked)[:6]:
+            lines.append(f"  • <code>{_esc(strat)}</code>")
+
+    return "\n".join(lines)
+
+
 def format_portfolio(strategy_perf: list[dict], balance: float) -> str:
     """Ответ на /portfolio — подробный отчёт по стратегиям."""
     if not strategy_perf:

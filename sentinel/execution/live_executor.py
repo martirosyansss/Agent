@@ -18,7 +18,7 @@ import math
 import time
 from typing import Optional
 
-from core.constants import EVENT_ORDER_FILLED
+from core.constants import EVENT_ORDER_FILLED, EVENT_EXECUTION_DEGRADED
 from core.events import EventBus
 from core.models import Direction, Order, OrderStatus, OrderType, Signal
 from monitoring.event_log import emit_component_error
@@ -128,22 +128,79 @@ class LiveExecutor(BaseExecutor):
             logger.error("Live execution error for %s: %s — verifying order status", signal.symbol, e)
             # Critical: verify if order was partially or fully filled on exchange
             orphan = await self._check_recent_order(signal.symbol, signal.direction)
-            if orphan:
-                logger.critical(
-                    "ORPHAN ORDER DETECTED: %s %s was filled on exchange despite error! "
-                    "Manual intervention required. Order: %s",
-                    signal.direction.value, signal.symbol, orphan,
+            if not orphan:
+                emit_component_error(
+                    "live_executor.execute_order",
+                    f"execution failed for {signal.symbol}: {e}",
+                    exc=e,
+                    severity="error",
+                    symbol=signal.symbol,
+                    direction=signal.direction.value,
+                    orphan_detected=False,
                 )
+                return None
+            # Orphan fill exists on exchange — reconstruct Order so the in-memory
+            # position tracks reality, then try to attach protective OCO. If a
+            # matching protective order is already live (e.g. the original OCO
+            # placement succeeded before the caller's exception), skip re-placing
+            # to avoid duplicates.
+            logger.critical(
+                "ORPHAN ORDER DETECTED: %s %s filled on exchange despite error — recovering. Order: %s",
+                signal.direction.value, signal.symbol, orphan,
+            )
+            recovered = self._order_from_orphan(signal, orphan, current_price)
+            oco_live = False
+            if signal.direction == Direction.BUY and signal.stop_loss_price > 0:
+                oco_live = self._has_live_protective_oco(signal.symbol, signal.signal_id)
+                if not oco_live:
+                    oco_live = await self._place_protective_oco(
+                        signal.symbol, recovered.fill_quantity or quantity, recovered.fill_price or current_price,
+                        signal.stop_loss_price, signal.take_profit_price,
+                        signal_id=signal.signal_id,
+                    )
+                if not oco_live:
+                    logger.critical("Orphan recovery: OCO failed, emergency sell for %s", signal.symbol)
+                    emg_ok = await self._emergency_sell(
+                        signal.symbol, recovered.fill_quantity or quantity, signal_id=signal.signal_id,
+                    )
+                    emit_component_error(
+                        "live_executor.execute_order",
+                        f"orphan recovery: OCO missing, emergency_sell={'ok' if emg_ok else 'failed'} for {signal.symbol}",
+                        severity="critical",
+                        symbol=signal.symbol,
+                        direction=signal.direction.value,
+                        orphan_detected=True,
+                        orphan_recovered=False,
+                        emergency_sell_ok=emg_ok,
+                        exchange_order_id=recovered.exchange_order_id,
+                    )
+                    await self._event_bus.emit(
+                        EVENT_EXECUTION_DEGRADED,
+                        {"symbol": signal.symbol,
+                         "reason": "orphan_unrecoverable" if not emg_ok else "orphan_flattened",
+                         "exchange_order_id": recovered.exchange_order_id},
+                    )
+                    if emg_ok:
+                        recovered.status = OrderStatus.CANCELLED
+                        return recovered
+                    # Position still live and unprotected — surface via FILLED
+                    # so in-memory state matches exchange; main halts trading.
+                    await self._event_bus.emit(EVENT_ORDER_FILLED, recovered)
+                    return recovered
             emit_component_error(
                 "live_executor.execute_order",
-                f"execution failed for {signal.symbol}: {e}",
+                f"orphan recovered for {signal.symbol}: fill={recovered.fill_quantity} @ {recovered.fill_price}, oco={'existing' if oco_live else 'placed'}",
                 exc=e,
-                severity="critical" if orphan else "error",
+                severity="critical",
                 symbol=signal.symbol,
                 direction=signal.direction.value,
-                orphan_detected=bool(orphan),
+                orphan_detected=True,
+                orphan_recovered=True,
+                exchange_order_id=recovered.exchange_order_id,
             )
-            return None
+            # Emit to EventBus so _on_order_filled persists + opens the position.
+            await self._event_bus.emit(EVENT_ORDER_FILLED, recovered)
+            return recovered
 
     async def _check_recent_order(self, symbol: str, direction: Direction) -> Optional[dict]:
         """Check if a recent order was filled on exchange despite local error.
@@ -174,6 +231,63 @@ class LiveExecutor(BaseExecutor):
         except Exception as check_err:
             logger.error("Failed to verify order status: %s", check_err)
         return None
+
+    def _order_from_orphan(
+        self,
+        signal: Signal,
+        orphan: dict,
+        fallback_price: float,
+    ) -> Order:
+        """Reconstruct an Order from a Binance ``get_all_orders`` entry.
+
+        ``get_all_orders`` omits ``fills``, so VWAP = cummulativeQuoteQty /
+        executedQty. Falls back to ``fallback_price`` if either field is zero.
+        """
+        executed_qty = float(orphan.get("executedQty", 0) or 0)
+        cq_qty = float(orphan.get("cummulativeQuoteQty", 0) or 0)
+        fill_price = (cq_qty / executed_qty) if executed_qty > 0 and cq_qty > 0 else float(orphan.get("price") or fallback_price)
+        exchange_id = str(orphan.get("orderId", ""))
+        commission = self.calculate_commission(executed_qty, fill_price)
+        return Order(
+            timestamp=int(orphan.get("time") or time.time() * 1000),
+            symbol=signal.symbol,
+            side=signal.direction,
+            order_type=OrderType.MARKET,
+            quantity=float(orphan.get("origQty") or executed_qty),
+            price=fallback_price,
+            status=OrderStatus.FILLED,
+            exchange_order_id=exchange_id,
+            fill_price=fill_price,
+            fill_quantity=executed_qty,
+            commission=commission,
+            is_paper=False,
+            signal_id=signal.signal_id,
+            strategy_name=signal.strategy_name,
+            signal_reason=signal.reason,
+            stop_loss_price=signal.stop_loss_price,
+            take_profit_price=signal.take_profit_price,
+            features=signal.features,
+        )
+
+    def _has_live_protective_oco(self, symbol: str, signal_id: str) -> bool:
+        """Return True if the deterministic SL/TP leg for this signal is open.
+
+        Prevents duplicate OCO placement during orphan recovery. Matches the
+        client order IDs produced by ``_place_protective_oco``.
+        """
+        if not self._client or not signal_id:
+            return False
+        want_sl = f"s{signal_id}-sl"[:36]
+        want_tp = f"s{signal_id}-tp"[:36]
+        try:
+            open_orders = self._client.get_open_orders(symbol=symbol)
+            for o in open_orders or []:
+                cid = o.get("clientOrderId", "")
+                if cid in (want_sl, want_tp):
+                    return True
+        except Exception as check_err:
+            logger.error("Failed to list open orders for %s: %s", symbol, check_err)
+        return False
 
     async def _execute_with_protection(
         self,
@@ -242,11 +356,42 @@ class LiveExecutor(BaseExecutor):
                 signal_id=signal.signal_id,
             )
             if not oco_ok:
-                # Emergency: protective order failed → market exit
+                # Entry already filled on exchange. Try to exit. If that fails
+                # too, the position is LIVE without SL/TP — we must surface
+                # this (return the filled order + critical event) so callers
+                # halt trading instead of quietly forgetting the exposure.
                 logger.error("CRITICAL: Protective OCO failed, emergency sell!")
-                await self._emergency_sell(signal.symbol, fill_qty, signal_id=signal.signal_id)
-                order.status = OrderStatus.CANCELLED
-                return order
+                emg_ok = await self._emergency_sell(signal.symbol, fill_qty, signal_id=signal.signal_id)
+                if emg_ok:
+                    emit_component_error(
+                        "live_executor.execute_order",
+                        f"OCO failed, emergency_sell OK for {signal.symbol} (position flattened)",
+                        severity="critical",
+                        symbol=signal.symbol,
+                        exchange_order_id=exchange_id,
+                        oco_ok=False,
+                        emergency_sell_ok=True,
+                    )
+                    order.status = OrderStatus.CANCELLED
+                    return order
+                # Position is still live on the exchange, unprotected.
+                emit_component_error(
+                    "live_executor.execute_order",
+                    f"OCO failed AND emergency_sell failed for {signal.symbol} — UNPROTECTED LIVE POSITION",
+                    severity="critical",
+                    symbol=signal.symbol,
+                    exchange_order_id=exchange_id,
+                    oco_ok=False,
+                    emergency_sell_ok=False,
+                    unprotected=True,
+                )
+                await self._event_bus.emit(
+                    EVENT_EXECUTION_DEGRADED,
+                    {"symbol": signal.symbol, "reason": "unprotected_fill",
+                     "exchange_order_id": exchange_id},
+                )
+                # Fall through so the event bus fires and the position is
+                # tracked in memory; caller is expected to halt trading.
 
         self._orders.append(order)
         await self._event_bus.emit(EVENT_ORDER_FILLED, order)
@@ -295,8 +440,89 @@ class LiveExecutor(BaseExecutor):
             logger.error("OCO order failed: %s", e)
             return False
 
-    async def _emergency_sell(self, symbol: str, quantity: float, signal_id: str = "") -> None:
-        """Аварийная продажа — market sell без retry."""
+    async def reconcile_with_exchange(self, symbols: list[str]) -> dict:
+        """Compare exchange state with provided symbols on startup.
+
+        For each symbol returns whether a protective order exists and what
+        the current base-asset free balance is. Used by main.py at boot to
+        detect positions that survived (or died) during downtime. Does NOT
+        mutate state — detection only, logging + events handled by caller.
+        """
+        if not self._init_client():
+            return {}
+        summary: dict[str, dict] = {}
+        for symbol in symbols:
+            entry: dict = {"open_orders": [], "has_protective_oco": False}
+            try:
+                open_orders = self._client.get_open_orders(symbol=symbol) or []
+                entry["open_orders"] = [
+                    {"orderId": o.get("orderId"),
+                     "clientOrderId": o.get("clientOrderId"),
+                     "type": o.get("type"),
+                     "side": o.get("side"),
+                     "origQty": o.get("origQty")}
+                    for o in open_orders
+                ]
+                entry["has_protective_oco"] = any(
+                    (o.get("clientOrderId", "").endswith("-sl")
+                     or o.get("clientOrderId", "").endswith("-tp"))
+                    for o in open_orders
+                )
+            except Exception as e:
+                logger.error("reconcile: get_open_orders %s failed: %s", symbol, e)
+                entry["error"] = str(e)
+                emit_component_error(
+                    "live_executor.reconcile",
+                    f"reconcile open orders failed for {symbol}: {e}",
+                    exc=e, severity="warning", symbol=symbol,
+                )
+            summary[symbol] = entry
+        return summary
+
+    async def cancel_all_open_orders(self, symbols: list[str]) -> int:
+        """Cancel every open order (entry/OCO/SL/TP legs) on each symbol.
+
+        Best-effort: a failure on one symbol does not stop the sweep for
+        the others. Used by the Kill Switch so orphan protective orders
+        don't linger on the exchange after an emergency stop.
+        """
+        if not self._init_client():
+            return 0
+        cancelled = 0
+        for symbol in symbols:
+            try:
+                open_orders = self._client.get_open_orders(symbol=symbol)
+            except Exception as e:
+                logger.error("cancel_all: list open orders failed for %s: %s", symbol, e)
+                emit_component_error(
+                    "live_executor.cancel_all_open_orders",
+                    f"list open orders failed for {symbol}: {e}",
+                    exc=e, severity="error", symbol=symbol,
+                )
+                continue
+            for entry in open_orders or []:
+                oid = entry.get("orderId")
+                if oid is None:
+                    continue
+                try:
+                    self._client.cancel_order(symbol=symbol, orderId=oid)
+                    cancelled += 1
+                except Exception as e:
+                    logger.error("cancel_all: cancel %s#%s failed: %s", symbol, oid, e)
+                    emit_component_error(
+                        "live_executor.cancel_all_open_orders",
+                        f"cancel {symbol}#{oid} failed: {e}",
+                        exc=e, severity="error", symbol=symbol, order_id=oid,
+                    )
+        logger.warning("cancel_all_open_orders: cancelled=%d symbols=%d", cancelled, len(symbols))
+        return cancelled
+
+    async def _emergency_sell(self, symbol: str, quantity: float, signal_id: str = "") -> bool:
+        """Аварийная продажа — market sell без retry.
+
+        Returns True if the sell was accepted by the exchange, False otherwise.
+        Callers MUST treat False as "entry position is still live on exchange".
+        """
         try:
             kwargs: dict = dict(
                 symbol=symbol,
@@ -308,6 +534,7 @@ class LiveExecutor(BaseExecutor):
                 kwargs["newClientOrderId"] = f"s{signal_id}-emg"[:36]
             self._client.create_order(**kwargs)
             logger.warning("Emergency sell executed: %s qty=%.6f", symbol, quantity)
+            return True
         except Exception as e:
             logger.critical("EMERGENCY SELL FAILED: %s - %s", symbol, e)
             emit_component_error(
@@ -319,3 +546,4 @@ class LiveExecutor(BaseExecutor):
                 quantity=quantity,
                 signal_id=signal_id,
             )
+            return False

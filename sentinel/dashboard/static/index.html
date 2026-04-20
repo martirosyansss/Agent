@@ -8,8 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="stylesheet" href="/static/css/index.css">
 </head>
 <body>
@@ -60,38 +59,7 @@
 
     <!-- ═══ Sidebar ═══ -->
     <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop" aria-hidden="true"></div>
-    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation">
-        <a href="/" class="sidebar-link active">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-            <span>Dashboard</span>
-        </a>
-        <a href="/analytics" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-6"/></svg>
-            <span>Аналитика</span>
-        </a>
-        <a href="/ml-robustness" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"/><path d="M12 2v20"/><path d="M4.93 4.93l14.14 14.14"/><path d="M19.07 4.93 4.93 19.07"/></svg>
-            <span>ML Robustness</span>
-        </a>
-        <a href="/trades" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-            <span>История сделок</span>
-        </a>
-        <a href="/news" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
-            <span>Новости</span>
-        </a>
-        <a href="/logs" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg>
-            <span>Логи</span>
-        </a>
-        <div class="sidebar-divider"></div>
-        <div class="sidebar-section">Система</div>
-        <a href="/settings" class="sidebar-link">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            <span>Настройки</span>
-        </a>
-    </nav>
+    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation"></nav>
 
     <!-- ═══ Main Content ═══ -->
     <div class="app-layout">
@@ -181,7 +149,7 @@
                     <span>Состояние рынка прямо сейчас</span>
                     <span class="mo-tf-badge" title="Таймфрейм: индикаторы и ML рассчитаны на 1-часовых свечах">TF 1h</span>
                 </div>
-                <span class="market-overview-hint">Куда идёт рынок по торгуемым символам и почему. Обновляется каждые 2 сек.</span>
+                <span class="market-overview-hint">Куда идёт рынок по торгуемым символам и почему. Свежесть данных показана на плашке у каждой карточки.</span>
             </div>
             <div class="market-overview-grid" id="market-overview-grid">
                 <div class="market-overview-empty">Загружаем рыночные данные…</div>
@@ -222,7 +190,7 @@
                     <span class="has-tooltip u-ml-auto" tabindex="0" aria-label="Что такое баланс?">
                         <span class="info-btn" aria-hidden="true">?</span>
                         <div class="tooltip-box" role="tooltip">
-                            <div class="tooltip-title">🏦 Доступный капитал</div>
+                            <div class="tooltip-title">Доступный капитал</div>
                             <div class="tooltip-body">Свободные средства на бирже, которые бот может использовать для открытия новых сделок. В paper-режиме — виртуальные деньги для тестирования.</div>
                             <div class="tooltip-range">PAPER = симуляция · LIVE = реальные деньги</div>
                         </div>
@@ -242,7 +210,7 @@
                     <span class="has-tooltip u-ml-auto" tabindex="0" aria-label="Что такое открытые позиции?">
                         <span class="info-btn" aria-hidden="true">?</span>
                         <div class="tooltip-box" role="tooltip">
-                            <div class="tooltip-title">📊 Открытые позиции</div>
+                            <div class="tooltip-title">Открытые позиции</div>
                             <div class="tooltip-body">Количество активных сделок прямо сейчас. Каждая позиция — это купленный или проданный актив, по которому ещё не зафиксирована прибыль/убыток.</div>
                             <div class="tooltip-range">Рекомендую: 1–5 одновременно · &gt;10 = высокий риск</div>
                         </div>
@@ -262,7 +230,7 @@
                     <span class="has-tooltip u-ml-auto" tabindex="0" aria-label="Что такое сделки сегодня?">
                         <span class="info-btn" aria-hidden="true">?</span>
                         <div class="tooltip-box" role="tooltip">
-                            <div class="tooltip-title">🔄 Исполненные ордера</div>
+                            <div class="tooltip-title">Исполненные ордера</div>
                             <div class="tooltip-body">Количество сделок (купля+продажа) за сегодня. Слишком много сделок → высокие комиссии. Слишком мало → стратегия не активна.</div>
                             <div class="tooltip-range">Норма: 5–30/день для скальпинга · 1–5 для свинга</div>
                         </div>
@@ -282,7 +250,7 @@
                     <span class="has-tooltip u-ml-auto" tabindex="0" aria-label="Что такое Процент побед?">
                         <span class="info-btn" aria-hidden="true">?</span>
                         <div class="tooltip-box" role="tooltip">
-                            <div class="tooltip-title">🏆 Процент побед</div>
+                            <div class="tooltip-title">Процент побед</div>
                             <div class="tooltip-body">Доля прибыльных сделок от общего числа. <strong>50%+</strong> считается нормальным при правильном соотношении риск/прибыль. Важно смотреть в паре с размером среднего выигрыша.</div>
                             <div class="tooltip-range">Плохо: &lt;40% · Норма: 50–60% · Отлично: &gt;65%</div>
                         </div>
@@ -360,12 +328,12 @@
             График цен, риски и индикаторы — если ты новичок, прокрути каждую карточку — по значку <span class="info-btn u-inline-flex-middle">?</span> появится подсказка с объяснением.
         </p>
 
-<!-- ── PnL / Market Chart ── -->
+<!-- ── Market Chart ── -->
         <div class="panel fade-in fade-in-delay-2">
             <div class="panel-title">
                 <h3 id="pnlChartTitle">
                     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    PnL History
+                    Market
                 </h3>
                 <div class="chart-toolbar">
                     <div class="symbol-bar" id="symbolBar" role="radiogroup" aria-label="Trading pair">
@@ -393,6 +361,23 @@
                     </button>
                 </div>
             </div>
+            <!-- History navigation row -->
+            <div class="chart-history-bar" id="chartHistoryBar">
+                <div class="chart-history-jump" role="group" aria-label="Jump back">
+                    <button class="chart-hist-btn" data-hist-jump="-1h" title="На час назад">← 1h</button>
+                    <button class="chart-hist-btn" data-hist-jump="-1d" title="На день назад">← 1d</button>
+                    <button class="chart-hist-btn" data-hist-jump="-1w" title="На неделю назад">← 1w</button>
+                    <button class="chart-hist-btn" data-hist-jump="-1mo" title="На месяц назад">← 1mo</button>
+                </div>
+                <label class="chart-hist-pick">
+                    <span class="chart-hist-label">Дата:</span>
+                    <input type="datetime-local" id="chartHistPicker" class="chart-hist-input" aria-label="Выбрать дату">
+                </label>
+                <div class="chart-history-state" aria-live="polite">
+                    <span class="chart-hist-badge chart-hist-badge-live" id="chartHistBadge">LIVE</span>
+                    <button class="chart-hist-btn chart-hist-btn-live" id="chartHistLive" title="Вернуться к живому графику" hidden>→ Сейчас</button>
+                </div>
+            </div>
             <!-- Price hero row -->
             <div class="chart-price-header u-hidden" id="chartPriceHeader">
                 <div class="chart-price-main">
@@ -406,24 +391,22 @@
                     <div class="chart-stat"><span class="chart-stat-label">Volume</span><span class="chart-stat-val" id="chartStatVol">—</span></div>
                 </div>
             </div>
-            <div class="chart-wrap u-relative">
-                <canvas id="pnlChart" aria-label="Price chart" role="img"></canvas>
+            <div class="chart-wrap chart-wrap-lwc u-relative" id="lwcWrap">
+                <div id="lwcChart" class="lwc-container" aria-label="Price chart" role="img"></div>
+                <div id="lwcLegend" class="lwc-legend" aria-hidden="true">
+                    <span class="lwc-legend-symbol" id="lwcLegendSymbol">BTCUSDT · 1h</span>
+                    <span class="lwc-legend-item" data-lwc-toggle="ema9" id="lwcLegendEma9">
+                        <span class="lwc-legend-swatch" data-swatch="ema9"></span>
+                        EMA 9 <span class="lwc-legend-val" id="lwcLegendEma9Val">—</span>
+                    </span>
+                    <span class="lwc-legend-item" data-lwc-toggle="ema21" id="lwcLegendEma21">
+                        <span class="lwc-legend-swatch" data-swatch="ema21"></span>
+                        EMA 21 <span class="lwc-legend-val" id="lwcLegendEma21Val">—</span>
+                    </span>
+                </div>
+                <div id="lwcTooltip" class="lwc-tooltip" aria-hidden="true"></div>
                 <div id="pnlNoData" class="chart-no-data-overlay">Собираем данные…</div>
             </div>
-            <div class="chart-legend-row u-hidden" id="emaLegendRow">
-                <span class="chart-indicators-label">Indicators</span>
-                <div class="chart-legend-item" id="legendEma9" data-ema-toggle="2" title="Toggle EMA 9">
-                    <span class="chart-legend-line chart-legend-line--ema9"></span>
-                    <span>EMA 9</span>
-                    <span class="chart-legend-value" id="legendEma9Val">&mdash;</span>
-                </div>
-                <div class="chart-legend-item" id="legendEma21" data-ema-toggle="3" title="Toggle EMA 21">
-                    <span class="chart-legend-line dashed chart-legend-line--ema21"></span>
-                    <span>EMA 21</span>
-                    <span class="chart-legend-value" id="legendEma21Val">&mdash;</span>
-                </div>
-            </div>
-            <div id="pnlChartNote" class="chart-note-bar">&nbsp;</div>
         </div>
 
         <!-- Equity Curve -->
@@ -495,7 +478,7 @@
                         <span class="risk-metric-label has-tooltip" tabindex="0">
                             Экспозиция
                             <div class="tooltip-box">
-                                <div class="tooltip-title">📀 Exposure</div>
+                                <div class="tooltip-title">Exposure</div>
                                 <div class="tooltip-body">Какая часть капитала сейчас находится в открытых позициях. 100% = весь баланс задействован, 0% = нет позиций.</div>
                                 <div class="tooltip-range">Рекомендую: &lt;50% · Опасно: &gt;80%</div>
                             </div>
@@ -510,7 +493,7 @@
                         <span class="risk-metric-label has-tooltip" tabindex="0">
                             Частота сделок
                             <div class="tooltip-box">
-                                <div class="tooltip-title">⏱ Trade Freq</div>
+                                <div class="tooltip-title">Trade Freq</div>
                                 <div class="tooltip-body">Сколько сделок бот открывает в час. Слишком высокая частота может значить, что бот овертрейдит или реагирует на шум.</div>
                                 <div class="tooltip-range">Норма: 1–5/ч · Высоко: &gt;10/ч</div>
                             </div>
@@ -525,7 +508,7 @@
                         <span class="risk-metric-label has-tooltip" tabindex="0">
                             Возраст данных
                             <div class="tooltip-box">
-                                <div class="tooltip-title">🕐 Data Age</div>
+                                <div class="tooltip-title">Data Age</div>
                                 <div class="tooltip-body">Насколько секунд назад пришла последняя цена с биржи. Если больше 30с — проблема с подключением, бот торгует на устаревших данных.</div>
                                 <div class="tooltip-range">Норма: &lt;5с · Опасно: &gt;30с</div>
                             </div>
@@ -540,7 +523,7 @@
                         <span class="risk-metric-label has-tooltip" tabindex="0">
                             Комиссии
                             <div class="tooltip-box">
-                                <div class="tooltip-title">💸 Commission</div>
+                                <div class="tooltip-title">Commission</div>
                                 <div class="tooltip-body">Сумма комиссий, выплаченных бирже за сегодня. Высокая комиссия съедает прибыль. Следи за отношением к PnL.</div>
                                 <div class="tooltip-range">&lt;0.5% от PnL = норма · &gt;5% = очень много</div>
                             </div>
@@ -688,6 +671,7 @@
   handler function is defined. Placed right before </body>, so DOM is
   already parsed and blocking here costs ~80ms but guarantees handlers.
 -->
+<script src="/static/js/sidebar.js"></script>
 <script src="/static/js/index.js"></script>
 </body>
 </html>

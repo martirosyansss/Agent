@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from monitoring.event_log import EventType, get_event_log
+from monitoring.event_log import emit_guard_tripped
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +39,7 @@ class CircuitBreakerState:
             self.name, self.trip_count_today, self.cooldown_sec, self.permanent_stop,
         )
         try:
-            get_event_log().emit(
-                EventType.GUARD_TRIPPED,
+            emit_guard_tripped(
                 guard="circuit_breaker",
                 name=self.name,
                 trip_count_today=self.trip_count_today,

@@ -28,6 +28,7 @@ strategy's signal-based exit.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 
@@ -133,3 +134,36 @@ def build_priced_ladder(
         )
         for stage in stages
     ]
+
+
+class PartialNotionalDecision(str, Enum):
+    """Outcome of :func:`evaluate_partial_notional`."""
+    EXECUTE = "execute"       # partial slice clears min-notional; proceed as-is
+    ESCALATE = "escalate"     # partial too small, but full remaining still clears min → close 100%
+    SKIP = "skip"             # both partial and full below min → dust; skip trigger
+
+
+def evaluate_partial_notional(
+    *,
+    remaining_qty: float,
+    close_pct: float,
+    price: float,
+    min_notional_usd: float,
+) -> PartialNotionalDecision:
+    """Decide whether a partial TP slice can execute, must escalate to full
+    close, or should be skipped as dust.
+
+    Production incident 2026-04-20: tp1_partial slice was $5.72 (<$10 min),
+    executor returned None, retry re-hit the same limit, SL/TP kill-switch
+    tripped and halted trading. This helper moves the decision out of the
+    executor retry loop so a dust-sized partial degrades gracefully.
+    """
+    if remaining_qty <= 0 or price <= 0 or close_pct <= 0:
+        return PartialNotionalDecision.SKIP
+    slice_notional = remaining_qty * close_pct / 100.0 * price
+    if slice_notional >= min_notional_usd:
+        return PartialNotionalDecision.EXECUTE
+    full_notional = remaining_qty * price
+    if full_notional >= min_notional_usd:
+        return PartialNotionalDecision.ESCALATE
+    return PartialNotionalDecision.SKIP

@@ -57,6 +57,14 @@ class VotingEnsemble:
         # predictions to avoid label leakage — see set_stacking_head() docstring.
         self._stacking_head: Optional[Any] = None
 
+    def __setstate__(self, state: dict) -> None:
+        # Back-fill attributes added after an ensemble was pickled. Without
+        # this, loading an older model crashes in predict_proba_calibrated on
+        # AttributeError for attrs that did not exist at save time.
+        self.__dict__.update(state)
+        if "_stacking_head" not in self.__dict__:
+            self._stacking_head = None
+
     def add_member(self, model: Any, tag: str, skill_score: float) -> None:
         """Add a trained model to the ensemble."""
         if skill_score <= 0.0:

@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTINEL — Observability</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/index.css">
+    <style>
+      .obs-grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+      .obs-card { padding: 1.25rem; border-radius: 12px; background: var(--panel-bg, #141922); border: 1px solid var(--panel-border, #222a38); }
+      .obs-card h3 { margin: 0 0 0.75rem; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.02em; }
+      .obs-empty { padding: 2rem 1rem; text-align: center; color: var(--muted, #7a8599); font-size: 0.85rem; }
+      .obs-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+      .obs-table th, .obs-table td { padding: 0.4rem 0.5rem; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.05); }
+      .obs-table th:first-child, .obs-table td:first-child { text-align: left; }
+      .obs-table th { color: var(--muted, #7a8599); font-weight: 500; font-size: 0.75rem; }
+      .obs-mono { font-family: "JetBrains Mono", monospace; }
+      .obs-bar-track { position: relative; height: 6px; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; margin-top: 0.2rem; }
+      .obs-bar-fill { position: absolute; top: 0; bottom: 0; left: 0; background: linear-gradient(90deg, #6ea8fe, #f87171); border-radius: 4px; }
+      .obs-pill { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600; }
+      .obs-pill.warn { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+      .obs-pill.error { background: rgba(248, 113, 113, 0.18); color: #f87171; }
+      .obs-pill.critical { background: rgba(220, 38, 38, 0.25); color: #fca5a5; }
+      .obs-pill.info { background: rgba(110, 168, 254, 0.15); color: #6ea8fe; }
+      .obs-summary-row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: baseline; margin-bottom: 0.75rem; }
+      .obs-stat { display: flex; flex-direction: column; }
+      .obs-stat .label { font-size: 0.7rem; color: var(--muted, #7a8599); text-transform: uppercase; letter-spacing: 0.05em; }
+      .obs-stat .value { font-size: 1.4rem; font-weight: 700; font-family: "JetBrains Mono", monospace; color: var(--accent, #6ea8fe); }
+      .obs-event-row { padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.78rem; }
+      .obs-event-row:last-child { border-bottom: none; }
+      .obs-event-meta { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.2rem; }
+      .obs-event-time { color: var(--muted, #7a8599); font-family: "JetBrains Mono", monospace; font-size: 0.7rem; }
+      .obs-event-reason { color: rgba(255,255,255,0.78); word-break: break-word; }
+      .obs-event-suppressed { font-size: 0.7rem; color: #fbbf24; margin-left: 0.5rem; }
+      .obs-controls { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+      .obs-controls select { padding: 0.35rem 0.5rem; border-radius: 6px; background: var(--panel-bg, #141922); color: inherit; border: 1px solid var(--panel-border, #222a38); font-size: 0.8rem; }
+      .obs-help { display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: rgba(255,255,255,0.08); color: var(--muted, #7a8599); text-align: center; font-size: 10px; line-height: 14px; cursor: help; margin-left: 0.35rem; user-select: none; }
+      .obs-help:hover { background: rgba(110,168,254,0.25); color: #fff; }
+      .obs-slo-row { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+      .obs-slo-row:last-child { border-bottom: none; }
+      .obs-slo-name { font-family: "JetBrains Mono", monospace; font-size: 0.82rem; }
+      .obs-slo-meta { font-size: 0.72rem; color: var(--muted, #7a8599); }
+      .obs-slo-burn { font-family: "JetBrains Mono", monospace; font-size: 0.85rem; font-weight: 600; }
+      .obs-slo-burn.ok { color: #34d399; }
+      .obs-slo-burn.warn { color: #fbbf24; }
+      .obs-slo-burn.breach { color: #f87171; }
+      .obs-empty.ok { color: #34d399; }
+      .obs-card h3 .obs-card-subtitle { display: block; font-weight: 400; font-size: 0.72rem; color: var(--muted, #7a8599); margin-top: 0.2rem; letter-spacing: 0; }
+      .obs-guide { margin: 0 0 1rem; border: 1px solid var(--panel-border, #222a38); border-radius: 10px; background: rgba(110,168,254,0.05); }
+      .obs-guide summary { padding: 0.7rem 1rem; cursor: pointer; font-size: 0.85rem; font-weight: 600; color: var(--accent, #6ea8fe); list-style: none; }
+      .obs-guide summary::-webkit-details-marker { display: none; }
+      .obs-guide summary::before { content: "▸ "; display: inline-block; transition: transform 0.15s; }
+      .obs-guide[open] summary::before { transform: rotate(90deg); }
+      .obs-guide-body { padding: 0 1rem 1rem; font-size: 0.82rem; line-height: 1.55; color: rgba(255,255,255,0.8); }
+      .obs-guide-body ul { margin: 0.4rem 0 0.6rem 1.1rem; padding: 0; }
+      .obs-guide-body li { margin: 0.25rem 0; }
+      .obs-guide-body strong { color: #fff; }
+      .obs-legend { display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.72rem; color: var(--muted, #7a8599); margin: 0.4rem 0 0.75rem; align-items: center; }
+      .obs-legend-label { margin-right: 0.25rem; }
+
+      /* Strategy Decisions live feed */
+      .dec-feed-status { display: flex; gap: 0.5rem; align-items: center; font-size: 0.72rem; color: var(--muted, #7a8599); margin-bottom: 0.6rem; }
+      .dec-feed-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #7a8599; }
+      .dec-feed-dot.live { background: #34d399; box-shadow: 0 0 6px #34d399; animation: dec-pulse 1.6s infinite; }
+      @keyframes dec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+      /* Summary strip — quick stats at the top of the Decisions card */
+      .dec-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 0.9rem; padding: 0.75rem 0.9rem; background: linear-gradient(180deg, rgba(110,168,254,0.04), rgba(110,168,254,0.01)); border: 1px solid rgba(110,168,254,0.12); border-radius: 10px; }
+      .dec-summary-item { display: flex; flex-direction: column; gap: 0.15rem; }
+      .dec-summary-label { font-size: 0.68rem; color: var(--muted, #7a8599); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
+      .dec-summary-value { font-size: 1.05rem; font-weight: 700; font-family: "JetBrains Mono", monospace; color: rgba(255,255,255,0.95); }
+      .dec-summary-value.positive { color: #34d399; }
+      .dec-summary-value.negative { color: #f87171; }
+      .dec-summary-value.warn { color: #fbbf24; }
+      .dec-summary-hint { font-size: 0.68rem; color: var(--muted, #7a8599); margin-top: 0.1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      /* Per-strategy micro-stats */
+      .dec-strategies { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.9rem; }
+      .dec-strategy-chip { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.6rem; border-radius: 999px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); font-size: 0.74rem; }
+      .dec-strategy-chip .dec-chip-name { font-family: "JetBrains Mono", monospace; color: rgba(255,255,255,0.88); }
+      .dec-strategy-chip .dec-chip-split { color: var(--muted, #7a8599); font-size: 0.68rem; font-family: "JetBrains Mono", monospace; }
+      .dec-strategy-chip .dec-chip-ok { color: #34d399; }
+      .dec-strategy-chip .dec-chip-bad { color: #f87171; }
+
+      .dec-row { display: grid; grid-template-columns: 80px 90px 150px 100px 1fr 110px 24px; gap: 0.6rem; align-items: center; padding: 0.55rem 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.8rem; cursor: pointer; transition: background 0.12s; }
+      .dec-row:hover { background: rgba(110,168,254,0.05); }
+      .dec-row.dec-new { animation: dec-flash 1.4s ease-out; }
+      @keyframes dec-flash { from { background: rgba(110,168,254,0.22); } to { background: transparent; } }
+      .dec-time { font-family: "JetBrains Mono", monospace; color: var(--muted, #7a8599); font-size: 0.72rem; }
+      .dec-symbol { font-family: "JetBrains Mono", monospace; font-weight: 600; color: #fff; }
+      .dec-strategy { font-size: 0.76rem; color: rgba(255,255,255,0.78); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .dec-dir { font-family: "JetBrains Mono", monospace; font-weight: 600; font-size: 0.78rem; }
+      .dec-dir.BUY { color: #34d399; }
+      .dec-dir.SELL { color: #f87171; }
+      .dec-conf { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: var(--muted, #7a8599); margin-left: 0.4rem; }
+      .dec-reason { color: rgba(255,255,255,0.78); font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .dec-outcome { text-align: right; }
+      .dec-outcome .obs-pill { font-size: 0.68rem; }
+      .dec-pill-approved { background: rgba(52, 211, 153, 0.18); color: #34d399; }
+      .dec-pill-rejected { background: rgba(248, 113, 113, 0.18); color: #f87171; }
+      .dec-pill-pending { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+      .dec-caret { text-align: right; color: var(--muted, #7a8599); transition: transform 0.15s; font-family: "JetBrains Mono", monospace; }
+      .dec-row.open .dec-caret { transform: rotate(90deg); }
+      .dec-details { padding: 0.6rem 1rem 1rem 1rem; background: rgba(255,255,255,0.02); border-bottom: 1px solid rgba(255,255,255,0.05); display: none; }
+      .dec-row.open + .dec-details { display: block; }
+      .dec-section { margin-top: 0.75rem; }
+      .dec-section:first-child { margin-top: 0; }
+      .dec-section-title { font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted, #7a8599); margin-bottom: 0.35rem; font-weight: 600; }
+      .dec-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.3rem 1.2rem; font-size: 0.76rem; }
+      .dec-kv-item { display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.22rem 0.5rem; border-radius: 4px; background: rgba(255,255,255,0.015); }
+      .dec-kv-item:hover { background: rgba(110,168,254,0.08); }
+      .dec-kv-item .dec-kv-label { display: flex; flex-direction: column; gap: 0.05rem; min-width: 0; }
+      .dec-kv-key { color: rgba(255,255,255,0.86); font-size: 0.74rem; font-weight: 500; }
+      .dec-kv-desc { color: var(--muted, #7a8599); font-size: 0.66rem; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .dec-kv-val { color: rgba(255,255,255,0.95); text-align: right; font-family: "JetBrains Mono", monospace; font-weight: 500; white-space: nowrap; }
+      .dec-kv-val.positive { color: #34d399; }
+      .dec-kv-val.negative { color: #f87171; }
+      .dec-kv-val.neutral { color: rgba(255,255,255,0.95); }
+
+      /* Feature groups (trend/momentum/volume/news) */
+      .dec-fgroup { margin-top: 0.7rem; }
+      .dec-fgroup:first-child { margin-top: 0; }
+      .dec-fgroup-title { font-size: 0.7rem; color: var(--muted, #7a8599); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.5rem; }
+      .dec-fgroup-title::before { content: ""; display: inline-block; width: 12px; height: 2px; background: currentColor; opacity: 0.4; }
+      .dec-fgroup.trend .dec-fgroup-title { color: #6ea8fe; }
+      .dec-fgroup.momentum .dec-fgroup-title { color: #a78bfa; }
+      .dec-fgroup.volatility .dec-fgroup-title { color: #fbbf24; }
+      .dec-fgroup.volume .dec-fgroup-title { color: #34d399; }
+      .dec-fgroup.news .dec-fgroup-title { color: #f87171; }
+      .dec-fgroup.market .dec-fgroup-title { color: rgba(255,255,255,0.7); }
+
+      /* Copy id helper */
+      .dec-copy-btn { background: transparent; border: 1px solid rgba(255,255,255,0.1); color: var(--muted, #7a8599); padding: 0.15rem 0.45rem; border-radius: 4px; font-size: 0.65rem; cursor: pointer; font-family: "JetBrains Mono", monospace; transition: all 0.12s; }
+      .dec-copy-btn:hover { color: #6ea8fe; border-color: rgba(110,168,254,0.4); }
+      .dec-sig-id { font-family: "JetBrains Mono", monospace; color: var(--muted, #7a8599); font-size: 0.7rem; }
+      .dec-reason-full { font-size: 0.8rem; color: rgba(255,255,255,0.88); padding: 0.45rem 0.6rem; background: rgba(255,255,255,0.03); border-left: 3px solid #6ea8fe; border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
+      .dec-gates { display: flex; flex-direction: column; gap: 0.25rem; }
+      .dec-gate { display: grid; grid-template-columns: 20px 1fr auto 80px; gap: 0.5rem; align-items: center; padding: 0.3rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-family: "JetBrains Mono", monospace; background: rgba(255,255,255,0.02); }
+      .dec-gate.approved { border-left: 3px solid #34d399; }
+      .dec-gate.rejected { border-left: 3px solid #f87171; background: rgba(248,113,113,0.05); }
+      .dec-gate.skipped { border-left: 3px solid #4a5568; opacity: 0.65; }
+      .dec-gate.error { border-left: 3px solid #fbbf24; background: rgba(251,191,36,0.05); }
+      .dec-gate-icon { text-align: center; }
+      .dec-gate-icon.approved { color: #34d399; }
+      .dec-gate-icon.rejected { color: #f87171; }
+      .dec-gate-icon.skipped { color: #7a8599; }
+      .dec-gate-icon.error { color: #fbbf24; }
+      .dec-gate-name { font-weight: 600; color: rgba(255,255,255,0.88); }
+      .dec-gate-reason { color: rgba(255,255,255,0.68); font-weight: 400; font-family: Inter, sans-serif; font-size: 0.74rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .dec-gate-latency { text-align: right; color: var(--muted, #7a8599); font-size: 0.7rem; }
+      .dec-gate-payload { grid-column: 2 / -1; font-size: 0.7rem; color: var(--muted, #7a8599); margin-top: 0.2rem; padding-left: 0.5rem; border-left: 1px dashed rgba(255,255,255,0.1); }
+      .dec-empty { padding: 1.5rem; text-align: center; color: var(--muted, #7a8599); font-size: 0.82rem; }
+      .dec-row-head { display: grid; grid-template-columns: 80px 90px 150px 100px 1fr 110px 24px; gap: 0.6rem; padding: 0.35rem 0.6rem; font-size: 0.7rem; color: var(--muted, #7a8599); letter-spacing: 0.04em; text-transform: uppercase; border-bottom: 1px solid rgba(255,255,255,0.08); }
+      .dec-rel-time { font-size: 0.66rem; color: var(--muted, #7a8599); font-family: "JetBrains Mono", monospace; }
+      .dec-gate-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 4px; background: rgba(248,113,113,0.12); color: #f87171; font-size: 0.66rem; font-family: "JetBrains Mono", monospace; margin-right: 0.35rem; font-weight: 600; }
+      .dec-filter-bar { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.6rem; }
+      .dec-filter-bar button { padding: 0.3rem 0.7rem; border-radius: 6px; border: 1px solid var(--panel-border, #222a38); background: transparent; color: var(--muted, #7a8599); font-size: 0.72rem; cursor: pointer; font-family: inherit; }
+      .dec-filter-bar button.active { background: rgba(110,168,254,0.18); color: #6ea8fe; border-color: rgba(110,168,254,0.4); }
+      .dec-filter-bar button:hover:not(.active) { color: #fff; }
+      @media (max-width: 760px) {
+        .dec-row, .dec-row-head { grid-template-columns: 70px 70px 1fr 90px 24px; }
+        .dec-strategy, .dec-reason { display: none; }
+      }
+    </style>
+</head>
+<body>
+    <div class="accent-bar" aria-hidden="true"></div>
+
+    <header class="header" role="banner">
+        <div class="header-left">
+            <button class="mobile-menu-toggle" id="mobile-menu-toggle" aria-label="Открыть меню" aria-expanded="false" aria-controls="sidebar">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+            <div class="header-logo">
+                <div class="header-logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                </div>
+                SENTINEL
+            </div>
+            <span class="header-version">Observability</span>
+            <span id="alert-badge" class="obs-pill" style="margin-left:0.75rem; display:none;" role="status" aria-live="polite"></span>
+        </div>
+        <div class="header-right">
+            <button id="refresh-btn" class="header-nav-link" title="Обновить" aria-label="Refresh">
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+        </div>
+    </header>
+
+    <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop" aria-hidden="true"></div>
+    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation"></nav>
+
+    <div class="app-layout">
+    <main class="container" role="main">
+        <p class="metrics-intro fade-in">
+            Структурированные события из <code>logs/events.jsonl</code>: какие risk-гейты блокируют сигналы,
+            какие компоненты падают, и какие защиты срабатывают. Это зеркало невидимой работы системы — здесь
+            появляется всё, что в обычных текстовых логах теряется.
+        </p>
+
+        <details class="obs-guide fade-in">
+            <summary>Новичку: как читать эту страницу за 30 секунд</summary>
+            <div class="obs-guide-body">
+                <p>Страница показывает, <strong>что бот делает и что ему мешает</strong> прямо сейчас. Смотреть сверху вниз:</p>
+                <ul>
+                    <li><strong>Плашка в шапке</strong> — светофор. Нет плашки = всё спокойно. Жёлтая/красная = что-то идёт не так, читайте дальше.</li>
+                    <li><strong>Здоровье системы (SLO)</strong> — зелёные цифры значат «цели выполняются». Красные «burn &gt; 1.0» = цель нарушена, ищите причину в карточках ниже.</li>
+                    <li><strong>Сигналы за окно</strong> — сколько идей на покупку бот одобрил/отклонил. <em>BUY-rate</em> ниже 40% — значит пайплайн режет много сигналов.</li>
+                    <li><strong>Почему бот не открывает сделки</strong> — если BUY-rate низкий, здесь виден виновник (конкретный риск-гейт).</li>
+                    <li><strong>Что ломалось / Когда бот сам себя остановил</strong> — пусто = хорошо. Появились строки → загляните в «Последние сбои» внизу.</li>
+                </ul>
+                <p><strong>Тревожиться стоит</strong>, если: в шапке красная плашка CRITICAL, сработал kill_switch, или один компонент стабильно ломается подряд (увидите <code>+N suppressed</code>).</p>
+            </div>
+        </details>
+
+        <div class="obs-controls fade-in">
+            <label for="window-select" style="font-size:0.8rem; color: var(--muted, #7a8599);">Окно:</label>
+            <select id="window-select">
+                <option value="1">1 час</option>
+                <option value="6">6 часов</option>
+                <option value="24" selected>24 часа</option>
+                <option value="72">3 дня</option>
+                <option value="168">7 дней</option>
+            </select>
+            <span id="scan-info" class="obs-event-time" style="margin-left:auto;"></span>
+        </div>
+
+        <div class="obs-grid">
+            <!-- SLO -->
+            <section class="obs-card fade-in" id="card-slo" style="grid-column: 1 / -1;">
+                <h3>Здоровье системы
+                  <span class="obs-help" title="Простыми словами: у системы есть цели («аптайм не ниже N%», «ошибок не больше M%»). Колонка burn показывает, насколько мы выходим за бюджет: 0.0 — идеально, 1.0 — бюджет исчерпан, больше 1.0 — цель нарушена. Когда волноваться: есть строки со статусом breach (красный burn). Тогда ищите причину в карточках ниже.">?</span>
+                  <span class="obs-card-subtitle">SLO и расход error-budget. Зелёный — цель выполняется, красный — нарушена.</span>
+                </h3>
+                <div id="slo-body" class="obs-empty">Загрузка…</div>
+            </section>
+
+            <!-- Signals summary -->
+            <section class="obs-card fade-in" id="card-signals">
+                <h3>Сигналы за окно
+                  <span class="obs-help" title="Простыми словами: стратегии предлагают идеи на покупку/продажу, риск-пайплайн решает пропустить или отклонить. approved — прошло, rejected — не прошло. Главный индикатор здоровья — BUY-rate (продажи не блокируются, они всегда проходят). Когда волноваться: BUY-rate ниже 40% — бот отклоняет слишком много, смотрите соседнюю карточку «Почему бот не открывает сделки».">?</span>
+                  <span class="obs-card-subtitle">Сколько идей на покупку бот одобрил и отклонил.</span>
+                </h3>
+                <div id="signals-body" class="obs-empty">Загрузка…</div>
+            </section>
+
+            <!-- Top blocking gates -->
+            <section class="obs-card fade-in" id="card-gates">
+                <h3>Почему бот не открывает сделки
+                  <span class="obs-help" title="Простыми словами: риск-гейты — это проверки перед сделкой («хватает ли лимита», «не в просадке ли мы», «не шторм ли на рынке»). Таблица показывает, какая проверка чаще всего режет сигналы. Когда волноваться: один гейт отвечает за >50% отказов — значит либо его порог слишком строгий, либо причина актуальна (например, drawdown_breaker во время реальной просадки — это ок).">?</span>
+                  <span class="obs-card-subtitle">Рейтинг риск-гейтов, режущих сигналы.</span>
+                </h3>
+                <div id="gates-body" class="obs-empty">Загрузка…</div>
+            </section>
+
+            <!-- Component errors aggregate -->
+            <section class="obs-card fade-in" id="card-components">
+                <h3>Что ломалось
+                  <span class="obs-help" title="Простыми словами: какие внутренние модули системы падали — ML-модели, исполнители ордеров, сборщики данных. Цвета: красный (critical) — критично, срочно; оранжевый (error) — нужно разобраться; жёлтый (warning) — терпимо. Когда волноваться: появился хотя бы один critical, или один компонент ломается снова и снова.">?</span>
+                  <span class="obs-card-subtitle">Сбои модулей: ML, executors, collectors и др.</span>
+                  <div class="obs-legend">
+                    <span class="obs-legend-label">Уровни:</span>
+                    <span class="obs-pill critical">critical — срочно</span>
+                    <span class="obs-pill error">error — разобраться</span>
+                    <span class="obs-pill warn">warning — терпимо</span>
+                  </div>
+                </h3>
+                <div id="components-body" class="obs-empty">Загрузка…</div>
+            </section>
+
+            <!-- Guards tripped -->
+            <section class="obs-card fade-in" id="card-guards">
+                <h3>Когда бот сам себя остановил
+                  <span class="obs-help" title="Простыми словами: у бота есть автоматические стоп-краны — circuit breakers (реагируют на аномалии), drawdown breaker (просадка капитала), kill_switch (ручной стоп). Каждое срабатывание блокирует торговлю. Когда волноваться: kill_switch активен; один circuit breaker сработал 3 раза за день (это ведёт к permanent_stop); много срабатываний подряд — значит рынок шторм или у нас слишком чувствительные пороги.">?</span>
+                  <span class="obs-card-subtitle">Автоматические стоп-краны: circuit breakers, drawdown, kill_switch.</span>
+                </h3>
+                <div id="guards-body" class="obs-empty">Загрузка…</div>
+            </section>
+
+            <!-- Live strategy decisions feed (real-time) -->
+            <section class="obs-card fade-in" id="card-decisions" style="grid-column: 1 / -1;">
+                <h3>Решения стратегий в реальном времени
+                  <span class="obs-help" title="Простыми словами: каждая строка — это сигнал, который выдала одна из стратегий. Клик по строке раскрывает: (1) обоснование стратегии — почему она сгенерировала сигнал; (2) снимок всех индикаторов (RSI, MACD, ADX, новости, регим рынка) в момент решения; (3) протокол риск-пайплайна — каждый гейт: пропустил или заблокировал, с причиной и латенси. Зелёный badge — сделка прошла к исполнителю; красный — заблокирована риск-гейтом (смотрите в деталях, каким именно); жёлтый — решение ещё в обработке. Живой поток: новые сигналы прилетают через WebSocket без перезагрузки.">?</span>
+                  <span class="obs-card-subtitle">Живой поток сигналов + протокол решений каждого риск-гейта. Клик — раскрывает обоснование и все индикаторы.</span>
+                </h3>
+                <div class="dec-feed-status">
+                    <span id="dec-feed-dot" class="dec-feed-dot"></span>
+                    <span id="dec-feed-status-text">подключение…</span>
+                    <span id="dec-feed-count" style="margin-left:auto;"></span>
+                </div>
+                <div class="dec-filter-bar">
+                    <button class="active" data-filter="all">Все</button>
+                    <button data-filter="approved">Одобрены</button>
+                    <button data-filter="rejected">Отклонены</button>
+                    <button data-filter="pending">В обработке</button>
+                    <button data-filter="BUY">BUY</button>
+                    <button data-filter="SELL">SELL</button>
+                </div>
+                <div id="dec-list-wrap">
+                    <div class="dec-row-head">
+                        <div>Время</div>
+                        <div>Символ</div>
+                        <div>Стратегия</div>
+                        <div>Направление</div>
+                        <div>Обоснование</div>
+                        <div style="text-align:right;">Итог</div>
+                        <div></div>
+                    </div>
+                    <div id="dec-list" class="dec-empty">Ожидание сигналов…</div>
+                </div>
+            </section>
+
+            <!-- Recent component_error events -->
+            <section class="obs-card fade-in" id="card-recent-errors" style="grid-column: 1 / -1;">
+                <h3>Последние сбои — подробно
+                  <span class="obs-help" title="Простыми словами: развёрнутый список последних падений с типом исключения и пояснением. Запись «+N suppressed» означает, что одно и то же падение повторилось N раз подряд — это «шторм ошибок», смотрите компонент. Когда волноваться: есть critical, или видите +N suppressed с большим N (модуль стабильно падает и ничего не делает).">?</span>
+                  <span class="obs-card-subtitle">Каждая строка — одно событие сбоя с типом и причиной.</span>
+                </h3>
+                <div id="recent-errors-body" class="obs-empty">Загрузка…</div>
+            </section>
+        </div>
+    </main>
+    </div>
+
+<script>
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+
+  async function obsFetch(path) {
+    const res = await fetch(path, {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { "Accept": "application/json" },
+    });
+    if (res.status === 401) { window.location.href = "/login"; return null; }
+    if (!res.ok) throw new Error(path + " → " + res.status);
+    return await res.json();
+  }
+
+  function fmtTime(tsMs) {
+    if (!tsMs) return "—";
+    const d = new Date(tsMs);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function renderSignals(data) {
+    const s = data.signals || {};
+    const buy = s.buy || {};
+    const sell = s.sell || {};
+    const fmtRate = (r) => r == null ? "—" : `${(r * 100).toFixed(1)}%`;
+    // BUY rate is the honest gating-health metric (SELL bypasses entry
+    // gates and always approves — so overall rate is misleading).
+    $("signals-body").innerHTML = `
+      <div class="obs-summary-row">
+        <div class="obs-stat">
+          <span class="label">approved</span>
+          <span class="value">${s.approved || 0}</span>
+        </div>
+        <div class="obs-stat">
+          <span class="label">rejected</span>
+          <span class="value" style="color:#f87171;">${s.rejected || 0}</span>
+        </div>
+        <div class="obs-stat">
+          <span class="label">BUY rate <span style="font-size:0.6rem;color:var(--muted,#7a8599);">(gating health)</span></span>
+          <span class="value">${fmtRate(buy.approval_rate)}</span>
+        </div>
+      </div>
+      <table class="obs-table" style="margin-top:0.5rem;">
+        <thead><tr><th></th><th>approved</th><th>rejected</th><th>rate</th></tr></thead>
+        <tbody>
+          <tr><td class="obs-mono">BUY</td><td>${buy.approved || 0}</td><td>${buy.rejected || 0}</td><td>${fmtRate(buy.approval_rate)}</td></tr>
+          <tr><td class="obs-mono">SELL</td><td>${sell.approved || 0}</td><td>${sell.rejected || 0}</td><td>${fmtRate(sell.approval_rate)}</td></tr>
+          <tr><td class="obs-mono">overall</td><td>${s.approved || 0}</td><td>${s.rejected || 0}</td><td>${fmtRate(s.approval_rate)}</td></tr>
+        </tbody>
+      </table>
+    `;
+  }
+
+  function renderGates(data) {
+    const gates = data.top_blocking_gates || [];
+    if (!gates.length) {
+      $("gates-body").innerHTML = `<div class="obs-empty ok">✓ Риск-гейты не блокировали сигналы — пайплайн пропускает всё, что приходит</div>`;
+      return;
+    }
+    const max = Math.max(...gates.map(g => g.count));
+    const rows = gates.map(g => `
+      <tr>
+        <td class="obs-mono">${escapeHtml(g.gate)}</td>
+        <td>${g.count}</td>
+        <td>${g.pct_of_rejections.toFixed(1)}%</td>
+      </tr>
+      <tr><td colspan="3" style="border-bottom:none; padding:0 0.5rem 0.5rem;">
+        <div class="obs-bar-track"><div class="obs-bar-fill" style="width:${(g.count / max * 100).toFixed(1)}%;"></div></div>
+      </td></tr>
+    `).join("");
+    $("gates-body").innerHTML = `
+      <table class="obs-table">
+        <thead><tr><th>Гейт</th><th>Блокировок</th><th>%</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  function renderComponents(data) {
+    const errs = data.errors_by_component || [];
+    const sevs = data.errors_by_severity || {};
+    if (!errs.length) {
+      $("components-body").innerHTML = `<div class="obs-empty ok">✓ Компоненты работают без сбоев</div>`;
+      return;
+    }
+    const sevPills = Object.entries(sevs).map(([k, v]) =>
+      `<span class="obs-pill ${escapeHtml(k)}">${escapeHtml(k)}: ${v}</span>`
+    ).join(" ");
+    const rows = errs.map(e => `
+      <tr><td class="obs-mono">${escapeHtml(e.component)}</td><td>${e.count}</td></tr>
+    `).join("");
+    $("components-body").innerHTML = `
+      <div style="margin-bottom: 0.6rem;">${sevPills || "—"}</div>
+      <table class="obs-table">
+        <thead><tr><th>Компонент</th><th>Сбоев</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  function renderGuards(data) {
+    const guards = data.guards_tripped || [];
+    const recent = data.recent_guards_tripped || [];
+    if (!guards.length) {
+      $("guards-body").innerHTML = `<div class="obs-empty ok">✓ Защиты не срабатывали — торговля идёт без вмешательства стоп-кранов</div>`;
+      return;
+    }
+    const rows = guards.map(g =>
+      `<tr><td class="obs-mono">${escapeHtml(g.guard)}</td><td>${g.count}</td></tr>`
+    ).join("");
+    const recentRows = recent.slice(0, 5).map(r => `
+      <div class="obs-event-row">
+        <div class="obs-event-meta">
+          <span class="obs-pill warn">${escapeHtml(r.guard)}</span>
+          ${r.name ? `<span class="obs-mono">${escapeHtml(r.name)}</span>` : ""}
+          <span class="obs-event-time">${fmtTime(r.ts)}</span>
+        </div>
+        ${r.reason ? `<div class="obs-event-reason">${escapeHtml(r.reason)}</div>` : ""}
+      </div>
+    `).join("");
+    $("guards-body").innerHTML = `
+      <table class="obs-table">
+        <thead><tr><th>Защита</th><th>Срабатываний</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:0.75rem;">${recentRows}</div>
+    `;
+  }
+
+  function renderRecentErrors(data) {
+    const errors = data.recent_component_errors || [];
+    if (!errors.length) {
+      $("recent-errors-body").innerHTML = `<div class="obs-empty ok">✓ За выбранное окно сбоев нет</div>`;
+      return;
+    }
+    const rows = errors.map(e => {
+      const sev = e.severity || "error";
+      const supp = e.suppressed_count
+        ? `<span class="obs-event-suppressed">+${e.suppressed_count} suppressed</span>` : "";
+      return `
+        <div class="obs-event-row">
+          <div class="obs-event-meta">
+            <span class="obs-pill ${escapeHtml(sev)}">${escapeHtml(sev)}</span>
+            <span class="obs-mono">${escapeHtml(e.component)}</span>
+            <span class="obs-event-time">${fmtTime(e.ts)}</span>
+            ${e.exc_type ? `<span class="obs-event-time">${escapeHtml(e.exc_type)}</span>` : ""}
+            ${supp}
+          </div>
+          <div class="obs-event-reason">${escapeHtml(e.reason)}</div>
+        </div>
+      `;
+    }).join("");
+    $("recent-errors-body").innerHTML = rows;
+  }
+
+  // Alert thresholds — mirrors the operator instinct "should I be alarmed?".
+  // Tuned for crypto bot reality: a couple of warnings/hour is normal,
+  // an error storm or critical event needs an eyeball NOW.
+  function computeAlert(data) {
+    const sev = data.errors_by_severity || {};
+    const guards = (data.guards_tripped || []).reduce((a, g) => a + (g.count || 0), 0);
+    const critical = (sev.critical || 0);
+    const errors = (sev.error || 0);
+    const warnings = (sev.warning || 0);
+    if (critical > 0) {
+      return { cls: "critical", text: `⚠ CRITICAL × ${critical}` };
+    }
+    if (errors >= 5 || guards >= 3) {
+      return { cls: "error", text: `errors × ${errors}, guard trips × ${guards}` };
+    }
+    if (warnings >= 10) {
+      return { cls: "warn", text: `warnings × ${warnings}` };
+    }
+    return null;
+  }
+
+  function renderAlertBadge(data) {
+    const badge = $("alert-badge");
+    const alert = computeAlert(data);
+    if (!alert) {
+      badge.style.display = "none";
+      badge.className = "obs-pill";
+      badge.textContent = "";
+      return;
+    }
+    badge.style.display = "inline-block";
+    badge.className = `obs-pill ${alert.cls}`;
+    badge.textContent = alert.text;
+  }
+
+  function renderSLO(slo) {
+    const body = $("slo-body");
+    if (!slo || !slo.slos || !slo.slos.length) {
+      body.innerHTML = `<div class="obs-empty">SLO недоступны</div>`;
+      return;
+    }
+    const fmt = (v) => v == null ? "—" : (typeof v === "number" ? v.toFixed(2) : v);
+    body.innerHTML = slo.slos.map(s => `
+      <div class="obs-slo-row">
+        <div>
+          <div class="obs-slo-name">${escapeHtml(s.name)}</div>
+          <div class="obs-slo-meta">target=${fmt(s.target)} · actual=${fmt(s.actual)}</div>
+        </div>
+        <div class="obs-slo-burn ${escapeHtml(s.status)}">
+          burn ${s.burn == null ? "—" : s.burn.toFixed(2)}
+        </div>
+      </div>
+    `).join("");
+  }
+
+  async function load() {
+    const hours = $("window-select").value;
+    try {
+      const [data, sloData] = await Promise.all([
+        obsFetch(`/api/observability/summary?window_hours=${hours}&max_events=2000`),
+        obsFetch(`/api/observability/slo?window_hours=${hours}`).catch(() => null),
+      ]);
+      if (!data) return;
+      $("scan-info").textContent =
+        `events scanned: ${data.events_scanned}` +
+        (data.events_path_exists ? "" : " (events.jsonl missing)");
+      renderAlertBadge(data);
+      renderSignals(data);
+      renderGates(data);
+      renderComponents(data);
+      renderGuards(data);
+      renderRecentErrors(data);
+      renderSLO(sloData);
+    } catch (err) {
+      console.error(err);
+      $("scan-info").textContent = "ошибка загрузки";
+    }
+  }
+
+  $("window-select").addEventListener("change", load);
+  $("refresh-btn").addEventListener("click", load);
+
+  load();
+  // Auto-refresh every 30s — events.jsonl tails fast, dashboard should follow.
+  setInterval(load, 30_000);
+
+  // ──────────────────────────────────────────────────────────────
+  // Strategy Decisions — live feed
+  //
+  // Two data paths feed the same UI model (Map keyed by signal_id):
+  //   1) initial HTTP load from /api/strategy/recent-decisions
+  //   2) live WebSocket push of strategy_decision + signal_decision events
+  // Incoming WS events are merged by signal_id so strategy output and risk
+  // verdict for the same signal collapse into one row (expanded view shows
+  // both halves). Rows older than MAX_ROWS are evicted to keep the DOM tight.
+  // ──────────────────────────────────────────────────────────────
+  const decState = {
+    rowsById: new Map(),   // signal_id → row object
+    expanded: new Set(),   // signal_ids with open details
+    filter: "all",
+    ws: null,
+    wsConnected: false,
+    maxRows: 100,
+  };
+
+  const GATE_LABELS = {
+    circuit_breakers: "Circuit breakers (автоматические стоп-краны)",
+    stale_data: "Свежесть рыночных данных",
+    multi_tf: "Согласование таймфреймов (4h + 1d)",
+    regime: "Режим рынка",
+    news_cooldown: "Кулдаун после критических новостей",
+    liquidity: "Ликвидность / глубина рынка",
+    drawdown: "Drawdown breaker (просадка капитала)",
+    correlation: "Корреляционный кластер",
+    exposure_cap: "Лимит по классу актива",
+    legacy_checks: "Базовые проверки (баланс, R:R, SL)",
+  };
+
+  function decEscape(s) { return escapeHtml(s); }
+
+  function decFmtFeatureValue(k, v) {
+    if (v === null || v === undefined || v === "") return "—";
+    if (typeof v === "number") {
+      if (!isFinite(v)) return "—";
+      const abs = Math.abs(v);
+      if (abs >= 1000) return v.toFixed(2);
+      if (abs >= 1) return v.toFixed(4);
+      if (abs > 0) return v.toFixed(6);
+      return "0";
+    }
+    if (typeof v === "boolean") return v ? "yes" : "no";
+    return String(v);
+  }
+
+  function decOutcomeClass(outcome) {
+    if (outcome === "approved") return "dec-pill-approved";
+    if (outcome === "rejected") return "dec-pill-rejected";
+    return "dec-pill-pending";
+  }
+
+  function decOutcomeLabel(outcome) {
+    if (outcome === "approved") return "APPROVED";
+    if (outcome === "rejected") return "REJECTED";
+    if (outcome === "pending") return "PENDING";
+    return outcome ? String(outcome).toUpperCase() : "—";
+  }
+
+  function decGateIcon(outcome) {
+    if (outcome === "approved") return "✓";
+    if (outcome === "rejected") return "✗";
+    if (outcome === "skipped") return "⊘";
+    if (outcome === "error") return "⚠";
+    return "·";
+  }
+
+  function decRenderDetails(row) {
+    // Strategy block — what the strategy WANTED to do, and why
+    const strategyReason = row.strategy_reason
+      ? `<div class="dec-reason-full">${decEscape(row.strategy_reason)}</div>`
+      : `<div class="dec-empty" style="padding:0.4rem;">Обоснование стратегии отсутствует (старое событие или сбой эмиссии).</div>`;
+
+    const qty = row.suggested_quantity || 0;
+    const sl = row.stop_loss || 0;
+    const tp = row.take_profit || 0;
+    const tradeParamsParts = [];
+    if (qty) tradeParamsParts.push(`<div class="dec-kv-item"><span class="dec-kv-key">quantity</span><span class="dec-kv-val">${decEscape(qty)}</span></div>`);
+    if (sl) tradeParamsParts.push(`<div class="dec-kv-item"><span class="dec-kv-key">stop_loss</span><span class="dec-kv-val">${decEscape(sl)}</span></div>`);
+    if (tp) tradeParamsParts.push(`<div class="dec-kv-item"><span class="dec-kv-key">take_profit</span><span class="dec-kv-val">${decEscape(tp)}</span></div>`);
+    const tradeParams = tradeParamsParts.length
+      ? `<div class="dec-kv" style="margin-top:0.4rem;">${tradeParamsParts.join("")}</div>` : "";
+
+    // Features — the indicator snapshot at decision time
+    const fs = row.feature_snapshot || {};
+    const featureKeys = Object.keys(fs).filter(k => fs[k] !== null && fs[k] !== undefined && fs[k] !== "");
+    let featuresHtml = "";
+    if (featureKeys.length) {
+      const items = featureKeys.map(k =>
+        `<div class="dec-kv-item"><span class="dec-kv-key">${decEscape(k)}</span><span class="dec-kv-val">${decEscape(decFmtFeatureValue(k, fs[k]))}</span></div>`
+      ).join("");
+      featuresHtml = `<div class="dec-kv">${items}</div>`;
+    } else {
+      featuresHtml = `<div class="dec-empty" style="padding:0.4rem;">Снимок индикаторов не сохранён.</div>`;
+    }
+
+    // Risk gates — the pipeline's decision trace
+    const gates = Array.isArray(row.gates) ? row.gates : [];
+    let gatesHtml = "";
+    if (!gates.length) {
+      if (row.risk_outcome === "pending") {
+        gatesHtml = `<div class="dec-empty" style="padding:0.5rem;">Риск-пайплайн ещё не обработал этот сигнал.</div>`;
+      } else {
+        gatesHtml = `<div class="dec-empty" style="padding:0.5rem;">Протокол гейтов недоступен.</div>`;
+      }
+    } else {
+      gatesHtml = `<div class="dec-gates">` + gates.map(g => {
+        const outcome = g.outcome || "skipped";
+        const label = GATE_LABELS[g.gate] || g.gate;
+        const latency = g.latency_us != null ? `${(g.latency_us / 1000).toFixed(2)}ms` : "—";
+        const payloadRows = g.payload && Object.keys(g.payload).length
+          ? `<div class="dec-gate-payload">${Object.entries(g.payload)
+              .slice(0, 8)
+              .map(([k, v]) => `${decEscape(k)}=${decEscape(typeof v === "object" ? JSON.stringify(v) : v)}`)
+              .join(" · ")}</div>`
+          : "";
+        return `
+          <div class="dec-gate ${decEscape(outcome)}">
+            <div class="dec-gate-icon ${decEscape(outcome)}">${decGateIcon(outcome)}</div>
+            <div><span class="dec-gate-name">${decEscape(label)}</span>${g.reason ? ` <span class="dec-gate-reason">— ${decEscape(g.reason)}</span>` : ""}</div>
+            <div></div>
+            <div class="dec-gate-latency">${decEscape(latency)}</div>
+            ${payloadRows}
+          </div>
+        `;
+      }).join("") + `</div>`;
+    }
+
+    const finalLine = row.risk_final_reason
+      ? `<div style="margin-top:0.5rem; font-size:0.78rem; color:rgba(255,255,255,0.78);">Итог: <span class="obs-pill ${decOutcomeClass(row.risk_outcome)}">${decOutcomeLabel(row.risk_outcome)}</span> — ${decEscape(row.risk_final_reason)}</div>`
+      : "";
+
+    return `
+      <div class="dec-section">
+        <div class="dec-section-title">Решение стратегии</div>
+        ${strategyReason}
+        ${tradeParams}
+      </div>
+      <div class="dec-section">
+        <div class="dec-section-title">Снимок индикаторов в момент решения</div>
+        ${featuresHtml}
+      </div>
+      <div class="dec-section">
+        <div class="dec-section-title">Проверка рисков — протокол гейтов</div>
+        ${gatesHtml}
+        ${finalLine}
+      </div>
+    `;
+  }
+
+  function decPassesFilter(row) {
+    const f = decState.filter;
+    if (f === "all") return true;
+    if (f === "approved" || f === "rejected" || f === "pending") return row.risk_outcome === f;
+    if (f === "BUY" || f === "SELL") return row.direction === f;
+    return true;
+  }
+
+  function decRender(flashIds) {
+    const listEl = $("dec-list");
+    const rows = Array.from(decState.rowsById.values())
+      .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+      .filter(decPassesFilter);
+
+    $("dec-feed-count").textContent = `показано: ${rows.length} / всего: ${decState.rowsById.size}`;
+
+    if (!rows.length) {
+      listEl.className = "dec-empty";
+      listEl.innerHTML = decState.rowsById.size
+        ? "Нет решений под текущий фильтр."
+        : "Ожидание сигналов…";
+      return;
+    }
+
+    listEl.className = "";
+    listEl.innerHTML = rows.map(r => {
+      const isOpen = decState.expanded.has(r.signal_id);
+      const isNew = flashIds && flashIds.has(r.signal_id);
+      const dirClass = r.direction === "BUY" ? "BUY" : (r.direction === "SELL" ? "SELL" : "");
+      const outcomeCls = decOutcomeClass(r.risk_outcome);
+      const outcomeLabel = decOutcomeLabel(r.risk_outcome);
+      const reasonText = r.strategy_reason || r.risk_final_reason || "—";
+      const conf = typeof r.confidence === "number" ? r.confidence.toFixed(2) : "—";
+      return `
+        <div class="dec-row ${isOpen ? "open" : ""} ${isNew ? "dec-new" : ""}" data-id="${decEscape(r.signal_id)}">
+          <div class="dec-time">${fmtTime(r.ts)}</div>
+          <div class="dec-symbol">${decEscape(r.symbol || "—")}</div>
+          <div class="dec-strategy" title="${decEscape(r.strategy)}">${decEscape(r.strategy || "—")}</div>
+          <div><span class="dec-dir ${dirClass}">${decEscape(r.direction || "—")}</span><span class="dec-conf">${conf}</span></div>
+          <div class="dec-reason" title="${decEscape(reasonText)}">${decEscape(reasonText)}</div>
+          <div class="dec-outcome"><span class="obs-pill ${outcomeCls}">${outcomeLabel}</span></div>
+          <div class="dec-caret">▸</div>
+        </div>
+        <div class="dec-details" data-id="${decEscape(r.signal_id)}">${isOpen ? decRenderDetails(r) : ""}</div>
+      `;
+    }).join("");
+  }
+
+  function decUpsert(row, flashIds) {
+    if (!row || !row.signal_id) return;
+    const existing = decState.rowsById.get(row.signal_id);
+    if (existing) {
+      // Merge: preserve fields already present if the new payload doesn't carry them
+      const merged = Object.assign({}, existing, row);
+      // Keep the earliest timestamp — that's when the decision was made
+      merged.ts = Math.min(existing.ts || row.ts || 0, row.ts || existing.ts || 0) || (row.ts || existing.ts);
+      decState.rowsById.set(row.signal_id, merged);
+    } else {
+      decState.rowsById.set(row.signal_id, row);
+      if (flashIds) flashIds.add(row.signal_id);
+    }
+    // Evict oldest beyond maxRows
+    if (decState.rowsById.size > decState.maxRows) {
+      const sorted = Array.from(decState.rowsById.values()).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      const excess = sorted.slice(0, decState.rowsById.size - decState.maxRows);
+      for (const r of excess) {
+        decState.rowsById.delete(r.signal_id);
+        decState.expanded.delete(r.signal_id);
+      }
+    }
+  }
+
+  function decFromEvent(record) {
+    // Convert a raw events.jsonl record (strategy_decision OR signal_decision)
+    // into the unified row shape the UI uses.
+    const sid = String(record.signal_id || "");
+    if (!sid) return null;
+    const base = {
+      signal_id: sid,
+      ts: record.ts || Date.now(),
+      symbol: record.symbol || "",
+      strategy: record.strategy || "",
+      direction: record.direction || "",
+      confidence: typeof record.confidence === "number" ? record.confidence : 0,
+    };
+    if (record.type === "strategy_decision") {
+      return Object.assign(base, {
+        strategy_reason: record.reason || "",
+        suggested_quantity: record.suggested_quantity || 0,
+        stop_loss: record.stop_loss || 0,
+        take_profit: record.take_profit || 0,
+        feature_snapshot: record.feature_snapshot || {},
+        risk_outcome: "pending",
+        risk_final_reason: "",
+        gates: [],
+      });
+    }
+    if (record.type === "signal_decision") {
+      return Object.assign(base, {
+        risk_outcome: record.final_outcome || "",
+        risk_final_reason: record.final_reason || "",
+        gates: record.gates || [],
+        feature_snapshot: record.feature_snapshot || {},
+      });
+    }
+    return null;
+  }
+
+  async function decLoadInitial() {
+    try {
+      const data = await obsFetch("/api/strategy/recent-decisions?limit=50&window_hours=6");
+      if (!data) return;
+      const flashIds = new Set();
+      (data.decisions || []).forEach(row => decUpsert(row, null));
+      decRender(flashIds);
+    } catch (err) {
+      console.error("decLoadInitial:", err);
+      $("dec-list").className = "dec-empty";
+      $("dec-list").innerHTML = "Ошибка загрузки решений.";
+    }
+  }
+
+  function decConnectWS() {
+    try {
+      const proto = (location.protocol === "https:") ? "wss:" : "ws:";
+      const url = `${proto}//${location.host}/ws`;
+      const ws = new WebSocket(url);
+      decState.ws = ws;
+
+      ws.onopen = () => {
+        decState.wsConnected = true;
+        $("dec-feed-dot").classList.add("live");
+        $("dec-feed-status-text").textContent = "живое подключение — новые сигналы в реальном времени";
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type !== "decision_event") return;
+          const row = decFromEvent(msg.data || {});
+          if (!row) return;
+          const flashIds = new Set();
+          decUpsert(row, flashIds);
+          decRender(flashIds);
+        } catch (_) { /* bad frame — ignore */ }
+      };
+      ws.onclose = () => {
+        decState.wsConnected = false;
+        $("dec-feed-dot").classList.remove("live");
+        $("dec-feed-status-text").textContent = "переподключение…";
+        // Exponential-ish reconnect — cap at 10s. Polling still covers the gap.
+        setTimeout(decConnectWS, 3000);
+      };
+      ws.onerror = () => { try { ws.close(); } catch (_) {} };
+    } catch (err) {
+      console.error("WS connect failed:", err);
+      $("dec-feed-status-text").textContent = "WebSocket недоступен — работает polling";
+      setTimeout(decConnectWS, 5000);
+    }
+  }
+
+  // Expand/collapse on row click
+  document.addEventListener("click", (ev) => {
+    const row = ev.target.closest(".dec-row");
+    if (!row) return;
+    const id = row.dataset.id;
+    if (!id) return;
+    if (decState.expanded.has(id)) decState.expanded.delete(id);
+    else decState.expanded.add(id);
+    decRender(null);
+  });
+
+  // Filter buttons
+  document.querySelectorAll(".dec-filter-bar button").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".dec-filter-bar button").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      decState.filter = btn.dataset.filter || "all";
+      decRender(null);
+    });
+  });
+
+  decLoadInitial();
+  decConnectWS();
+  // Polling fallback — covers the gap during WS disconnects and also
+  // back-fills events emitted from threads that don't go through the WS
+  // subscriber (shouldn't happen, but defensive).
+  setInterval(decLoadInitial, 15_000);
+})();
+</script>
+    <script src="/static/js/sidebar.js"></script>
+</body>
+</html>

@@ -394,6 +394,131 @@
         .badge--live .badge__dot { background: var(--green); box-shadow: 0 0 8px rgba(16,185,129,0.6); }
 
         /* ═══════════════════════════════════════════
+           ML TRAINING CARD
+           ═══════════════════════════════════════════ */
+        .ml-train {
+            background: linear-gradient(160deg, var(--bg-elevated), rgba(99, 102, 241, 0.04));
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg, 14px);
+            padding: 20px 22px;
+            margin-bottom: 24px;
+            display: grid;
+            gap: 14px;
+            animation: slideIn 0.5s var(--smooth) both;
+        }
+        .ml-train__head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .ml-train__title {
+            display: flex; align-items: center; gap: 10px;
+            font-size: 15px; font-weight: 700;
+            color: var(--text-primary);
+        }
+        .ml-train__title svg {
+            width: 18px; height: 18px;
+            color: var(--accent-light);
+        }
+        .ml-train__subtitle {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+        .ml-train__meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px 18px;
+            font-size: 12px;
+        }
+        .ml-train__meta-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .ml-train__meta-label {
+            color: var(--text-muted);
+            font-size: 10px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .ml-train__meta-value {
+            color: var(--text-primary);
+            font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .ml-train__progress {
+            display: none;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .ml-train.is-running .ml-train__progress { display: flex; }
+        .ml-train__bar {
+            width: 100%;
+            height: 8px;
+            background: rgba(148, 163, 184, 0.12);
+            border-radius: 999px;
+            overflow: hidden;
+            position: relative;
+        }
+        .ml-train__bar-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--accent, #7c3aed), #06b6d4);
+            border-radius: 999px;
+            transition: width 0.4s var(--smooth, ease);
+        }
+        .ml-train.is-running .ml-train__bar-fill {
+            background-size: 200% 100%;
+            animation: mlTrainShimmer 1.8s linear infinite;
+        }
+        @keyframes mlTrainShimmer {
+            0%   { background-position: 0% 0; }
+            100% { background-position: -200% 0; }
+        }
+        .ml-train__status {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-secondary);
+            gap: 12px;
+        }
+        .ml-train__phase {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-weight: 600;
+        }
+        .ml-train__phase--idle  { color: var(--text-muted); }
+        .ml-train__phase--run   { color: var(--accent-light); }
+        .ml-train__phase--done  { color: var(--green); }
+        .ml-train__phase--fail  { color: var(--red); }
+        .ml-train__btn {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 10px 18px;
+            border: none;
+            border-radius: var(--radius-md);
+            background: linear-gradient(135deg, var(--accent), #6d28d9);
+            color: #fff;
+            font-size: 13px; font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s var(--ease);
+            box-shadow: 0 4px 14px rgba(124, 58, 237, 0.25);
+        }
+        .ml-train__btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(124, 58, 237, 0.35);
+        }
+        .ml-train__btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+        .ml-train__btn svg { width: 15px; height: 15px; }
+
+        /* ═══════════════════════════════════════════
            SETTINGS GRID & SECTIONS
            ═══════════════════════════════════════════ */
         .settings-grid { display: grid; gap: 0; }
@@ -980,7 +1105,60 @@
             </a>
         </div>
 
-        <div style="display:flex;flex-direction:column;gap:4px;padding:0 12px 12px;border-bottom:1px solid var(--border-subtle);margin-bottom:12px;">
+        <nav class="sidebar__nav" id="settings-nav" aria-label="Секции настроек">
+            <button class="nav-btn active" type="button" data-section="control">
+                <div class="nav-btn__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/></svg>
+                </div>
+                <div class="nav-btn__text">
+                    <span class="nav-btn__title">Контроль</span>
+                    <span class="nav-btn__hint">Режим, символы, сигналы</span>
+                </div>
+                <div class="nav-btn__badge" style="display:none;"></div>
+            </button>
+            <button class="nav-btn" type="button" data-section="execution">
+                <div class="nav-btn__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10"/><path d="M7 12h6"/></svg>
+                </div>
+                <div class="nav-btn__text">
+                    <span class="nav-btn__title">Исполнение</span>
+                    <span class="nav-btn__hint">Комиссии, проскальзывание</span>
+                </div>
+                <div class="nav-btn__badge" style="display:none;"></div>
+            </button>
+            <button class="nav-btn" type="button" data-section="risk">
+                <div class="nav-btn__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
+                </div>
+                <div class="nav-btn__text">
+                    <span class="nav-btn__title">Риск-лимиты</span>
+                    <span class="nav-btn__hint">Убытки, позиции, частота</span>
+                </div>
+                <div class="nav-btn__badge" style="display:none;"></div>
+            </button>
+            <button class="nav-btn" type="button" data-section="system">
+                <div class="nav-btn__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
+                </div>
+                <div class="nav-btn__text">
+                    <span class="nav-btn__title">Система</span>
+                    <span class="nav-btn__hint">Watchdog, аналитика</span>
+                </div>
+                <div class="nav-btn__badge" style="display:none;"></div>
+            </button>
+            <button class="nav-btn" type="button" data-section="strategies">
+                <div class="nav-btn__icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                </div>
+                <div class="nav-btn__text">
+                    <span class="nav-btn__title">Стратегии</span>
+                    <span class="nav-btn__hint">Grid, MeanRev, BB, DCA, MACD</span>
+                </div>
+                <div class="nav-btn__badge" style="display:none;"></div>
+            </button>
+        </nav>
+
+        <div style="display:flex;flex-direction:column;gap:4px;padding:0 12px 12px;border-top:1px solid var(--border-subtle);margin-top:12px;">
             <a href="/" class="settings-sidebar-link">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
                 Dashboard
@@ -993,77 +1171,21 @@
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"/><path d="M12 2v20"/><path d="M4.93 4.93l14.14 14.14"/><path d="M19.07 4.93 4.93 19.07"/></svg>
                 ML Robustness
             </a>
-            <a href="/trades" class="settings-sidebar-link">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                История сделок
+            <a href="/observability" class="settings-sidebar-link">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                Observability
             </a>
             <a href="/news" class="settings-sidebar-link">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
                 Новости
             </a>
-            <a href="/logs" class="settings-sidebar-link">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg>
-                Логи
+            <a href="/trades" class="settings-sidebar-link">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                История сделок
             </a>
-        </div>
-
-        <nav class="sidebar__nav" id="sidebar-nav">
-            <button class="nav-btn active" data-section="control" type="button">
-                <div class="nav-btn__icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/></svg>
-                </div>
-                <div class="nav-btn__text">
-                    <span class="nav-btn__title">Control Center</span>
-                    <span class="nav-btn__hint">Mode, symbols, routing</span>
-                </div>
-                <span class="nav-btn__badge" style="display:none"></span>
-            </button>
-            <button class="nav-btn" data-section="execution" type="button">
-                <div class="nav-btn__icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10"/><path d="M7 12h6"/></svg>
-                </div>
-                <div class="nav-btn__text">
-                    <span class="nav-btn__title">Execution</span>
-                    <span class="nav-btn__hint">Paper economics & slippage</span>
-                </div>
-                <span class="nav-btn__badge" style="display:none"></span>
-            </button>
-            <button class="nav-btn" data-section="risk" type="button">
-                <div class="nav-btn__icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
-                </div>
-                <div class="nav-btn__text">
-                    <span class="nav-btn__title">Risk Limits</span>
-                    <span class="nav-btn__hint">Loss caps & guardrails</span>
-                </div>
-                <span class="nav-btn__badge" style="display:none"></span>
-            </button>
-            <button class="nav-btn" data-section="system" type="button">
-                <div class="nav-btn__icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
-                </div>
-                <div class="nav-btn__text">
-                    <span class="nav-btn__title">System</span>
-                    <span class="nav-btn__hint">Timing & resources</span>
-                </div>
-                <span class="nav-btn__badge" style="display:none"></span>
-            </button>
-            <button class="nav-btn" data-section="strategies" type="button">
-                <div class="nav-btn__icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
-                </div>
-                <div class="nav-btn__text">
-                    <span class="nav-btn__title">Strategies</span>
-                    <span class="nav-btn__hint">Trading algorithms</span>
-                </div>
-                <span class="nav-btn__badge" style="display:none"></span>
-            </button>
-        </nav>
-
-        <div class="sidebar__footer">
-            <a href="/" class="back-link">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-                Dashboard
+            <a href="/logs" class="settings-sidebar-link">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+                Логи
             </a>
             <div class="sidebar__version" id="footer-version">v1.5.0</div>
         </div>
@@ -1087,12 +1209,65 @@
             <div>
                 <h1 class="main__title">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                    Settings
+                    Настройки
                 </h1>
-                <p class="main__subtitle">Edit configuration in real-time. Changes save to <code>.env</code>. Engine modules require restart.</p>
+                <p class="main__subtitle">Правка конфигурации в реальном времени. Изменения сохраняются в <code>.env</code>. Для применения некоторые модули требуют рестарта.</p>
             </div>
             <span id="mode-badge" class="badge badge--paper"><span class="badge__dot"></span>PAPER</span>
         </div>
+
+        <!-- ML Training Card -->
+        <section class="ml-train" id="ml-train-card" aria-labelledby="ml-train-title">
+            <div class="ml-train__head">
+                <div>
+                    <div class="ml-train__title" id="ml-train-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6"/><path d="M4.93 10.93l4.24 4.24"/><path d="M2 18h6"/><path d="M16 18h6"/><path d="M14.83 15.17l4.24-4.24"/><circle cx="12" cy="18" r="3"/></svg>
+                        Обучение ML-модели
+                    </div>
+                    <div class="ml-train__subtitle">Запуск ручного переобучения на актуальных сделках. Процесс идёт в фоне и не блокирует торговлю.</div>
+                </div>
+                <button class="ml-train__btn" id="ml-train-btn" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    <span id="ml-train-btn-label">Запустить обучение</span>
+                </button>
+            </div>
+
+            <div class="ml-train__meta">
+                <div class="ml-train__meta-item">
+                    <span class="ml-train__meta-label">Последнее обучение</span>
+                    <span class="ml-train__meta-value" id="ml-train-last">—</span>
+                </div>
+                <div class="ml-train__meta-item">
+                    <span class="ml-train__meta-label">Версия</span>
+                    <span class="ml-train__meta-value" id="ml-train-version">—</span>
+                </div>
+                <div class="ml-train__meta-item">
+                    <span class="ml-train__meta-label">Skill</span>
+                    <span class="ml-train__meta-value" id="ml-train-skill">—</span>
+                </div>
+                <div class="ml-train__meta-item">
+                    <span class="ml-train__meta-label">ROC-AUC</span>
+                    <span class="ml-train__meta-value" id="ml-train-roc">—</span>
+                </div>
+                <div class="ml-train__meta-item">
+                    <span class="ml-train__meta-label">Precision</span>
+                    <span class="ml-train__meta-value" id="ml-train-precision">—</span>
+                </div>
+                <div class="ml-train__meta-item">
+                    <span class="ml-train__meta-label">Сэмплы</span>
+                    <span class="ml-train__meta-value" id="ml-train-samples">—</span>
+                </div>
+            </div>
+
+            <div class="ml-train__progress" id="ml-train-progress">
+                <div class="ml-train__bar"><div class="ml-train__bar-fill" id="ml-train-bar-fill"></div></div>
+                <div class="ml-train__status">
+                    <span class="ml-train__phase ml-train__phase--idle" id="ml-train-phase">Готов</span>
+                    <span id="ml-train-message"></span>
+                    <span id="ml-train-percent" class="ml-train__meta-value">0%</span>
+                </div>
+            </div>
+        </section>
 
         <form id="settings-form" class="settings-grid">
             <div id="settings-loading" class="loading-skeleton">
@@ -1110,23 +1285,23 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
             </div>
             <div>
-                <div class="save-dock__title">Configuration</div>
-                <div class="save-dock__hint">Save changes to <code>.env</code></div>
+                <div class="save-dock__title">Конфигурация</div>
+                <div class="save-dock__hint">Сохранить в <code>.env</code></div>
             </div>
         </div>
         <div class="save-dock__actions">
-            <span id="save-status" class="save-dock__status">Loaded</span>
+            <span id="save-status" class="save-dock__status">Загружено</span>
             <button class="btn btn--ghost" id="reload-btn" type="button">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                Reload
+                Перезагрузить
             </button>
             <button class="btn btn--outline" id="reset-section-btn" type="button">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-                Reset section
+                Откатить секцию
             </button>
             <button class="btn btn--primary" id="save-btn" type="button">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-                Save to .env
+                Сохранить в .env
             </button>
         </div>
     </div>
@@ -1143,201 +1318,201 @@
     const SETTINGS_SCHEMA = [
         {
             id: 'control',
-            title: 'Control Center',
-            subtitle: 'Trading mode, symbols and signal routing.',
+            title: 'Контроль',
+            subtitle: 'Режим торговли, символы и роутинг сигналов.',
             icon: '<circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/>',
-            badge: 'live inputs',
+            badge: 'оперативные параметры',
             fields: [
-                { name: 'trading_mode', label: 'Trading Mode', type: 'select', options: [['paper', 'Paper'], ['live', 'Live']], hint: 'Paper is safer for simulation and validation.' },
-                { name: 'trading_symbols', label: 'Trading Symbols', type: 'textarea', span: 2, hint: 'Comma or newline separated. Example: BTCUSDT, ETHUSDT' },
-                { name: 'signal_timeframe', label: 'Signal Timeframe', type: 'text', placeholder: '1h', hint: 'Primary signal timeframe.' },
-                { name: 'trend_timeframe', label: 'Trend Timeframe', type: 'text', placeholder: '4h', hint: 'Higher timeframe confirmation.' },
-                { name: 'min_confidence', label: 'Min Confidence', type: 'number', numberType: 'float', step: '0.01', min: '0', max: '1', hint: 'Threshold for strategy acceptance.' },
-                { name: 'auto_strategy_selection', label: 'Auto Strategy Selection', type: 'checkbox', hint: 'Let the regime selector route the active strategy automatically.' }
+                { name: 'trading_mode', label: 'Режим торговли', type: 'select', options: [['paper', 'Paper'], ['live', 'Live']], hint: 'Paper — безопасный режим симуляции и проверки.' },
+                { name: 'trading_symbols', label: 'Торговые символы', type: 'textarea', span: 2, hint: 'Через запятую или с новой строки. Пример: BTCUSDT, ETHUSDT' },
+                { name: 'signal_timeframe', label: 'Таймфрейм сигнала', type: 'text', placeholder: '1h', hint: 'Основной таймфрейм для генерации сигналов.' },
+                { name: 'trend_timeframe', label: 'Таймфрейм тренда', type: 'text', placeholder: '4h', hint: 'Старший таймфрейм для подтверждения.' },
+                { name: 'min_confidence', label: 'Мин. уверенность', type: 'number', numberType: 'float', step: '0.01', min: '0', max: '1', hint: 'Порог принятия сигнала стратегии.' },
+                { name: 'auto_strategy_selection', label: 'Авто-выбор стратегии', type: 'checkbox', hint: 'Регрессор режимов сам выбирает активную стратегию.' }
             ]
         },
         {
             id: 'execution',
-            title: 'Execution Profile',
-            subtitle: 'Paper execution economics and slippage model.',
+            title: 'Исполнение',
+            subtitle: 'Экономика paper-исполнения и модель проскальзывания.',
             icon: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10"/><path d="M7 12h6"/>',
-            badge: 'execution model',
+            badge: 'модель исполнения',
             fields: [
-                { name: 'paper_initial_balance', label: 'Paper Initial Balance', type: 'number', numberType: 'float', step: '10', min: '0', hint: 'Starting balance for paper trading.' },
-                { name: 'paper_commission_pct', label: 'Commission %', type: 'number', numberType: 'float', step: '0.001', min: '0', hint: 'Per-trade commission percentage.' },
-                { name: 'paper_slippage_pct', label: 'Slippage %', type: 'number', numberType: 'float', step: '0.001', min: '0', hint: 'Applied execution slippage for fills.' }
+                { name: 'paper_initial_balance', label: 'Стартовый баланс (paper)', type: 'number', numberType: 'float', step: '10', min: '0', hint: 'Начальный баланс для paper-торговли.' },
+                { name: 'paper_commission_pct', label: 'Комиссия, %', type: 'number', numberType: 'float', step: '0.001', min: '0', hint: 'Комиссия за сделку в процентах.' },
+                { name: 'paper_slippage_pct', label: 'Проскальзывание, %', type: 'number', numberType: 'float', step: '0.001', min: '0', hint: 'Применяемое проскальзывание при исполнении.' }
             ]
         },
         {
             id: 'risk',
-            title: 'Risk Limits',
-            subtitle: 'Soft limits from UI; hard caps remain enforced in code.',
+            title: 'Риск-лимиты',
+            subtitle: 'Мягкие лимиты из UI; жёсткие потолки контролирует код.',
             icon: '<path d="M12 3l8 4v5c0 5-3.5 8.74-8 9-4.5-.26-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/>',
-            badge: 'clamped by code',
+            badge: 'ограничено кодом',
             fieldGroups: [
                 {
-                    name: 'Loss Limits',
+                    name: 'Лимиты убытков',
                     icon: '<path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
                     color: 'var(--red)',
                     bg: 'var(--red-dim)',
                     fields: [
-                        { name: 'max_daily_loss_usd', label: 'Max Daily Loss USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Will be clamped by absolute limits.' },
-                        { name: 'max_daily_loss_pct', label: 'Max Daily Loss %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Portfolio percentage loss cap.' }
+                        { name: 'max_daily_loss_usd', label: 'Макс. убыток за день, USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Будет ограничен абсолютными лимитами.' },
+                        { name: 'max_daily_loss_pct', label: 'Макс. убыток за день, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Лимит дневного убытка от портфеля.' }
                     ]
                 },
                 {
-                    name: 'Position Limits',
+                    name: 'Лимиты позиций',
                     icon: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>',
                     color: 'var(--amber)',
                     bg: 'var(--amber-dim)',
                     fields: [
-                        { name: 'max_position_pct', label: 'Max Position %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Per-position capital allocation ceiling.' },
-                        { name: 'max_total_exposure_pct', label: 'Total Exposure %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Aggregate exposure across all positions.' },
-                        { name: 'max_open_positions', label: 'Max Open Positions', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Concurrent position limit.' },
-                        { name: 'max_order_usd', label: 'Max Order USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Upper order size guardrail.' }
+                        { name: 'max_position_pct', label: 'Макс. позиция, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Потолок капитала на одну позицию.' },
+                        { name: 'max_total_exposure_pct', label: 'Общая экспозиция, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Совокупная экспозиция по всем позициям.' },
+                        { name: 'max_open_positions', label: 'Макс. открытых позиций', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Одновременных позиций не больше.' },
+                        { name: 'max_order_usd', label: 'Макс. ордер, USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Верхняя граница размера ордера.' }
                     ]
                 },
                 {
-                    name: 'Frequency & Cooldown',
+                    name: 'Частота и пауза',
                     icon: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
                     color: 'var(--cyan)',
                     bg: 'rgba(6,182,212,0.1)',
                     fields: [
-                        { name: 'max_trades_per_hour', label: 'Trades Per Hour', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Trade frequency limiter.' },
-                        { name: 'max_trades_per_day', label: 'Trades Per Day', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Daily trade volume limiter.' },
-                        { name: 'resume_cooldown_min', label: 'Resume Cooldown (min)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Pause before resume after stop.' }
+                        { name: 'max_trades_per_hour', label: 'Сделок в час', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Лимит частоты сделок.' },
+                        { name: 'max_trades_per_day', label: 'Сделок в день', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Лимит дневного объёма сделок.' },
+                        { name: 'resume_cooldown_min', label: 'Пауза до возобновления, мин', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Задержка после остановки перед resume.' }
                     ]
                 }
             ]
         },
         {
             id: 'system',
-            title: 'System Profile',
-            subtitle: 'Data freshness, watchdog timing and analytics switches.',
+            title: 'Система',
+            subtitle: 'Свежесть данных, watchdog и переключатели аналитики.',
             icon: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h4"/>',
-            badge: 'service behavior',
+            badge: 'поведение сервиса',
             fieldGroups: [
                 {
-                    name: 'Data & Validation',
+                    name: 'Данные и валидация',
                     icon: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
                     color: 'var(--accent-light)',
                     bg: 'var(--accent-dim)',
                     fields: [
-                        { name: 'max_data_age_sec', label: 'Max Data Age (sec)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Staleness cutoff for market data.' },
-                        { name: 'price_cross_validation_interval', label: 'Cross Validation (sec)', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Cross-source price verification cadence.' }
+                        { name: 'max_data_age_sec', label: 'Макс. возраст данных, сек', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Порог устаревания рыночных данных.' },
+                        { name: 'price_cross_validation_interval', label: 'Кросс-валидация, сек', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Период сверки цены между источниками.' }
                     ]
                 },
                 {
-                    name: 'Watchdog & Resources',
+                    name: 'Watchdog и ресурсы',
                     icon: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
                     color: 'var(--amber)',
                     bg: 'var(--amber-dim)',
                     fields: [
-                        { name: 'watchdog_heartbeat_interval', label: 'Heartbeat (sec)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Heartbeat write interval.' },
-                        { name: 'watchdog_timeout', label: 'Timeout (sec)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Time to consider worker dead.' },
-                        { name: 'db_backup_interval_hours', label: 'DB Backup (hours)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Database backup cadence.' },
-                        { name: 'max_ram_mb', label: 'Max RAM (MB)', type: 'number', numberType: 'int', step: '64', min: '128', hint: 'Memory ceiling for safety checks.' }
+                        { name: 'watchdog_heartbeat_interval', label: 'Heartbeat, сек', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Интервал записи heartbeat.' },
+                        { name: 'watchdog_timeout', label: 'Таймаут, сек', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'После какого простоя считать воркер мёртвым.' },
+                        { name: 'db_backup_interval_hours', label: 'Бэкап БД, часов', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Частота бэкапов базы.' },
+                        { name: 'max_ram_mb', label: 'Макс. RAM, МБ', type: 'number', numberType: 'int', step: '64', min: '128', hint: 'Потолок памяти для проверок безопасности.' }
                     ]
                 },
                 {
-                    name: 'Analytics Features',
+                    name: 'Аналитика',
                     icon: '<path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>',
                     color: 'var(--green)',
                     bg: 'var(--green-dim)',
                     fields: [
-                        { name: 'analyzer_stats_enabled', label: 'Analyzer Stats', type: 'checkbox', hint: 'Enable trade analyzer statistics.' },
-                        { name: 'analyzer_ml_shadow_mode', label: 'ML Shadow Mode', type: 'checkbox', hint: 'Collect ML decisions without taking control.' }
+                        { name: 'analyzer_stats_enabled', label: 'Статистика анализатора', type: 'checkbox', hint: 'Включить сбор статистики по сделкам.' },
+                        { name: 'analyzer_ml_shadow_mode', label: 'ML shadow-режим', type: 'checkbox', hint: 'Собирать решения ML без передачи управления.' }
                     ]
                 }
             ]
         },
         {
             id: 'strategies',
-            title: 'Strategy Stack',
-            subtitle: 'Enable or tune the built-in strategy families.',
+            title: 'Стратегии',
+            subtitle: 'Включение и тонкая настройка встроенных стратегий.',
             icon: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
-            badge: 'strategy tuning',
+            badge: 'настройка стратегий',
             strategyGroups: [
                 {
                     id: 'grid',
                     name: 'Grid Trading',
-                    description: 'Automated grid orders across price levels',
+                    description: 'Сетка ордеров по уровням цены',
                     color: '#10b981',
                     icon: '<path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="8" rx="1"/><rect x="12" y="6" width="3" height="12" rx="1"/><rect x="17" y="13" width="3" height="5" rx="1"/>',
                     enableField: 'grid_enabled',
                     fields: [
-                        { name: 'grid_enabled', label: 'Grid Enabled', type: 'checkbox', hint: 'Activate grid trading strategy.' },
-                        { name: 'grid_num_levels', label: 'Grid Levels', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Number of grid levels.' },
-                        { name: 'grid_capital_pct', label: 'Grid Capital %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital assigned to the grid.' },
-                        { name: 'grid_auto_range', label: 'Grid Auto Range', type: 'checkbox', hint: 'Auto-calculate grid range.' },
-                        { name: 'grid_min_profit_pct', label: 'Grid Min Profit %', type: 'number', numberType: 'float', step: '0.01', min: '0', hint: 'Minimum profitable spread.' },
-                        { name: 'grid_max_loss_pct', label: 'Grid Max Loss %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Grid stop-loss limit.' }
+                        { name: 'grid_enabled', label: 'Включить Grid', type: 'checkbox', hint: 'Активировать стратегию Grid Trading.' },
+                        { name: 'grid_num_levels', label: 'Уровней сетки', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Количество уровней в сетке.' },
+                        { name: 'grid_capital_pct', label: 'Капитал на сетку, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Доля капитала, выделенная стратегии.' },
+                        { name: 'grid_auto_range', label: 'Авто-диапазон', type: 'checkbox', hint: 'Автоматический расчёт диапазона сетки.' },
+                        { name: 'grid_min_profit_pct', label: 'Мин. профит, %', type: 'number', numberType: 'float', step: '0.01', min: '0', hint: 'Минимально прибыльный спред.' },
+                        { name: 'grid_max_loss_pct', label: 'Макс. убыток, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Стоп-лосс для сетки.' }
                     ]
                 },
                 {
                     id: 'meanrev',
                     name: 'Mean Reversion',
-                    description: 'RSI-based reversion to the mean',
+                    description: 'Возврат к среднему по RSI',
                     color: '#06b6d4',
                     icon: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
                     enableField: 'meanrev_enabled',
                     fields: [
-                        { name: 'meanrev_enabled', label: 'Mean Reversion Enabled', type: 'checkbox', hint: 'Activate mean reversion module.' },
-                        { name: 'meanrev_rsi_oversold', label: 'RSI Oversold', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Oversold threshold.' },
-                        { name: 'meanrev_rsi_overbought', label: 'RSI Overbought', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Overbought threshold.' },
-                        { name: 'meanrev_capital_pct', label: 'Capital %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital assigned to mean reversion.' },
-                        { name: 'meanrev_stop_loss_pct', label: 'SL %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Mean reversion stop-loss.' },
-                        { name: 'meanrev_take_profit_pct', label: 'TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Mean reversion take-profit.' }
+                        { name: 'meanrev_enabled', label: 'Включить Mean Reversion', type: 'checkbox', hint: 'Активировать модуль возврата к среднему.' },
+                        { name: 'meanrev_rsi_oversold', label: 'RSI перепроданность', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Порог перепроданности.' },
+                        { name: 'meanrev_rsi_overbought', label: 'RSI перекупленность', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Порог перекупленности.' },
+                        { name: 'meanrev_capital_pct', label: 'Капитал, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Доля капитала на стратегию.' },
+                        { name: 'meanrev_stop_loss_pct', label: 'Стоп-лосс, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Стоп-лосс mean reversion.' },
+                        { name: 'meanrev_take_profit_pct', label: 'Тейк-профит, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Тейк-профит mean reversion.' }
                     ]
                 },
                 {
                     id: 'bb',
                     name: 'Bollinger Breakout',
-                    description: 'Volatility breakout with squeeze detection',
+                    description: 'Пробой волатильности с детекцией сжатия',
                     color: '#f59e0b',
                     icon: '<path d="M2 20h20"/><path d="M5 20V8l3-3 4 5 4-7 4 4v13"/>',
                     enableField: 'bb_breakout_enabled',
                     fields: [
-                        { name: 'bb_breakout_enabled', label: 'Breakout Enabled', type: 'checkbox', hint: 'Activate breakout strategy.' },
-                        { name: 'bb_period', label: 'BB Period', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Bollinger lookback window.' },
-                        { name: 'bb_std_dev', label: 'Std Dev', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Standard deviation multiplier.' },
-                        { name: 'bb_volume_confirm_mult', label: 'Volume Confirm', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Volume confirmation multiplier.' },
-                        { name: 'bb_stop_loss_pct', label: 'SL %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Breakout stop-loss.' },
-                        { name: 'bb_take_profit_pct', label: 'TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Breakout take-profit.' },
-                        { name: 'bb_trailing_stop_pct', label: 'Trailing %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Trailing stop amount.' }
+                        { name: 'bb_breakout_enabled', label: 'Включить Breakout', type: 'checkbox', hint: 'Активировать стратегию пробоя.' },
+                        { name: 'bb_period', label: 'Период BB', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Окно расчёта Bollinger.' },
+                        { name: 'bb_std_dev', label: 'Стд. отклонения', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Множитель стандартного отклонения.' },
+                        { name: 'bb_volume_confirm_mult', label: 'Подтв. по объёму', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Множитель подтверждения объёмом.' },
+                        { name: 'bb_stop_loss_pct', label: 'Стоп-лосс, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Стоп-лосс пробоя.' },
+                        { name: 'bb_take_profit_pct', label: 'Тейк-профит, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Тейк-профит пробоя.' },
+                        { name: 'bb_trailing_stop_pct', label: 'Трейлинг-стоп, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Размер трейлинг-стопа.' }
                     ]
                 },
                 {
                     id: 'dca',
                     name: 'DCA Bot',
-                    description: 'Dollar-cost averaging automation',
+                    description: 'Усреднение по доллару (DCA)',
                     color: '#8b5cf6',
                     icon: '<circle cx="12" cy="12" r="10"/><path d="M12 6v12M8 8.5l8 7M16 8.5l-8 7"/>',
                     enableField: 'dca_enabled',
                     fields: [
-                        { name: 'dca_enabled', label: 'DCA Enabled', type: 'checkbox', hint: 'Activate DCA bot.' },
-                        { name: 'dca_base_amount_usd', label: 'Base USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Base DCA order amount.' },
-                        { name: 'dca_interval_hours', label: 'Interval (hours)', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Hours between DCA orders.' },
-                        { name: 'dca_max_daily_buys', label: 'Max Buys / Day', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Daily DCA order cap.' },
-                        { name: 'dca_max_invested_pct', label: 'Max Invested %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Capital ceiling for DCA.' },
-                        { name: 'dca_take_profit_pct', label: 'TP %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'DCA take-profit threshold.' }
+                        { name: 'dca_enabled', label: 'Включить DCA', type: 'checkbox', hint: 'Активировать DCA-бот.' },
+                        { name: 'dca_base_amount_usd', label: 'База, USD', type: 'number', numberType: 'float', step: '1', min: '0', hint: 'Базовый размер DCA-ордера.' },
+                        { name: 'dca_interval_hours', label: 'Интервал, часов', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Часов между DCA-ордерами.' },
+                        { name: 'dca_max_daily_buys', label: 'Макс. покупок в день', type: 'number', numberType: 'int', step: '1', min: '0', hint: 'Лимит DCA-ордеров за сутки.' },
+                        { name: 'dca_max_invested_pct', label: 'Макс. инвестировано, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Потолок капитала под DCA.' },
+                        { name: 'dca_take_profit_pct', label: 'Тейк-профит, %', type: 'number', numberType: 'float', step: '0.1', min: '0', hint: 'Порог тейк-профита DCA.' }
                     ]
                 },
                 {
                     id: 'macd',
                     name: 'MACD Divergence',
-                    description: 'Momentum divergence with confirmation',
+                    description: 'Дивергенция момента с подтверждением',
                     color: '#f43f5e',
                     icon: '<path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>',
                     enableField: 'macd_div_enabled',
                     fields: [
-                        { name: 'macd_div_enabled', label: 'MACD Divergence Enabled', type: 'checkbox', hint: 'Activate MACD divergence module.' },
-                        { name: 'macd_fast', label: 'Fast EMA', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Fast EMA period.' },
-                        { name: 'macd_slow', label: 'Slow EMA', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Slow EMA period.' },
-                        { name: 'macd_signal_period', label: 'Signal Period', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Signal line period.' },
-                        { name: 'macd_lookback_candles', label: 'Lookback', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Candles used to detect divergence.' },
-                        { name: 'macd_require_rsi_confirm', label: 'RSI Confirm', type: 'checkbox', hint: 'Require RSI confirmation.' },
-                        { name: 'macd_require_vol_confirm', label: 'Volume Confirm', type: 'checkbox', hint: 'Require volume confirmation.' }
+                        { name: 'macd_div_enabled', label: 'Включить MACD Divergence', type: 'checkbox', hint: 'Активировать модуль MACD-дивергенции.' },
+                        { name: 'macd_fast', label: 'Fast EMA', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Период быстрой EMA.' },
+                        { name: 'macd_slow', label: 'Slow EMA', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Период медленной EMA.' },
+                        { name: 'macd_signal_period', label: 'Период сигнала', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Период сигнальной линии.' },
+                        { name: 'macd_lookback_candles', label: 'Lookback свечей', type: 'number', numberType: 'int', step: '1', min: '1', hint: 'Сколько свечей учитывать для дивергенции.' },
+                        { name: 'macd_require_rsi_confirm', label: 'Подтв. по RSI', type: 'checkbox', hint: 'Требовать подтверждение RSI.' },
+                        { name: 'macd_require_vol_confirm', label: 'Подтв. по объёму', type: 'checkbox', hint: 'Требовать подтверждение объёмом.' }
                     ]
                 }
             ]
@@ -1422,6 +1597,7 @@
             var btn = document.querySelector('.nav-btn[data-section="' + section.id + '"]');
             if (!btn) return;
             var badge = btn.querySelector('.nav-btn__badge');
+            if (!badge) return;
             var dirty = sectionHasChanges(section, current);
             badge.style.display = dirty ? 'block' : 'none';
         });
@@ -1432,11 +1608,11 @@
         hasUnsavedChanges = baselineValues ? !valuesEqual(current, baselineValues) : false;
         updateDirtyIndicators(current);
         if (hasUnsavedChanges) {
-            setSaveStatus('Unsaved changes', 'warning');
+            setSaveStatus('Есть несохранённые изменения', 'warning');
         } else {
             var st = document.getElementById('save-status');
             if (!st.classList.contains('saved') && !st.classList.contains('error')) {
-                setSaveStatus('Loaded');
+                setSaveStatus('Загружено');
             }
         }
     }
@@ -1472,10 +1648,25 @@
             }
         });
 
+        /* Persist active section in URL hash so reload / link-share preserves
+           which tab the user was on. We use replaceState to avoid spamming the
+           browser history with every tab click. */
+        try {
+            var nextHash = '#' + sectionId;
+            if (window.location.hash !== nextHash) {
+                window.history.replaceState(null, '', nextHash);
+            }
+        } catch (_) { /* no-op */ }
+
         /* Close mobile sidebar */
         document.getElementById('sidebar').classList.remove('open');
         document.getElementById('sidebar-overlay').classList.remove('visible');
     }
+
+    window.addEventListener('hashchange', function() {
+        var id = (window.location.hash || '').replace(/^#/, '');
+        if (id && getSectionById(id)) activateSection(id);
+    });
 
     /* Sidebar nav clicks */
     document.querySelectorAll('.nav-btn').forEach(function(btn) {
@@ -1507,7 +1698,7 @@
                 '<label class="toggle">' +
                 '<input class="toggle__input" type="checkbox" data-type="checkbox" name="' + escapeHtml(field.name) + '" ' + (val ? 'checked' : '') + '>' +
                 '<span class="toggle__track"></span>' +
-                '<span class="toggle__label">' + (val ? 'Enabled' : 'Disabled') + '</span>' +
+                '<span class="toggle__label">' + (val ? 'Вкл' : 'Выкл') + '</span>' +
                 '</label>' +
                 '<div class="field-hint">' + escapeHtml(field.hint || '') + '</div>' +
                 '</div>';
@@ -1569,7 +1760,7 @@
         var bodyHtml = bodyFields.map(function(f) { return renderField(f, values[f.name]); }).join('');
 
         return '<div class="strategy-card' + (isEnabled ? ' is-enabled' : '') + '" data-strategy="' + escapeHtml(group.id) + '" style="--strategy-color:' + group.color + '">' +
-            '<div class="strategy-card__header" onclick="toggleStrategyCard(\'' + escapeHtml(group.id) + '\')">' +
+            '<div class="strategy-card__header" data-strategy-toggle="' + escapeHtml(group.id) + '">' +
                 '<div class="strategy-card__glyph">' +
                     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + group.icon + '</svg>' +
                 '</div>' +
@@ -1577,12 +1768,12 @@
                     '<div class="strategy-card__name">' + escapeHtml(group.name) + '</div>' +
                     '<div class="strategy-card__desc">' + escapeHtml(group.description) + '</div>' +
                 '</div>' +
-                '<span class="strategy-card__status ' + (isEnabled ? 'strategy-card__status--on' : 'strategy-card__status--off') + '">' + (isEnabled ? 'Active' : 'Off') + '</span>' +
-                '<label class="toggle" onclick="event.stopPropagation()">' +
+                '<span class="strategy-card__status ' + (isEnabled ? 'strategy-card__status--on' : 'strategy-card__status--off') + '">' + (isEnabled ? 'Активна' : 'Выкл') + '</span>' +
+                '<label class="toggle" data-strategy-toggle-stop="1">' +
                     '<input class="toggle__input" type="checkbox" data-type="checkbox" name="' + escapeHtml(group.enableField) + '" ' + (isEnabled ? 'checked' : '') + '>' +
                     '<span class="toggle__track"></span>' +
                 '</label>' +
-                '<button class="strategy-card__expand" type="button" onclick="event.stopPropagation(); toggleStrategyCard(\'' + escapeHtml(group.id) + '\')">' +
+                '<button class="strategy-card__expand" type="button" data-strategy-toggle="' + escapeHtml(group.id) + '">' +
                     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>' +
                 '</button>' +
             '</div>' +
@@ -1645,7 +1836,7 @@
         form.querySelectorAll('.toggle__input').forEach(function(input) {
             input.addEventListener('change', function() {
                 var label = input.parentElement.querySelector('.toggle__label');
-                if (label) label.textContent = input.checked ? 'Enabled' : 'Disabled';
+                if (label) label.textContent = input.checked ? 'Вкл' : 'Выкл';
 
                 /* Update strategy card state */
                 var card = input.closest('.strategy-card');
@@ -1654,7 +1845,7 @@
                     card.classList.toggle('is-enabled', isOn);
                     var st = card.querySelector('.strategy-card__status');
                     if (st) {
-                        st.textContent = isOn ? 'Active' : 'Off';
+                        st.textContent = isOn ? 'Активна' : 'Выкл';
                         st.className = 'strategy-card__status ' + (isOn ? 'strategy-card__status--on' : 'strategy-card__status--off');
                     }
                 }
@@ -1669,7 +1860,19 @@
             input.addEventListener('change', updateDirtyState);
         });
 
-        activateSection(SETTINGS_SCHEMA[0].id);
+        /* Strategy card expand/collapse via event delegation. The toggle <label>
+           inside the header gets data-strategy-toggle-stop so we don't re-toggle
+           the card when the user flips the on/off switch. */
+        form.querySelectorAll('[data-strategy-toggle]').forEach(function(el) {
+            el.addEventListener('click', function(e) {
+                if (e.target.closest('[data-strategy-toggle-stop]')) return;
+                toggleStrategyCard(el.getAttribute('data-strategy-toggle'));
+            });
+        });
+
+        var initial = (window.location.hash || '').replace(/^#/, '');
+        var initialSection = SETTINGS_SCHEMA.find(function(s) { return s.id === initial; });
+        activateSection(initialSection ? initialSection.id : SETTINGS_SCHEMA[0].id);
     }
 
     /* ═══════════════════════════════════════════
@@ -1715,14 +1918,14 @@
         if (field.type === 'checkbox') {
             input.checked = !!value;
             var label = input.parentElement.querySelector('.toggle__label');
-            if (label) label.textContent = input.checked ? 'Enabled' : 'Disabled';
+            if (label) label.textContent = input.checked ? 'Вкл' : 'Выкл';
             /* Update strategy card too */
             var card = input.closest('.strategy-card');
             if (card) {
                 card.classList.toggle('is-enabled', !!value);
                 var st = card.querySelector('.strategy-card__status');
                 if (st) {
-                    st.textContent = value ? 'Active' : 'Off';
+                    st.textContent = value ? 'Активна' : 'Выкл';
                     st.className = 'strategy-card__status ' + (value ? 'strategy-card__status--on' : 'strategy-card__status--off');
                 }
             }
@@ -1828,6 +2031,203 @@
     document.getElementById('reload-btn').addEventListener('click', loadEditableSettings);
     document.getElementById('reset-section-btn').addEventListener('click', resetActiveSection);
     document.getElementById('save-btn').addEventListener('click', saveSettings);
+
+    /* ═══════════════════════════════════════════
+       ML TRAINING CARD
+       ═══════════════════════════════════════════ */
+    var mlTrainPollTimer = null;
+
+    function mlTrainFmtTime(unixSec) {
+        if (!unixSec) return '—';
+        try {
+            var d = new Date(unixSec * 1000);
+            return d.toLocaleString();
+        } catch (_) { return '—'; }
+    }
+
+    function mlTrainSetPhaseLabel(phase, message) {
+        var el = document.getElementById('ml-train-phase');
+        if (!el) return;
+        var cls = 'ml-train__phase ';
+        var text = 'Готов';
+        if (phase === 'collecting_data' || phase === 'training' || phase === 'starting' || phase === 'queued') {
+            cls += 'ml-train__phase--run';
+            text = 'Обучение…';
+        } else if (phase === 'done') {
+            cls += 'ml-train__phase--done';
+            text = 'Готово';
+        } else if (phase === 'failed') {
+            cls += 'ml-train__phase--fail';
+            text = 'Ошибка';
+        } else {
+            cls += 'ml-train__phase--idle';
+        }
+        el.className = cls;
+        el.textContent = text;
+        var msg = document.getElementById('ml-train-message');
+        if (msg) msg.textContent = message || '';
+    }
+
+    function mlTrainApplyProgress(p) {
+        var card = document.getElementById('ml-train-card');
+        var bar = document.getElementById('ml-train-bar-fill');
+        var pct = document.getElementById('ml-train-percent');
+        var btn = document.getElementById('ml-train-btn');
+        var btnLabel = document.getElementById('ml-train-btn-label');
+        var progressBlock = document.getElementById('ml-train-progress');
+        if (!p) return;
+
+        var running = !!p.active;
+        /* While we're waiting for the coroutine to actually start, keep the
+           "running" state visible to avoid flicker back to idle. */
+        if (!running && mlTrainKickedOff && !p.finished_at) {
+            running = true;
+        }
+        card.classList.toggle('is-running', running);
+        if (running || p.phase === 'done' || p.phase === 'failed' || p.phase === 'queued') {
+            progressBlock.style.display = 'flex';
+        }
+
+        var percent = Math.max(0, Math.min(100, Number(p.percent) || 0));
+        if (bar) {
+            /* Keep a visible sliver (2%) during the queued phase so the bar
+               doesn't look dead. */
+            bar.style.width = (percent > 0 ? percent : (running ? 2 : 0)) + '%';
+        }
+        if (pct) pct.textContent = percent + '%';
+
+        mlTrainSetPhaseLabel(p.phase, p.message);
+
+        if (btn) btn.disabled = running;
+        if (btnLabel) btnLabel.textContent = running ? 'Идёт обучение…' : 'Запустить обучение';
+    }
+
+    async function mlTrainFetchStatus() {
+        try {
+            var res = await fetch('/api/ml/status');
+            if (!res.ok) return;
+            var data = await res.json();
+            document.getElementById('ml-train-version').textContent = data.version || '—';
+            if (data.last_trained_at) {
+                document.getElementById('ml-train-last').textContent = mlTrainFmtTime(data.last_trained_at);
+            }
+            var m = data.metrics || {};
+            document.getElementById('ml-train-skill').textContent =
+                m.skill_score != null ? m.skill_score.toFixed(3) : '—';
+            document.getElementById('ml-train-roc').textContent =
+                m.roc_auc != null ? m.roc_auc.toFixed(3) : '—';
+            document.getElementById('ml-train-precision').textContent =
+                m.precision != null ? m.precision.toFixed(3) : '—';
+            document.getElementById('ml-train-samples').textContent =
+                m.train_samples != null ? String(m.train_samples) : '—';
+        } catch (_) { /* silent */ }
+    }
+
+    var mlTrainKickedOff = false;
+
+    async function mlTrainPoll() {
+        try {
+            var res = await fetch('/api/ml/training-progress');
+            if (!res.ok) return;
+            var p = await res.json();
+            mlTrainApplyProgress(p);
+            if (p.finished_at) {
+                document.getElementById('ml-train-last').textContent = mlTrainFmtTime(p.finished_at);
+            }
+            /* Only stop polling once the job has ACTUALLY finished
+               (finished_at set and active=false). Early active=false with
+               phase=idle means the coroutine hasn't scheduled yet. */
+            var trulyFinished = !p.active && !!p.finished_at && mlTrainKickedOff;
+            if (trulyFinished) {
+                if (mlTrainPollTimer) { clearInterval(mlTrainPollTimer); mlTrainPollTimer = null; }
+                mlTrainKickedOff = false;
+                await mlTrainFetchStatus();
+                if (p.phase === 'done') {
+                    showToast('Обучение завершено: ' + (p.message || 'ok'), 'success');
+                } else if (p.phase === 'failed') {
+                    showToast('Обучение не удалось: ' + (p.message || 'см. логи'), 'error');
+                }
+            }
+        } catch (_) { /* silent */ }
+    }
+
+    function mlTrainStartPolling() {
+        if (mlTrainPollTimer) return;
+        mlTrainPoll();
+        mlTrainPollTimer = setInterval(mlTrainPoll, 1200);
+    }
+
+    function mlTrainShowStarting() {
+        /* Paint the card as running *immediately* on click so the user sees
+           feedback before the first /api/ml/training-progress poll lands. */
+        var card = document.getElementById('ml-train-card');
+        card.classList.add('is-running');
+        document.getElementById('ml-train-progress').style.display = 'flex';
+        document.getElementById('ml-train-bar-fill').style.width = '2%';
+        document.getElementById('ml-train-percent').textContent = '0%';
+        var phase = document.getElementById('ml-train-phase');
+        phase.className = 'ml-train__phase ml-train__phase--run';
+        phase.textContent = 'Обучение…';
+        document.getElementById('ml-train-message').textContent = 'Запуск задачи…';
+        document.getElementById('ml-train-btn').disabled = true;
+        document.getElementById('ml-train-btn-label').textContent = 'Идёт обучение…';
+    }
+
+    async function mlTrainStart() {
+        mlTrainShowStarting();
+        try {
+            var _csrf = (document.cookie.match(/(?:^|;\s*)sentinel_csrf=([^;]+)/) || [])[1] || '';
+            var res = await fetch('/api/ml/retrain', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': _csrf ? decodeURIComponent(_csrf) : '' },
+                credentials: 'same-origin',
+            });
+            /* Tolerate non-JSON bodies (proxies, 5xx HTML pages). Without this
+               guard, a 503 with text/html crashes res.json() and the original
+               status is lost, surfacing as the misleading "Unexpected token"
+               JSON parse error. */
+            var data = {};
+            try { data = await res.json(); } catch (_) { data = {}; }
+            if (res.status === 409) {
+                showToast(data.message || 'Обучение уже выполняется', 'warning');
+                mlTrainKickedOff = true;
+            } else if (!res.ok) {
+                throw new Error(data.message || ('Не удалось запустить обучение (HTTP ' + res.status + ')'));
+            } else {
+                showToast('Обучение запущено в фоне', 'success');
+                mlTrainKickedOff = true;
+            }
+            mlTrainStartPolling();
+        } catch (err) {
+            showToast(err.message || String(err), 'error');
+            document.getElementById('ml-train-btn').disabled = false;
+            document.getElementById('ml-train-btn-label').textContent = 'Запустить обучение';
+            document.getElementById('ml-train-card').classList.remove('is-running');
+            var phase2 = document.getElementById('ml-train-phase');
+            phase2.className = 'ml-train__phase ml-train__phase--fail';
+            phase2.textContent = 'Ошибка';
+        }
+    }
+
+    document.getElementById('ml-train-btn').addEventListener('click', mlTrainStart);
+
+    /* Populate initial state + resume polling if a retrain is already running */
+    mlTrainFetchStatus();
+    (async function () {
+        try {
+            var res = await fetch('/api/ml/training-progress');
+            if (!res.ok) return;
+            var p = await res.json();
+            mlTrainApplyProgress(p);
+            if (p.finished_at) {
+                document.getElementById('ml-train-last').textContent = mlTrainFmtTime(p.finished_at);
+            }
+            if (p.active) {
+                mlTrainKickedOff = true;
+                mlTrainStartPolling();
+            }
+        } catch (_) { /* silent */ }
+    })();
 
     /* ═══════════════════════════════════════════
        INIT

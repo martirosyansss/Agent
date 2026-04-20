@@ -15,7 +15,7 @@ from typing import Callable, Coroutine, Optional
 
 from core.constants import EVENT_EMERGENCY_STOP
 from core.events import EventBus
-from monitoring.event_log import EventType, emit_component_error, get_event_log
+from monitoring.event_log import emit_component_error, emit_guard_tripped
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +50,10 @@ class KillSwitch:
         self._errors = []
         logger.critical("KILL SWITCH ACTIVATED: %s", reason)
         try:
-            get_event_log().emit(
-                EventType.GUARD_TRIPPED,
+            emit_guard_tripped(
                 guard="kill_switch",
                 reason=reason,
+                severity="critical",
             )
         except Exception:
             pass

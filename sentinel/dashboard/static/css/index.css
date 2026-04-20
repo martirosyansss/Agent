@@ -178,22 +178,11 @@
             opacity: 0.6;
         }
 
-        .chart-indicators-label {
-            color: var(--text-dim);
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            margin-right: 2px;
-        }
-
         .equity-peak-badge { font-size: 10px; }
 
         .strat-log-empty-icon {
             width: 24px; height: 24px; opacity: 0.35;
         }
-
-        .chart-legend-line--ema9  { color: #e2a72f; }
-        .chart-legend-line--ema21 { color: #c084fc; }
 
         /* Equity chart skeleton — overlays the canvas with an animated
            sparkline-shaped gradient until the first data arrives. */
@@ -734,6 +723,60 @@
         .chart-icon-btn:hover { color: var(--text-primary); border-color: var(--border); background: var(--bg-hover); }
         .chart-icon-btn svg { width: 14px; height: 14px; }
 
+        /* History navigation bar (date-picker + ← jump buttons + LIVE badge) */
+        .chart-history-bar {
+            display: flex; align-items: center; gap: 10px;
+            flex-wrap: wrap;
+            padding: 8px 2px 10px;
+            border-bottom: 1px dashed var(--border-dark);
+            margin-bottom: 10px;
+        }
+        .chart-history-jump { display: inline-flex; gap: 4px; }
+        .chart-hist-btn {
+            padding: 4px 9px; font: 600 11px/1 'JetBrains Mono', monospace;
+            background: var(--bg-inset); color: var(--text-muted);
+            border: 1px solid var(--border-dark); border-radius: 6px;
+            cursor: pointer; transition: all 0.15s;
+        }
+        .chart-hist-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+        .chart-hist-pick {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 11px; color: var(--text-muted);
+        }
+        .chart-hist-input {
+            font: 500 11px 'JetBrains Mono', monospace;
+            padding: 4px 8px;
+            background: var(--bg-inset); color: var(--text-primary);
+            border: 1px solid var(--border-dark); border-radius: 6px;
+            color-scheme: dark;
+        }
+        .chart-history-state { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+        .chart-hist-badge {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 3px 9px; font: 700 10px/1 'Inter', sans-serif;
+            letter-spacing: 0.08em; border-radius: 10px;
+        }
+        .chart-hist-badge-live {
+            background: rgba(34, 197, 94, 0.15);
+            color: #22c55e;
+            border: 1px solid rgba(34, 197, 94, 0.35);
+        }
+        .chart-hist-badge-live::before {
+            content: ''; width: 6px; height: 6px; border-radius: 50%;
+            background: #22c55e; box-shadow: 0 0 6px #22c55e;
+            animation: chart-hist-pulse 1.6s ease-in-out infinite;
+        }
+        .chart-hist-badge-hist {
+            background: rgba(234, 179, 8, 0.15);
+            color: #facc15;
+            border: 1px solid rgba(234, 179, 8, 0.35);
+        }
+        .chart-hist-btn-live { color: var(--accent-light); border-color: rgba(99, 102, 241, 0.35); }
+        @keyframes chart-hist-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.45; }
+        }
+
         /* Price hero row */
         .chart-price-header {
             display: flex; align-items: center; justify-content: space-between;
@@ -807,15 +850,51 @@
             margin-top: 2px;
             position: relative; z-index: 1;
         }
-        #pnlChart { width: 100% !important; max-height: 440px; min-height: 360px; }
-
-        /* Subtle footer status row under the chart */
-        .chart-note-bar {
-            display: flex; align-items: center; gap: 8px;
-            margin-top: 10px; min-height: 18px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 10px; color: var(--text-dim);
-            letter-spacing: 0.04em; text-transform: uppercase;
+        /* Lightweight Charts market chart wrapper (professional candles) */
+        .chart-wrap-lwc { padding: 0; overflow: hidden; }
+        .lwc-container { width: 100%; height: 460px; position: relative; }
+        .lwc-legend {
+            position: absolute; top: 10px; left: 14px; z-index: 5;
+            display: flex; gap: 14px; align-items: center;
+            font: 500 11px 'JetBrains Mono', monospace;
+            color: var(--text-muted);
+            pointer-events: auto;
+        }
+        .lwc-legend-symbol {
+            color: var(--text-primary); font-weight: 700; font-size: 12px;
+            letter-spacing: 0.02em;
+        }
+        .lwc-legend-item {
+            display: inline-flex; align-items: center; gap: 6px;
+            cursor: pointer; user-select: none;
+            transition: opacity 0.15s;
+        }
+        .lwc-legend-item.dim { opacity: 0.35; }
+        .lwc-legend-swatch {
+            display: inline-block; width: 14px; height: 2px;
+            border-radius: 1px;
+        }
+        .lwc-legend-swatch[data-swatch="ema9"]  { background: #e2a72f; }
+        .lwc-legend-swatch[data-swatch="ema21"] { background: #c084fc; }
+        .lwc-legend-val { color: var(--text-primary); font-weight: 600; }
+        .lwc-tooltip {
+            position: absolute; z-index: 10; pointer-events: none;
+            background: rgba(12, 16, 24, 0.96);
+            border: 1px solid rgba(56, 68, 91, 0.6);
+            border-radius: 6px;
+            padding: 8px 11px;
+            font: 600 11px 'JetBrains Mono', monospace;
+            color: var(--text-primary);
+            min-width: 140px; white-space: nowrap;
+            display: none;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+        }
+        .lwc-tooltip-row { display: flex; justify-content: space-between; gap: 12px; }
+        .lwc-tooltip-row span:first-child { color: var(--text-muted); font-weight: 500; }
+        .lwc-tooltip-ts {
+            font-size: 10px; color: var(--text-muted); font-weight: 500;
+            padding-bottom: 5px; margin-bottom: 5px;
+            border-bottom: 1px dashed rgba(56, 68, 91, 0.6);
         }
 
         /* ═══════════════════ RISK OVERVIEW ═══════════════════ */
@@ -2353,38 +2432,6 @@
             border: 1px solid rgba(239,68,68,0.3);
         }
 
-        /* ── Chart Inline Legend ── */
-        .chart-legend-row {
-            display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
-            padding: 6px 12px; margin-top: 6px;
-            border-top: 1px solid var(--border-dark);
-            font-size: 11px; color: var(--text-muted);
-            font-family: 'Inter', sans-serif;
-            letter-spacing: 0.02em;
-            user-select: none;
-        }
-        .chart-legend-item {
-            display: inline-flex; align-items: center; gap: 6px;
-            cursor: pointer; padding: 2px 6px; border-radius: 4px;
-            transition: background 0.15s ease, opacity 0.15s ease;
-        }
-        .chart-legend-item:hover { background: rgba(255,255,255,0.04); }
-        .chart-legend-item.dimmed { opacity: 0.35; }
-        .chart-legend-item.dimmed .chart-legend-line { opacity: 0.4; }
-        .chart-legend-line {
-            width: 18px; height: 0; flex-shrink: 0;
-            border-top: 2px solid currentColor; border-radius: 1px;
-        }
-        .chart-legend-line.dashed { border-top-style: dashed; }
-        .chart-legend-dot {
-            width: 10px; height: 3px; border-radius: 2px; flex-shrink: 0;
-        }
-        .chart-legend-value {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 10px; font-weight: 500;
-            color: var(--text-secondary); min-width: 60px;
-        }
-
         /* ── Accessible Focus Rings ── */
         button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
             outline: 2px solid var(--accent); outline-offset: 2px;
@@ -2565,9 +2612,6 @@
         }
         .metrics-intro strong { color: var(--green-bright); }
         .metrics-intro .red { color: var(--red); }
-
-        /* ── Chart Legend Row ── */
-        .chart-legend-row { font-size: 12px; color: var(--text-muted); }
 
         /* ── Alert Items ── */
         .alert-item { font-size: 13px; }

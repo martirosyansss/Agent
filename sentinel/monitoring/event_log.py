@@ -22,6 +22,7 @@ Event-type vocabulary (extend as needed):
 - ``regime_change``          — market regime transition
 - ``news_critical``          — critical bearish news fired
 - ``ml_prediction``          — ML predictor verdict logged
+- ``strategy_toggled``       — UI flag flipped a strategy on/off (transition)
 
 The writer is async-safe via a single ``threading.Lock`` because pickle/
 asyncio file ops can interleave on Windows. Throughput target: 1000 events/s
@@ -31,17 +32,110 @@ on a laptop SSD, well below typical Sentinel rate (~5-50/min).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import json
 import logging
+import os
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
+
+# Schema version for events written to events.jsonl. Bump when the
+# top-level shape changes in a way that breaks downstream consumers
+# (dashboards, replayers). Field additions don't require a bump;
+# renames or semantic changes do.
+EVENT_SCHEMA_VERSION = 1
+
+
+# ContextVar carrying the current trace_id for the in-flight request /
+# signal evaluation. Set by callers at the entry point of a logical
+# operation (e.g. when a Signal is created) and inherited by every
+# event emitted on that task — so signal → risk → fill → close-out
+# can be reconstructed by ``GROUP BY trace_id`` in the dashboard.
+_trace_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "sentinel_trace_id", default=None,
+)
+
+
+def new_trace_id() -> str:
+    """Generate a fresh trace id (URL-safe, 12 hex chars — short enough
+    to read in logs, large enough for collision-free trade volume)."""
+    return uuid.uuid4().hex[:12]
+
+
+def get_trace_id() -> Optional[str]:
+    """Return the trace_id active in the current context, or None."""
+    return _trace_id_var.get()
+
+
+def set_trace_id(trace_id: Optional[str]) -> contextvars.Token:
+    """Install a trace_id for the current context. Returns the token so
+    callers can ``reset(token)`` to restore the prior value (or use the
+    ``trace_context`` helper which does this for you)."""
+    return _trace_id_var.set(trace_id)
+
+
+@contextmanager
+def trace_context(trace_id: Optional[str] = None):
+    """Context manager that sets a trace_id for the duration of a block.
+
+    ::
+
+        with trace_context() as tid:
+            ...   # tid is auto-generated and visible to every emit() call
+
+        with trace_context("abc123def456") as tid:
+            ...   # explicit propagation across system boundaries
+    """
+    token = _trace_id_var.set(trace_id or new_trace_id())
+    try:
+        yield _trace_id_var.get()
+    finally:
+        _trace_id_var.reset(token)
+
 logger = logging.getLogger(__name__)
+
+
+class Severity(str, Enum):
+    """Canonical severity vocabulary for component_error / guard_tripped.
+
+    Subclassing ``str`` so existing call sites that pass plain strings
+    (``severity="warning"``) keep working — Severity.WARNING == "warning".
+    This means we can validate without breaking back-compat.
+    """
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+
+_KNOWN_SEVERITIES: frozenset[str] = frozenset(s.value for s in Severity)
+
+
+def _normalise_severity(value: Any) -> str:
+    """Coerce a severity argument to a canonical string.
+
+    Unknown values fall back to ``"error"`` and emit a one-time
+    loguru warning so a typo (``"warninng"``) is loudly visible in
+    development without breaking production telemetry.
+    """
+    if isinstance(value, Severity):
+        return value.value
+    s = str(value).lower().strip()
+    if s in _KNOWN_SEVERITIES:
+        return s
+    logger.warning(
+        "Unknown severity %r — falling back to 'error'. Use Severity enum or one of %s.",
+        value, sorted(_KNOWN_SEVERITIES),
+    )
+    return Severity.ERROR.value
 
 
 class EventType:
@@ -55,6 +149,14 @@ class EventType:
     """
     # Strategy → risk → execution lifecycle
     SIGNAL_GENERATED = "signal_generated"
+    # Full per-signal decision audit: risk pipeline verdict + every gate's
+    # verdict + feature snapshot. Emitted from main.py after
+    # evaluate_with_trace(). Dashboard's "Strategy Decisions" tab consumes this.
+    SIGNAL_DECISION = "signal_decision"
+    # Emitted by BaseStrategy right after a Signal is produced — carries the
+    # strategy's own reasoning + feature snapshot, BEFORE risk-gate filtering.
+    # Lets the dashboard show "strategy wanted X, but gate Y blocked it".
+    STRATEGY_DECISION = "strategy_decision"
     SIGNAL_APPROVED = "signal_approved"
     SIGNAL_REJECTED = "signal_rejected"
     ORDER_FILLED = "order_filled"
@@ -70,6 +172,9 @@ class EventType:
     # Component health — failure & degradation visibility
     COMPONENT_ERROR = "component_error"
     COMPONENT_DEGRADED = "component_degraded"
+    # Configuration transitions — emitted only on actual value change
+    # (transition events, not per-tick) so the JSONL stays signal-rich.
+    STRATEGY_TOGGLED = "strategy_toggled"
 
 
 def _json_default(obj: Any) -> Any:
@@ -100,6 +205,7 @@ class EventLog:
         max_bytes: int = 50 * 1024 * 1024,   # 50 MB per file
         backup_count: int = 5,
         in_memory_buffer: int = 1000,         # always keep last N in RAM
+        multi_process_safe: bool = False,
     ) -> None:
         self._path = path
         self._max_bytes = max_bytes
@@ -107,6 +213,22 @@ class EventLog:
         self._lock = threading.Lock()
         self._recent: list[dict] = []
         self._buffer_max = in_memory_buffer
+        # Subscribers fired after each emit. Used by alerters / shippers
+        # that want push semantics (Telegram push on critical, HTTP ship
+        # batches). Subscribers run under the EventLog lock — they MUST
+        # be quick (enqueue to a queue, not block on I/O).
+        self._subscribers: list[Callable[[dict], None]] = []
+        # Multi-process safety: when bot + backtester (or replicas) share
+        # the same logs/events.jsonl, two processes appending concurrently
+        # can interleave bytes mid-line and corrupt JSONL. ``filelock``
+        # provides a cross-platform exclusive lock keyed on a sidecar file
+        # so writes serialise globally. Opt-in to keep single-process
+        # callers (most tests) free of the small overhead.
+        self._mp_lock = None
+        if path is not None and multi_process_safe:
+            from filelock import FileLock
+            lock_path = path.with_suffix(path.suffix + ".lock")
+            self._mp_lock = FileLock(str(lock_path), timeout=5.0)
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -114,9 +236,52 @@ class EventLog:
     # Emission
     # ──────────────────────────────────────────────
 
+    def subscribe(self, callback: Callable[[dict], None]) -> Callable[[], None]:
+        """Register a callback fired (best-effort, sync) after each emit.
+
+        Subscribers MUST be cheap — they run inside the EventLog lock.
+        For anything slow (HTTP push, Telegram), the subscriber should
+        enqueue to a background worker rather than block here. Exceptions
+        from a subscriber are caught and logged so one bad subscriber
+        can't break the rest of the pipeline.
+
+        Returns an unsubscribe function so callers (especially tests)
+        can clean up reliably.
+        """
+        with self._lock:
+            self._subscribers.append(callback)
+
+        def _unsubscribe() -> None:
+            with self._lock:
+                try:
+                    self._subscribers.remove(callback)
+                except ValueError:
+                    pass
+
+        return _unsubscribe
+
     def emit(self, event_type: str, **payload: Any) -> dict:
-        """Write one event. Returns the assembled record (useful in tests)."""
-        record = {"ts": int(time.time() * 1000), "type": event_type, **payload}
+        """Write one event. Returns the assembled record (useful in tests).
+
+        Every record carries:
+          - ``ts``  — UTC milliseconds
+          - ``type`` — one of EventType.*
+          - ``schema_version`` — bumped only on breaking shape changes
+          - ``trace_id`` — auto-derived from the ContextVar if a caller
+            installed one via ``trace_context``; explicit ``trace_id`` in
+            ``payload`` always wins so cross-system handoffs work.
+        """
+        # Auto-fill trace_id from context if caller didn't provide one.
+        if "trace_id" not in payload:
+            ctx_tid = _trace_id_var.get()
+            if ctx_tid is not None:
+                payload["trace_id"] = ctx_tid
+        record = {
+            "ts": int(time.time() * 1000),
+            "type": event_type,
+            "schema_version": EVENT_SCHEMA_VERSION,
+            **payload,
+        }
         with self._lock:
             self._recent.append(record)
             if len(self._recent) > self._buffer_max:
@@ -124,11 +289,29 @@ class EventLog:
             if self._path is not None:
                 try:
                     self._rotate_if_needed()
-                    with self._path.open("a", encoding="utf-8") as f:
-                        f.write(json.dumps(record, default=_json_default, ensure_ascii=False))
-                        f.write("\n")
+                    if self._mp_lock is not None:
+                        # Cross-process serialisation. Acquired inside the
+                        # in-process lock so a stuck flock can't deadlock
+                        # the singleton — timeout=5s configured at __init__.
+                        with self._mp_lock:
+                            with self._path.open("a", encoding="utf-8") as f:
+                                f.write(json.dumps(record, default=_json_default, ensure_ascii=False))
+                                f.write("\n")
+                    else:
+                        with self._path.open("a", encoding="utf-8") as f:
+                            f.write(json.dumps(record, default=_json_default, ensure_ascii=False))
+                            f.write("\n")
                 except Exception as exc:
                     logger.error("EventLog write failed: %s", exc)
+            # Subscriber fan-out: snapshot the list before iterating so a
+            # subscriber that calls subscribe()/unsubscribe inside its
+            # callback doesn't mutate-during-iteration.
+            subs = list(self._subscribers)
+        for cb in subs:
+            try:
+                cb(record)
+            except Exception as exc:
+                logger.warning("EventLog subscriber raised: %s", exc)
         return record
 
     @contextmanager
@@ -246,9 +429,56 @@ def emit_rejection(
 # repeat emissions are dropped BUT a suppressed counter is attached to the
 # next emission after the window expires so the dashboard can still see that
 # a storm happened — we don't lose signal, we just compress it.
-_COMPONENT_ERROR_DEDUP_TTL_SEC = 60.0
+#
+# Pruning: stale entries (last_ts older than ``_PRUNE_FACTOR * TTL``) are
+# evicted opportunistically — once the dict exceeds ``_PRUNE_TRIGGER_SIZE``
+# entries we sweep on the next emit. Without this the dict would grow
+# without bound under high-cardinality error churn (each unique
+# ``(component, exc_type)`` pair lives forever) — a slow leak.
+#
+# All four knobs are env-overridable so operators can tune without code
+# changes (e.g. raise dedup TTL during a known incident burst).
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r — using default %s", name, raw, default)
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r — using default %s", name, raw, default)
+        return default
+
+
+_COMPONENT_ERROR_DEDUP_TTL_SEC = _env_float(
+    "SENTINEL_OBS_COMPONENT_ERROR_TTL_SEC", 60.0,
+)
+_PRUNE_FACTOR = _env_float("SENTINEL_OBS_PRUNE_FACTOR", 5.0)
+_PRUNE_TRIGGER_SIZE = _env_int("SENTINEL_OBS_PRUNE_TRIGGER_SIZE", 256)
 _component_error_state: dict[tuple[str, str], dict[str, Any]] = {}
 _component_error_lock = threading.Lock()
+
+
+def _prune_component_error_state_locked(now: float) -> None:
+    """Drop dedup entries whose ``last_ts`` is older than ``_PRUNE_FACTOR * TTL``.
+    Caller must hold ``_component_error_lock``.
+    """
+    cutoff = now - _COMPONENT_ERROR_DEDUP_TTL_SEC * _PRUNE_FACTOR
+    stale = [k for k, v in _component_error_state.items() if v["last_ts"] < cutoff]
+    for k in stale:
+        del _component_error_state[k]
 
 
 def emit_component_error(
@@ -276,6 +506,10 @@ def emit_component_error(
     key = (component, exc_type)
     now = time.time()
     with _component_error_lock:
+        # Opportunistic prune: only when the dict has actually grown enough
+        # to matter, to keep the hot path branch-cheap.
+        if len(_component_error_state) > _PRUNE_TRIGGER_SIZE:
+            _prune_component_error_state_locked(now)
         state = _component_error_state.get(key)
         if state is not None and (now - state["last_ts"]) < _COMPONENT_ERROR_DEDUP_TTL_SEC:
             state["suppressed"] += 1
@@ -285,7 +519,7 @@ def emit_component_error(
     payload: dict[str, Any] = {
         "component": component,
         "reason": reason,
-        "severity": severity,
+        "severity": _normalise_severity(severity),
     }
     if exc is not None:
         payload["exc_type"] = exc_type
@@ -299,6 +533,135 @@ def _reset_component_error_dedup() -> None:
     """Test helper — wipes the dedup state so each test starts fresh."""
     with _component_error_lock:
         _component_error_state.clear()
+    with _guard_tripped_lock:
+        _guard_tripped_state.clear()
+
+
+# Dedup state for ``guard_tripped`` events. Same shape as the
+# component_error dedup but a separate dict so guard storms (e.g. a
+# flapping CB) and component-error storms don't compete for the same
+# trigger threshold. TTL is shorter (15s) because guard trips are
+# higher-signal and operators want to see chatter.
+_GUARD_TRIPPED_DEDUP_TTL_SEC = _env_float(
+    "SENTINEL_OBS_GUARD_TRIPPED_TTL_SEC", 15.0,
+)
+_guard_tripped_state: dict[tuple[str, str], dict[str, Any]] = {}
+_guard_tripped_lock = threading.Lock()
+
+
+def emit_guard_tripped(
+    guard: str,
+    *,
+    name: str = "",
+    reason: str = "",
+    severity: str = "warning",
+    **context: Any,
+) -> Optional[dict]:
+    """Record a guard activation (CB trip, DD breach, kill-switch fire).
+
+    Canonical shape ``{"guard": ..., "name": ..., "reason": ..., ...}`` so
+    the dashboard can ``GROUP BY guard`` cleanly. Dedup follows the same
+    pattern as ``emit_component_error`` — repeated trips of the same
+    ``(guard, name)`` within the TTL are suppressed and counted, with the
+    suppressed count attached to the next emission.
+    """
+    key = (guard, name)
+    now = time.time()
+    with _guard_tripped_lock:
+        if len(_guard_tripped_state) > _PRUNE_TRIGGER_SIZE:
+            cutoff = now - _GUARD_TRIPPED_DEDUP_TTL_SEC * _PRUNE_FACTOR
+            stale = [k for k, v in _guard_tripped_state.items() if v["last_ts"] < cutoff]
+            for k in stale:
+                del _guard_tripped_state[k]
+        state = _guard_tripped_state.get(key)
+        if state is not None and (now - state["last_ts"]) < _GUARD_TRIPPED_DEDUP_TTL_SEC:
+            state["suppressed"] += 1
+            return None
+        suppressed = state["suppressed"] if state is not None else 0
+        _guard_tripped_state[key] = {"last_ts": now, "suppressed": 0}
+    payload: dict[str, Any] = {
+        "guard": guard,
+        "severity": _normalise_severity(severity),
+    }
+    if name:
+        payload["name"] = name
+    if reason:
+        payload["reason"] = reason
+    if suppressed > 0:
+        payload["suppressed_count"] = suppressed
+    payload.update(context)
+    return get_event_log().emit(EventType.GUARD_TRIPPED, **payload)
+
+
+def emit_position_opened(
+    symbol: str,
+    *,
+    entry_price: float,
+    quantity: float,
+    strategy: str = "",
+    signal_id: str = "",
+    stop_loss: float = 0.0,
+    take_profit: float = 0.0,
+    **context: Any,
+) -> dict:
+    """Record a position becoming active in memory + DB.
+
+    Pairs with ``emit_position_closed`` — together they let the dashboard
+    reconstruct the full open→close trajectory from events.jsonl without
+    joining against the SQLite snapshot.
+    """
+    payload: dict[str, Any] = {
+        "symbol": symbol,
+        "entry_price": entry_price,
+        "quantity": quantity,
+    }
+    if strategy:
+        payload["strategy"] = strategy
+    if signal_id:
+        payload["signal_id"] = signal_id
+    if stop_loss:
+        payload["stop_loss"] = stop_loss
+    if take_profit:
+        payload["take_profit"] = take_profit
+    payload.update(context)
+    return get_event_log().emit(EventType.POSITION_OPENED, **payload)
+
+
+def emit_position_closed(
+    symbol: str,
+    *,
+    entry_price: float,
+    exit_price: float,
+    quantity: float,
+    realized_pnl: float,
+    strategy: str = "",
+    signal_id: str = "",
+    hold_ms: Optional[int] = None,
+    exit_reason: str = "",
+    **context: Any,
+) -> dict:
+    """Record a position closing with the realised PnL.
+
+    ``exit_reason`` carries the human label used by the UI
+    (``"sl_hit"``, ``"tp1"``, ``"manual_close"``, ``"regime_flip"``, …).
+    """
+    payload: dict[str, Any] = {
+        "symbol": symbol,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "quantity": quantity,
+        "realized_pnl": realized_pnl,
+    }
+    if strategy:
+        payload["strategy"] = strategy
+    if signal_id:
+        payload["signal_id"] = signal_id
+    if hold_ms is not None:
+        payload["hold_ms"] = hold_ms
+    if exit_reason:
+        payload["exit_reason"] = exit_reason
+    payload.update(context)
+    return get_event_log().emit(EventType.POSITION_CLOSED, **payload)
 
 
 F = TypeVar("F", bound=Callable[..., Any])

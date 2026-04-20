@@ -27,7 +27,10 @@ from core.models import Direction, Order, Position, RiskState, Signal
 from .formatters import (
     format_config_summary,
     format_daily_report,
+    format_diagnostics,
     format_error,
+    format_events,
+    format_health,
     format_order_filled,
     format_portfolio,
     format_positions,
@@ -38,6 +41,7 @@ from .formatters import (
     format_stop_loss,
     format_take_profit,
     format_trades,
+    format_why,
     fmt_pnl,
     fmt_price,
     _esc,
@@ -127,6 +131,11 @@ class TelegramBot:
             "kill_confirm": self._cmd_kill_confirm,
             "mode":         self._cmd_mode,
             "config":       self._cmd_config,
+            # Диагностика
+            "diag":         self._cmd_diag,
+            "why":          self._cmd_why,
+            "events":       self._cmd_events,
+            "health":       self._cmd_health,
         }
         for name, handler in handlers.items():
             self._app.add_handler(CommandHandler(name, handler))
@@ -216,9 +225,15 @@ class TelegramBot:
                 InlineKeyboardButton("🏆 Portfolio", callback_data="btn_portfolio"),
                 InlineKeyboardButton("⚙️ Режим",     callback_data="btn_mode"),
             ],
-            # Строка 3 — управление
+            # Строка 3 — диагностика
+            [
+                InlineKeyboardButton("🔍 Диагностика", callback_data="btn_diag"),
+                InlineKeyboardButton("❓ Почему",       callback_data="btn_why"),
+                InlineKeyboardButton("🩺 Health",       callback_data="btn_health"),
+            ],
+            # Строка 4 — управление
             [trade_btn],
-            # Строка 4 — опасная зона
+            # Строка 5 — опасная зона
             [InlineKeyboardButton("☠️ АВАРИЙНАЯ ОСТАНОВКА", callback_data="btn_kill")],
         ]
         return InlineKeyboardMarkup(keyboard)
@@ -274,6 +289,11 @@ class TelegramBot:
             "/trades — Последние 10 сделок\n"
             "/mode — Текущий режим (paper/live)\n"
             "/config — Текущие настройки\n\n"
+            "<b>Диагностика</b>\n"
+            "/diag — 🔍 Что бот делает прямо сейчас\n"
+            "/why [SYMBOL] — ❓ Почему нет сделок\n"
+            "/events [N] — 📜 Последние N событий (по умолчанию 15)\n"
+            "/health — 🩺 Здоровье компонентов за последний час\n\n"
             "<b>Управление</b>\n"
             "/stop — ⏸ Остановить торговлю\n"
             "/resume — ▶️ Возобновить торговлю\n"
@@ -502,6 +522,77 @@ class TelegramBot:
         await update.message.reply_text(text, parse_mode="HTML")
 
     # ──────────────────────────────────────────────
+    # Диагностические команды
+    # ──────────────────────────────────────────────
+
+    def _recent_events(self, limit: int = 200) -> list[dict]:
+        """Pull recent events from the process-wide EventLog.
+
+        Uses the buffered in-memory window (последние N) — не читает
+        файл с диска, чтобы команда отвечала за <50ms даже когда
+        ``events.jsonl`` на сотни мегабайт.
+        """
+        try:
+            from monitoring.event_log import get_event_log
+            return get_event_log().recent_events(limit=limit)
+        except Exception as exc:
+            logger.warning("Failed to pull recent events: %s", exc)
+            return []
+
+    async def _cmd_diag(self, update, context) -> None:
+        """Полная диагностика: что бот делает прямо сейчас и почему."""
+        if not self._is_authorized(update.effective_chat.id):
+            return
+        logger.info("CMD /diag from %s", update.effective_chat.id)
+
+        state = self._get_state()
+        text = format_diagnostics(state)
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def _cmd_why(self, update, context) -> None:
+        """Почему нет сделок — агрегирует rejections и блокирующие чекеры."""
+        if not self._is_authorized(update.effective_chat.id):
+            return
+        logger.info("CMD /why from %s args=%s", update.effective_chat.id, context.args)
+
+        symbol = None
+        if context.args:
+            symbol = context.args[0].upper().strip()
+
+        state = self._get_state()
+        events = self._recent_events(limit=500)
+        text = format_why(state, events, symbol=symbol)
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def _cmd_events(self, update, context) -> None:
+        """Tail последних N событий (по умолчанию 15, макс 50)."""
+        if not self._is_authorized(update.effective_chat.id):
+            return
+        logger.info("CMD /events from %s args=%s", update.effective_chat.id, context.args)
+
+        limit = 15
+        if context.args:
+            try:
+                limit = max(1, min(50, int(context.args[0])))
+            except (ValueError, TypeError):
+                pass
+
+        events = self._recent_events(limit=max(limit * 2, 100))
+        text = format_events(events, limit=limit)
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def _cmd_health(self, update, context) -> None:
+        """Здоровье: ошибки компонентов и guards за последний час."""
+        if not self._is_authorized(update.effective_chat.id):
+            return
+        logger.info("CMD /health from %s", update.effective_chat.id)
+
+        state = self._get_state()
+        events = self._recent_events(limit=1000)
+        text = format_health(state, events)
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    # ──────────────────────────────────────────────
     # Inline button handler
     # ──────────────────────────────────────────────
 
@@ -570,6 +661,26 @@ class TelegramBot:
             await query.message.reply_text(
                 f"⚙️ Текущий режим: {mode_icon} <b>{mode}</b>",
                 parse_mode="HTML",
+            )
+
+        elif data == "btn_diag":
+            state = self._get_state()
+            await query.message.reply_text(
+                format_diagnostics(state), parse_mode="HTML",
+            )
+
+        elif data == "btn_why":
+            state = self._get_state()
+            events = self._recent_events(limit=500)
+            await query.message.reply_text(
+                format_why(state, events), parse_mode="HTML",
+            )
+
+        elif data == "btn_health":
+            state = self._get_state()
+            events = self._recent_events(limit=1000)
+            await query.message.reply_text(
+                format_health(state, events), parse_mode="HTML",
             )
 
         elif data == "btn_stop":

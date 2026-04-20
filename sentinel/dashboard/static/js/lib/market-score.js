@@ -93,7 +93,15 @@
             if (o.trend === 'bullish') score += 4;
             else if (o.trend === 'bearish') score -= 4;
         } else {
-            reasons.push({ sign: 'flat', text: 'ADX ' + adx.toFixed(1) + ' — слабый тренд, возможен флэт' });
+            var adxText;
+            if (o.trend === 'bullish') {
+                adxText = 'ADX ' + adx.toFixed(1) + ' — bull направление, но сила слабая';
+            } else if (o.trend === 'bearish') {
+                adxText = 'ADX ' + adx.toFixed(1) + ' — bear направление, но сила слабая';
+            } else {
+                adxText = 'ADX ' + adx.toFixed(1) + ' — слабый тренд, возможен флэт';
+            }
+            reasons.push({ sign: 'flat', text: adxText });
         }
 
         // Volume confirmation
